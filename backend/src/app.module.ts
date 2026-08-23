@@ -1,9 +1,12 @@
-import { Module } from '@nestjs/common';
+import { Module, ValidationPipe } from '@nestjs/common';
+import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { validateEnv, type EnvConfig } from './config/env.schema';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 @Module({
   imports: [
@@ -25,6 +28,18 @@ import { HealthModule } from './health/health.module';
     }),
     PrismaModule,
     HealthModule,
+    AuthModule,
+  ],
+  providers: [
+    { provide: APP_FILTER, useClass: GlobalExceptionFilter },
+    {
+      provide: APP_PIPE,
+      useValue: new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    },
   ],
 })
 export class AppModule {}
