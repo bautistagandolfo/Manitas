@@ -92,7 +92,7 @@ Todos los módulos dependen de esto.
 | T2.3 | ABM de variantes (SKU único, barcode único, precio, costo) | T2.2, **T0.12** | VERDE |
 | T2.4 | **`stock.service`**: movimientos + contador, transaccional. Único punto que escribe stock | T2.3 | VERDE |
 | T2.5 | Ingreso de mercadería con costo → actualiza `costo_actual` + `price_history` | T2.4, **T0.12, T0.14** (idempotencia — ver AMB-11/fase 06) | PENDIENTE |
-| T2.6 | Ajuste de stock (solo OWNER, motivo obligatorio) | T2.4 | PENDIENTE |
+| T2.6 | Ajuste de stock (solo OWNER, motivo obligatorio) | T2.4 | VERDE |
 | T2.7 | Buscador unificado: nombre / SKU / código de barras | T2.3 | PENDIENTE |
 | T2.8 | Test de reconciliación del invariante 1 (`stock_actual == SUM(movimientos)`) | T2.4 | PENDIENTE |
 | T2.9 | **`price_history`**: registro de todo cambio de precio y costo (AD-16) | T2.3, **T0.12** | PENDIENTE |
