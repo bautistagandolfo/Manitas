@@ -1,8 +1,15 @@
-import { Body, Controller, NotFoundException, Post } from '@nestjs/common';
-import { UserRole, Variant } from '@prisma/client';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  NotFoundException,
+  Post,
+} from '@nestjs/common';
+import { Prisma, UserRole, Variant } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockService } from './stock.service';
 import { CreateAjusteDto } from './dto/create-ajuste.dto';
+import { CreateEntradaDto } from './dto/create-entrada.dto';
 import { Roles } from '../../common/auth/roles.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { RequestUser } from '../../common/auth/authenticated-request';
@@ -46,6 +53,43 @@ export class StockController {
         variantId: dto.variantId,
         delta: dto.delta,
         motivo: dto.motivo,
+        userId: user.id,
+      });
+      return tx.variant.findUniqueOrThrow({ where: { id: dto.variantId } });
+    });
+  }
+
+  // Sin `Idempotency-Key` (decisión del PO, 2026-08-23 — ver
+  // modulo-products-variants-spec.md sección 6): extender T0.14 acá
+  // hubiese exigido migrar `stock_movements` para agregarle
+  // `idempotency_key`, algo que el blueprint no pide. Riesgo de doble
+  // click aceptado a propósito.
+  //
+  // costoUnitario > 0 se valida acá, no en stock.service.registrarEntrada
+  // (T2.4, ya en VERDE): el servicio confía en recibir un costo válido de
+  // quien lo llama, igual que con la existencia de la variante.
+  @Post('entradas')
+  async ingresar(
+    @Body() dto: CreateEntradaDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<Variant> {
+    const costoUnitario = new Prisma.Decimal(dto.costoUnitario);
+    if (costoUnitario.lessThanOrEqualTo(0)) {
+      throw new BadRequestException('costoUnitario tiene que ser mayor a 0');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const variant = await tx.variant.findUnique({
+        where: { id: dto.variantId },
+      });
+      if (!variant) {
+        throw new NotFoundException('Variante no encontrada');
+      }
+
+      await this.stockService.registrarEntrada(tx, {
+        variantId: dto.variantId,
+        cantidad: dto.cantidad,
+        costoUnitario,
         userId: user.id,
       });
       return tx.variant.findUniqueOrThrow({ where: { id: dto.variantId } });
