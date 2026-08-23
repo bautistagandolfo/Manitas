@@ -33,13 +33,19 @@ function extractCookie(setCookieHeader: unknown): string {
 describe('Products (integration)', () => {
   let app: INestApplication<App>;
   let authCookie: string;
+  let sellerCookie: string;
   const createdUserIds: number[] = [];
   const createdProductIds: number[] = [];
+  const createdVariantIds: number[] = [];
   let brandId: number;
   let categoryId: number;
 
   function authed(req: request.Test): request.Test {
     return req.set('Cookie', authCookie);
+  }
+
+  function sold(req: request.Test): request.Test {
+    return req.set('Cookie', sellerCookie);
   }
 
   beforeAll(async () => {
@@ -68,6 +74,23 @@ describe('Products (integration)', () => {
       .expect(200);
     authCookie = extractCookie(login.headers['set-cookie']);
 
+    const seller = await prisma.user.create({
+      data: {
+        email: 'products-test-seller@manitas.local',
+        passwordHash,
+        nombre: 'Seller de prueba',
+        rol: UserRole.SELLER,
+        activo: true,
+      },
+    });
+    createdUserIds.push(seller.id);
+
+    const sellerLogin = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email: seller.email, password: 'password123' })
+      .expect(200);
+    sellerCookie = extractCookie(sellerLogin.headers['set-cookie']);
+
     const brand = await prisma.brand.create({
       data: { nombre: 'Marca Products Test' },
     });
@@ -80,6 +103,16 @@ describe('Products (integration)', () => {
   });
 
   afterAll(async () => {
+    if (createdVariantIds.length > 0) {
+      // FK a products con ON DELETE RESTRICT: hay que borrar las variantes
+      // antes que sus productos.
+      await prisma.priceHistory.deleteMany({
+        where: { variantId: { in: createdVariantIds } },
+      });
+      await prisma.variant.deleteMany({
+        where: { id: { in: createdVariantIds } },
+      });
+    }
     if (createdProductIds.length > 0) {
       await prisma.product.deleteMany({
         where: { id: { in: createdProductIds } },
@@ -122,6 +155,43 @@ describe('Products (integration)', () => {
       request(app.getHttpServer()).get(`/products/${id}`),
     ).expect(200);
     expect((fetched.body as ProductResponseBody).variants).toEqual([]);
+  });
+
+  it('RN-3: GET /products/:id oculta costoActual de las variantes para SELLER, lo muestra para OWNER', async () => {
+    const product = await authed(request(app.getHttpServer()).post('/products'))
+      .send({ nombre: 'Producto Con Variante RN-3 Test' })
+      .expect(201);
+    const productId = (product.body as ProductResponseBody).id;
+    createdProductIds.push(productId);
+
+    const variant = await authed(
+      request(app.getHttpServer()).post(`/products/${productId}/variants`),
+    )
+      .send({ sku: 'RN3-SKU-TEST', precioVenta: '19.99', costoActual: '9.50' })
+      .expect(201);
+    createdVariantIds.push((variant.body as { id: number }).id);
+
+    const asOwner = await authed(
+      request(app.getHttpServer()).get(`/products/${productId}`),
+    ).expect(200);
+    const ownerVariants = (asOwner.body as ProductResponseBody).variants as {
+      costoActual?: string;
+      precioVenta: string;
+    }[];
+    // decimal.js serializa en su forma canónica, no rellena a 2 decimales
+    // (Prisma.Decimal('9.50').toString() da "9.5", no "9.50").
+    expect(ownerVariants[0].costoActual).toBe('9.5');
+    expect(ownerVariants[0].precioVenta).toBe('19.99');
+
+    const asSeller = await sold(
+      request(app.getHttpServer()).get(`/products/${productId}`),
+    ).expect(200);
+    const sellerVariants = (asSeller.body as ProductResponseBody).variants as {
+      costoActual?: string;
+      precioVenta: string;
+    }[];
+    expect(sellerVariants[0].costoActual).toBeUndefined();
+    expect(sellerVariants[0].precioVenta).toBe('19.99');
   });
 
   it('POST sin marca ni categoría también es válido (ambas son opcionales)', async () => {

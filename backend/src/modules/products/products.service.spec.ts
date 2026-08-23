@@ -104,7 +104,7 @@ describe('ProductsService', () => {
     it('incluye las variantes', async () => {
       prisma.product.findUnique.mockResolvedValue({ id: 1, variants: [] });
 
-      await service.findOne(1);
+      await service.findOne(1, true);
 
       expect(prisma.product.findUnique).toHaveBeenCalledWith({
         where: { id: 1 },
@@ -115,8 +115,35 @@ describe('ProductsService', () => {
     it('lanza NotFoundException si no existe', async () => {
       prisma.product.findUnique.mockResolvedValue(null);
 
-      await expect(service.findOne(999)).rejects.toBeInstanceOf(
+      await expect(service.findOne(999, true)).rejects.toBeInstanceOf(
         NotFoundException,
+      );
+    });
+
+    it('RN-3: oculta costoActual de las variantes si quien pregunta no es OWNER', async () => {
+      prisma.product.findUnique.mockResolvedValue({
+        id: 1,
+        variants: [{ id: 10, costoActual: '5.00', precioVenta: '10.00' }],
+      });
+
+      const result = await service.findOne(1, false);
+
+      expect(
+        (result.variants[0] as { costoActual?: string }).costoActual,
+      ).toBeUndefined();
+      expect(result.variants[0].precioVenta).toBe('10.00');
+    });
+
+    it('RN-3: muestra costoActual si quien pregunta es OWNER', async () => {
+      prisma.product.findUnique.mockResolvedValue({
+        id: 1,
+        variants: [{ id: 10, costoActual: '5.00', precioVenta: '10.00' }],
+      });
+
+      const result = await service.findOne(1, true);
+
+      expect((result.variants[0] as { costoActual?: string }).costoActual).toBe(
+        '5.00',
       );
     });
   });

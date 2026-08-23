@@ -3,11 +3,22 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Product } from '@prisma/client';
+import { Prisma, Product, Variant } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductQueryDto } from './dto/product-query.dto';
+
+// RN-3: el costo solo lo ve OWNER — también en las variantes que trae
+// GET /products/:id. Mismo tipo y mismo motivo que VariantForRole en
+// variants.service.ts (una condición dinámica, no un `omit` estático).
+type VariantForRole = Omit<Variant, 'costoActual'> & {
+  costoActual?: Prisma.Decimal;
+};
+
+export type ProductWithVariants = Product & {
+  variants: VariantForRole[];
+};
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -46,7 +57,7 @@ export class ProductsService {
     return { items, itemCount, page: query.page, pageSize: query.pageSize };
   }
 
-  async findOne(id: number): Promise<Product> {
+  async findOne(id: number, isOwner: boolean): Promise<ProductWithVariants> {
     const product = await this.prisma.product.findUnique({
       where: { id },
       include: { variants: true },
@@ -56,7 +67,18 @@ export class ProductsService {
       throw new NotFoundException('Producto no encontrado');
     }
 
-    return product;
+    if (isOwner) {
+      return product;
+    }
+
+    return {
+      ...product,
+      variants: product.variants.map((variant) => {
+        const stripped: VariantForRole = { ...variant };
+        delete stripped.costoActual;
+        return stripped;
+      }),
+    };
   }
 
   async create(dto: CreateProductDto): Promise<Product> {
