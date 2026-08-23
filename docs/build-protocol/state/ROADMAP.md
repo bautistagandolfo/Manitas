@@ -94,7 +94,7 @@ Todos los módulos dependen de esto.
 | T2.5 | Ingreso de mercadería con costo → actualiza `costo_actual` + `price_history` | T2.4, **T0.12** | VERDE |
 | T2.6 | Ajuste de stock (solo OWNER, motivo obligatorio) | T2.4 | VERDE |
 | T2.7 | Buscador unificado: nombre / SKU / código de barras | T2.3 | VERDE |
-| T2.8 | Test de reconciliación del invariante 1 (`stock_actual == SUM(movimientos)`) | T2.4 | PENDIENTE |
+| T2.8 | Test de reconciliación del invariante 1 (`stock_actual == SUM(movimientos)`) | T2.4 | VERDE |
 | T2.9 | **`price_history`**: registro de todo cambio de precio y costo (AD-16) | T2.3, **T0.12** | PENDIENTE |
 | T2.10 | **Actualización masiva de precios** con vista previa (blueprint §5.2) | T2.9, **T0.12** | PENDIENTE |
 | T2.11 | **Alta de variantes por grilla** (talles × colores, blueprint §12.2) | T2.3, **T0.12** | PENDIENTE |
