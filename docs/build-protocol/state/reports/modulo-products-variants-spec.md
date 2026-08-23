@@ -152,7 +152,10 @@ directamente:
 Prefijo común `/api` omitido (ya establecido en `main.ts`). Todos
 requieren sesión (`AuthGuard` global); el rol exigido se indica por
 endpoint. Todo listado pagina con `page`/`pageSize` (RN-12) y devuelve
-`{ items, total, page, pageSize }`.
+`{ items, totalItems, page, pageSize }`. **Corrección post-spec (T2.2):**
+"total" a secas dispara el linter local `no-number-money` (BLUEPRINT §9.3
+trata cualquier "total" tipado `number` como sospechoso de ser plata) —
+se usa `totalItems` en la implementación real desde T2.2 en adelante.
 
 **Catálogo auxiliar** (`brands`, `categories`, `sizes`, `colors` — los
 cuatro con la misma forma):
