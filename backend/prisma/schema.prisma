@@ -1,5 +1,21 @@
 // Fuente de verdad del modelo de datos: BLUEPRINT.md sección 3.
-// Sin modelos todavía — se agregan en la fase 01 (modelo de datos).
+//
+// Nota sobre timestamps: todo campo DateTime usa @db.Timestamptz para que
+// `AT TIME ZONE 'America/Argentina/Buenos_Aires'` (AD-13) convierta un
+// instante UTC real a hora argentina. Con `timestamp` sin zona (el default
+// de Prisma) esa conversión da un resultado distinto y silenciosamente mal.
+//
+// Nota sobre `numero` en sales/returns: usa @default(autoincrement()) igual
+// que `id`. En Postgres eso es una secuencia dedicada de verdad (no
+// MAX(numero)+1), que es exactamente lo que exige la sección 9.4.
+//
+// Restricciones que Prisma no puede expresar en este schema (documentadas
+// en BLUEPRINT.md 9.1) van en la migración a mano, no acá:
+//   - UNIQUE NULLS NOT DISTINCT en variants (product_id, size_id, color_id).
+//   - Índice único parcial: una sola cash_register_sessions en estado ABIERTA.
+//   - CHECK de convención de signo en cash_movements (sección 3.6).
+//   - CHECK cantidad > 0 en sale_items, monto > 0 en payments y expenses
+//     (fase 01, requisito 4).
 
 generator client {
   provider = "prisma-client-js"
@@ -8,4 +24,510 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────────
+
+enum UserRole {
+  OWNER
+  SELLER
+}
+
+enum PriceHistoryCampo {
+  PRECIO_VENTA
+  COSTO
+}
+
+enum PriceHistoryOrigen {
+  ALTA
+  MANUAL
+  MASIVO
+  INGRESO_MERCADERIA
+}
+
+enum StockMovementTipo {
+  ENTRADA
+  VENTA
+  DEVOLUCION
+  ANULACION
+  AJUSTE
+}
+
+enum StockMovementReferenciaTipo {
+  SALE
+  RETURN
+}
+
+enum SaleEstado {
+  COMPLETADA
+  ANULADA
+}
+
+enum SaleDiscountTipo {
+  MANUAL
+}
+
+enum PaymentMetodo {
+  EFECTIVO
+  TARJETA_DEBITO
+  TARJETA_CREDITO
+  TRANSFERENCIA
+  CREDITO_DEVOLUCION
+}
+
+enum ReturnTipo {
+  DEVOLUCION
+  CAMBIO
+}
+
+enum CashRegisterSessionEstado {
+  ABIERTA
+  CERRADA
+}
+
+enum CashMovementTipo {
+  VENTA
+  DEVOLUCION
+  ANULACION
+  GASTO
+  INGRESO_MANUAL
+  RETIRO
+}
+
+enum CashMovementReferenciaTipo {
+  SALE
+  RETURN
+  EXPENSE
+}
+
+enum ExpenseMedioPago {
+  EFECTIVO
+  TRANSFERENCIA
+  OTRO
+}
+
+enum SettingTipo {
+  BOOL
+  INT
+  DECIMAL
+}
+
+// ─── 3.1 Usuarios y acceso ──────────────────────────────────────────────
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  nombre       String
+  rol          UserRole
+  activo       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  priceHistoryEntries      PriceHistory[]
+  stockMovements           StockMovement[]
+  sales                    Sale[]
+  saleDiscountsAutorizados SaleDiscount[]
+  returns                  Return[]              @relation("ReturnUser")
+  returnsAutorizadas       Return[]              @relation("ReturnAutorizadoPor")
+  cashSessionsApertura     CashRegisterSession[] @relation("CashSessionApertura")
+  cashSessionsCierre       CashRegisterSession[] @relation("CashSessionCierre")
+  cashMovements            CashMovement[]
+  expenses                 Expense[]
+  settingsActualizados     Setting[]
+
+  @@map("users")
+}
+
+// ─── 3.2 Catálogo ───────────────────────────────────────────────────────
+
+model Brand {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @unique
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  products Product[]
+
+  @@map("brands")
+}
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @unique
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  products Product[]
+
+  @@map("categories")
+}
+
+model Size {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @unique
+  orden     Int
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  variants Variant[]
+
+  @@map("sizes")
+}
+
+model Color {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @unique
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  variants Variant[]
+
+  @@map("colors")
+}
+
+model Product {
+  id          Int      @id @default(autoincrement())
+  nombre      String
+  descripcion String?
+  brandId     Int?     @map("brand_id")
+  categoryId  Int?     @map("category_id")
+  activo      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  brand    Brand?    @relation(fields: [brandId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+  variants Variant[]
+
+  @@map("products")
+}
+
+// La unidad real de venta y de stock (AD-4). La combinación única
+// (product_id, size_id, color_id) con NULLS NOT DISTINCT se agrega a mano
+// en la migración: Prisma no la puede expresar acá (ver nota de arriba).
+model Variant {
+  id          Int      @id @default(autoincrement())
+  productId   Int      @map("product_id")
+  sizeId      Int?     @map("size_id")
+  colorId     Int?     @map("color_id")
+  sku         String   @unique
+  barcode     String?  @unique
+  precioVenta Decimal  @map("precio_venta") @db.Decimal(12, 2)
+  costoActual Decimal  @map("costo_actual") @db.Decimal(12, 2)
+  stockActual Int      @default(0) @map("stock_actual")
+  activo      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  product Product @relation(fields: [productId], references: [id])
+  size    Size?   @relation(fields: [sizeId], references: [id])
+  color   Color?  @relation(fields: [colorId], references: [id])
+
+  priceHistory   PriceHistory[]
+  stockMovements StockMovement[]
+  saleItems      SaleItem[]
+
+  @@index([productId])
+  @@map("variants")
+}
+
+// Auditoría de cambios de precio y costo (AD-16). Solo inserción: sin
+// updated_at (excepción declarada en la sección 3).
+model PriceHistory {
+  id            Int                @id @default(autoincrement())
+  variantId     Int                @map("variant_id")
+  campo         PriceHistoryCampo
+  valorAnterior Decimal?           @map("valor_anterior") @db.Decimal(12, 2)
+  valorNuevo    Decimal            @map("valor_nuevo") @db.Decimal(12, 2)
+  origen        PriceHistoryOrigen
+  userId        Int                @map("user_id")
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  variant Variant @relation(fields: [variantId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@map("price_history")
+}
+
+// ─── 3.3 Stock ──────────────────────────────────────────────────────────
+
+// Libro de movimientos (AD-4). Solo inserción: sin updated_at.
+model StockMovement {
+  id             Int                          @id @default(autoincrement())
+  variantId      Int                          @map("variant_id")
+  delta          Int
+  tipo           StockMovementTipo
+  costoUnitario  Decimal?                     @map("costo_unitario") @db.Decimal(12, 2)
+  referenciaTipo StockMovementReferenciaTipo? @map("referencia_tipo")
+  referenciaId   Int?                         @map("referencia_id")
+  motivo         String?
+  userId         Int                          @map("user_id")
+  createdAt      DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  variant Variant @relation(fields: [variantId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([variantId])
+  @@index([referenciaTipo, referenciaId])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
+// ─── 3.4 Ventas ─────────────────────────────────────────────────────────
+
+model Sale {
+  id                    Int        @id @default(autoincrement())
+  numero                Int        @unique @default(autoincrement())
+  fecha                 DateTime   @db.Timestamptz(3)
+  userId                Int        @map("user_id")
+  cashRegisterSessionId Int        @map("cash_register_session_id")
+  subtotal              Decimal    @db.Decimal(12, 2)
+  descuentoTotal        Decimal    @map("descuento_total") @db.Decimal(12, 2)
+  ajusteRedondeo        Decimal    @default(0) @map("ajuste_redondeo") @db.Decimal(12, 2)
+  total                 Decimal    @db.Decimal(12, 2)
+  estado                SaleEstado @default(COMPLETADA)
+  idempotencyKey        String?    @unique @map("idempotency_key")
+  createdAt             DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user                User                @relation(fields: [userId], references: [id])
+  cashRegisterSession CashRegisterSession @relation(fields: [cashRegisterSessionId], references: [id])
+
+  items     SaleItem[]
+  discounts SaleDiscount[]
+  payments  Payment[]
+
+  returnsOriginadas Return[] @relation("ReturnSale")
+  returnsComoCambio Return[] @relation("ReturnSaleNueva")
+
+  @@map("sales")
+}
+
+model SaleItem {
+  id                  Int      @id @default(autoincrement())
+  saleId              Int      @map("sale_id")
+  variantId           Int      @map("variant_id")
+  descripcionSnapshot String   @map("descripcion_snapshot")
+  cantidad            Int
+  precioUnitario      Decimal  @map("precio_unitario") @db.Decimal(12, 2)
+  costoUnitario       Decimal  @map("costo_unitario") @db.Decimal(12, 2)
+  subtotal            Decimal  @db.Decimal(12, 2)
+  netoLinea           Decimal  @map("neto_linea") @db.Decimal(12, 2)
+  netoUnitario        Decimal  @map("neto_unitario") @db.Decimal(12, 2)
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sale    Sale    @relation(fields: [saleId], references: [id])
+  variant Variant @relation(fields: [variantId], references: [id])
+
+  returnItems ReturnItem[]
+
+  @@map("sale_items")
+}
+
+// Punto de extensión para códigos de descuento (AD-3).
+model SaleDiscount {
+  id                  Int              @id @default(autoincrement())
+  saleId              Int              @map("sale_id")
+  tipo                SaleDiscountTipo
+  descripcion         String
+  porcentaje          Decimal?         @db.Decimal(5, 2)
+  monto               Decimal          @db.Decimal(12, 2)
+  autorizadoPorUserId Int?             @map("autorizado_por_user_id")
+  createdAt           DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sale          Sale  @relation(fields: [saleId], references: [id])
+  autorizadoPor User? @relation(fields: [autorizadoPorUserId], references: [id])
+
+  @@map("sale_discounts")
+}
+
+// Punto de extensión para gift cards (AD-3). CREDITO_DEVOLUCION es el saldo
+// a favor que genera una devolución usada como pago de un cambio (5.4).
+model Payment {
+  id         Int           @id @default(autoincrement())
+  saleId     Int           @map("sale_id")
+  metodo     PaymentMetodo
+  monto      Decimal       @db.Decimal(12, 2)
+  referencia String?
+  returnId   Int?          @map("return_id")
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sale   Sale    @relation(fields: [saleId], references: [id])
+  return Return? @relation(fields: [returnId], references: [id])
+
+  @@map("payments")
+}
+
+// ─── 3.5 Devoluciones ───────────────────────────────────────────────────
+
+model Return {
+  id                    Int        @id @default(autoincrement())
+  numero                Int        @unique @default(autoincrement())
+  saleId                Int        @map("sale_id")
+  fecha                 DateTime   @db.Timestamptz(3)
+  userId                Int        @map("user_id")
+  cashRegisterSessionId Int        @map("cash_register_session_id")
+  tipo                  ReturnTipo
+  totalDevuelto         Decimal    @map("total_devuelto") @db.Decimal(12, 2)
+  saleNuevaId           Int?       @map("sale_nueva_id")
+  autorizadoPorUserId   Int?       @map("autorizado_por_user_id")
+  idempotencyKey        String?    @unique @map("idempotency_key")
+  createdAt             DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sale                Sale                @relation("ReturnSale", fields: [saleId], references: [id])
+  saleNueva           Sale?               @relation("ReturnSaleNueva", fields: [saleNuevaId], references: [id])
+  user                User                @relation("ReturnUser", fields: [userId], references: [id])
+  autorizadoPor       User?               @relation("ReturnAutorizadoPor", fields: [autorizadoPorUserId], references: [id])
+  cashRegisterSession CashRegisterSession @relation(fields: [cashRegisterSessionId], references: [id])
+
+  items          ReturnItem[]
+  payments       Payment[]
+  returnPayments ReturnPayment[]
+
+  @@map("returns")
+}
+
+model ReturnItem {
+  id             Int      @id @default(autoincrement())
+  returnId       Int      @map("return_id")
+  saleItemId     Int      @map("sale_item_id")
+  cantidad       Int
+  netoLinea      Decimal  @map("neto_linea") @db.Decimal(12, 2)
+  costoUnitario  Decimal  @map("costo_unitario") @db.Decimal(12, 2)
+  reingresaStock Boolean  @map("reingresa_stock")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  return   Return   @relation(fields: [returnId], references: [id])
+  saleItem SaleItem @relation(fields: [saleItemId], references: [id])
+
+  @@map("return_items")
+}
+
+// Cómo se reintegró el dinero. Sin esta tabla, una venta cobrada mitad en
+// efectivo y mitad con tarjeta no se puede devolver correctamente.
+model ReturnPayment {
+  id         Int           @id @default(autoincrement())
+  returnId   Int           @map("return_id")
+  metodo     PaymentMetodo
+  monto      Decimal       @db.Decimal(12, 2)
+  referencia String?
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  return Return @relation(fields: [returnId], references: [id])
+
+  @@map("return_payments")
+}
+
+// ─── 3.6 Caja ───────────────────────────────────────────────────────────
+
+// Un turno de caja. "No puede haber dos sesiones ABIERTA a la vez" se
+// implementa con un índice único parcial en la migración a mano: Prisma no
+// tiene forma de expresar un índice condicionado por WHERE en este schema.
+model CashRegisterSession {
+  id             Int                       @id @default(autoincrement())
+  fechaApertura  DateTime                  @map("fecha_apertura") @db.Timestamptz(3)
+  userIdApertura Int                       @map("user_id_apertura")
+  montoInicial   Decimal                   @map("monto_inicial") @db.Decimal(12, 2)
+  fechaCierre    DateTime?                 @map("fecha_cierre") @db.Timestamptz(3)
+  userIdCierre   Int?                      @map("user_id_cierre")
+  montoDeclarado Decimal?                  @map("monto_declarado") @db.Decimal(12, 2)
+  montoSistema   Decimal?                  @map("monto_sistema") @db.Decimal(12, 2)
+  diferencia     Decimal?                  @db.Decimal(12, 2)
+  notaCierre     String?                   @map("nota_cierre")
+  estado         CashRegisterSessionEstado @default(ABIERTA)
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  userApertura User  @relation("CashSessionApertura", fields: [userIdApertura], references: [id])
+  userCierre   User? @relation("CashSessionCierre", fields: [userIdCierre], references: [id])
+
+  sales         Sale[]
+  returns       Return[]
+  cashMovements CashMovement[]
+
+  @@map("cash_register_sessions")
+}
+
+// Solo efectivo (AD-8). La convención de signo por `tipo` lleva un CHECK en
+// la base (obligatorio según la sección 3.6): se agrega en la migración a
+// mano porque Prisma no soporta constraints CHECK en este schema.
+model CashMovement {
+  id             Int                         @id @default(autoincrement())
+  sessionId      Int                         @map("session_id")
+  fecha          DateTime                    @db.Timestamptz(3)
+  tipo           CashMovementTipo
+  monto          Decimal                     @db.Decimal(12, 2)
+  referenciaTipo CashMovementReferenciaTipo? @map("referencia_tipo")
+  referenciaId   Int?                        @map("referencia_id")
+  descripcion    String
+  idempotencyKey String?                     @unique @map("idempotency_key")
+  userId         Int                         @map("user_id")
+  createdAt      DateTime                    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime                    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  session CashRegisterSession @relation(fields: [sessionId], references: [id])
+  user    User                @relation(fields: [userId], references: [id])
+
+  @@map("cash_movements")
+}
+
+// ─── 3.7 Gastos ─────────────────────────────────────────────────────────
+
+// Semilla en 3.7: Alquiler, Sueldos, Servicios, Impuestos, Mantenimiento,
+// Otros — nunca "Mercadería" (AD-7). Las de semilla van con bloqueada=true.
+model ExpenseCategory {
+  id        Int      @id @default(autoincrement())
+  nombre    String   @unique
+  activo    Boolean  @default(true)
+  bloqueada Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  expenses Expense[]
+
+  @@map("expense_categories")
+}
+
+model Expense {
+  id                Int              @id @default(autoincrement())
+  fecha             DateTime         @db.Timestamptz(3)
+  idempotencyKey    String?          @unique @map("idempotency_key")
+  expenseCategoryId Int              @map("expense_category_id")
+  descripcion       String
+  monto             Decimal          @db.Decimal(12, 2)
+  medioPago         ExpenseMedioPago @map("medio_pago")
+  userId            Int              @map("user_id")
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  expenseCategory ExpenseCategory @relation(fields: [expenseCategoryId], references: [id])
+  user            User            @relation(fields: [userId], references: [id])
+
+  @@map("expenses")
+}
+
+// ─── 3.8 Configuración ──────────────────────────────────────────────────
+
+model Setting {
+  clave           String      @id
+  valor           String
+  tipo            SettingTipo
+  updatedByUserId Int?        @map("updated_by_user_id")
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  updatedBy User? @relation(fields: [updatedByUserId], references: [id])
+
+  @@map("settings")
 }

@@ -37,19 +37,34 @@ Sin módulos de negocio. Es la base sobre la que se apoya todo.
 
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
-| T0.1 | Bootstrap NestJS + TS estricto + estructura de carpetas + lint + Jest + CI | — | PENDIENTE |
-| T0.2 | Prisma + Postgres en docker-compose + config validada con zod + `/health` | T0.1 | PENDIENTE |
-| T0.3 | Esquema completo de Prisma (blueprint §3) + primera migración | T0.2 | PENDIENTE |
-| T0.4 | Constraints de base de datos + secuencias de numeración + seed | T0.3 | PENDIENTE |
-| T0.5 | Frontend Vite + React + **Mantine** + routing + cliente HTTP con cookies + helpers de formato es-AR (§12.3) | T0.1 | PENDIENTE |
+| T0.1 | Bootstrap NestJS + TS estricto + estructura de carpetas + lint + Jest + CI | — | VERDE |
+| T0.2 | Prisma + Postgres en docker-compose + config validada con zod + `/health` | T0.1 | VERDE |
+| T0.3 | Esquema completo de Prisma (blueprint §3) + primera migración | T0.2 | VERDE |
+| T0.4 | Constraints de base de datos + secuencias de numeración + seed (usuario OWNER + categorías de gasto) | T0.3 | VERDE |
+| T0.5 | Frontend Vite + React + **Mantine** + routing + cliente HTTP con cookies | T0.1 | VERDE |
 | T0.9 | `seed:dev` con datos realistas para desarrollo (nunca en producción) | T0.4 | PENDIENTE |
 | T0.10 | **Stryker** (testing de mutación) + umbral de cobertura 80% en servicios, en CI | T0.1 | PENDIENTE |
 | T0.6 | Backup diario: GitHub Action con `pg_dump` cifrado a almacenamiento externo | T0.3 | PENDIENTE |
 | T0.7 | Zona horaria: helper de agrupación en hora argentina + test (AD-13) | T0.3 | PENDIENTE |
-| T0.8 | Helpers de dinero y redondeo + regla de lint que prohíba `number` (AD-14) | T0.1 | PENDIENTE |
+| T0.8 | Regla de lint que prohíba `number` para importes (AD-14) | T0.1 | VERDE |
+| T0.11 | Helpers de formato es-AR (§12.3): moneda, fecha, número — prohibido formatear a mano en un componente | T0.5 | PENDIENTE |
+| T0.12 | Helpers de `Decimal` y redondeo comercial (AD-14): prorrateo a líneas, los dos tests obligatorios de §9.3 | T0.1 | PENDIENTE |
+| T0.13 | Tabla `settings` + servicio tipado de lectura/escritura + seed de los 4 parámetros de la sección 10 | T0.4 | PENDIENTE |
+| T0.14 | Interceptor común de idempotencia (`Idempotency-Key`, índice único — BLUEPRINT §9.7) | T0.1 | PENDIENTE |
 
-> T0.1–T0.4 corresponden a las Fases 00 y 01 del protocolo.
+> T0.1–T0.5 y T0.8 corresponden a las Fases 00 y 01 del protocolo, ya en
+> VERDE (T0.5 solo por el esqueleto: los helpers es-AR quedan en T0.11, y la
+> regla de lint de T0.8 ya está pero los helpers de `Decimal`/redondeo
+> quedan en T0.12 — ninguna de las dos fases tocó lógica de negocio, así
+> que no correspondía implementarlos ahí).
 > **T0.6 no se pospone**: sin backup andando, no se carga un solo dato real.
+> **T0.11 a T0.14 son agregados de esta revisión (fase 02).** El roadmap
+> original no tenía ticket para los helpers de dinero, para `settings`
+> (blueprint §3.8 y §10 completos, sin dueño en ningún módulo) ni para el
+> interceptor de idempotencia como pieza compartida — sin este último acá,
+> T3.3, T4.5, T5.1 y T6.2 (que lo necesitan por BLUEPRINT §9.7) quedaban con
+> una dependencia hacia adelante rota si el interceptor se construía recién
+> dentro de T4.5, en la etapa 4.
 
 ---
 
@@ -59,8 +74,8 @@ Todos los módulos dependen de esto.
 
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
-| T1.1 | Usuarios: hash argon2, alta, baja lógica | T0.4 | PENDIENTE |
-| T1.2 | Login + JWT en cookie httpOnly (8 h) + logout | T1.1 | PENDIENTE |
+| T1.1 | Usuarios: hash argon2, alta, listado, edición, baja lógica — no permite desactivar ni bajar de rol al último `OWNER` activo | T0.4 | PENDIENTE |
+| T1.2 | Login + JWT en cookie httpOnly (**12 h** — BLUEPRINT §9.6) + logout | T1.1 | PENDIENTE |
 | T1.3 | Guard de autenticación + `RolesGuard` (OWNER / SELLER) | T1.2 | PENDIENTE |
 | T1.4 | Pantalla de login + manejo de sesión + rutas protegidas en frontend | T1.3, T0.5 | PENDIENTE |
 
@@ -104,8 +119,8 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 |---|---|---|---|
 | T3.1 | Apertura de sesión con monto inicial + constraint de sesión única abierta | T1.3 | PENDIENTE |
 | T3.2 | Movimientos de caja (servicio base, solo efectivo — AD-8) | T3.1 | PENDIENTE |
-| T3.3 | Ingreso manual y retiro de efectivo | T3.2 | PENDIENTE |
-| T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota | T3.2 | PENDIENTE |
+| T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | PENDIENTE |
+| T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | PENDIENTE |
 | T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | PENDIENTE |
 | T3.6 | Test del invariante 2 (arqueo) | T3.4 | PENDIENTE |
 | T3.7 | Pantallas de apertura, movimientos y cierre | T3.5 | PENDIENTE |
@@ -120,12 +135,12 @@ El módulo más crítico del sistema.
 
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
-| T4.1 | Servicio de venta transaccional con **bloqueo de filas ordenado por id** (blueprint §9.4) | T2.4, T3.2 | PENDIENTE |
+| T4.1 | Servicio de venta transaccional con **bloqueo de filas ordenado por id** (blueprint §9.4), respeta `permitir_venta_sin_stock` | T2.4, T3.2, T0.13 | PENDIENTE |
 | T4.2 | Congelado de precio y costo en la línea (AD-5) + `descripcion_snapshot` | T4.1 | PENDIENTE |
-| T4.3 | Descuentos: N por venta, límite del vendedor y autorización de OWNER | T4.1 | PENDIENTE |
+| T4.3 | Descuentos: N por venta, límite del vendedor (`max_descuento_vendedor_pct`) y autorización de OWNER | T4.1, T0.13 | PENDIENTE |
 | T4.4 | Pagos: N por venta, validación suma = total, impacto en caja solo si es efectivo | T4.1 | PENDIENTE |
-| T4.5 | Idempotencia por `Idempotency-Key` (interceptor común) | T4.1 | PENDIENTE |
-| T4.6 | **Ajuste de redondeo** + tests de las reglas de redondeo (§9.3) | T4.4 | PENDIENTE |
+| T4.5 | Aplicar el interceptor de idempotencia (T0.14) a la venta | T4.1, T0.14 | PENDIENTE |
+| T4.6 | **Ajuste de redondeo** + tests de las reglas de redondeo (§9.3) | T4.4, T0.12 | PENDIENTE |
 | T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4 | PENDIENTE |
 | T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | PENDIENTE |
 | T4.9 | Test de concurrencia: dos ventas simultáneas de la última unidad | T4.1 | PENDIENTE |
@@ -144,7 +159,7 @@ completa en la sección 12.1 del blueprint.
 
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
-| T5.1 | Devolución contra venta existente, con validación de plazo y cantidades | T4.4 | PENDIENTE |
+| T5.1 | Devolución contra venta existente, con validación de plazo (`dias_plazo_devolucion`), cantidades e idempotencia (§9.7) | T4.4, T0.13, T0.14 | PENDIENTE |
 | T5.2 | Reingreso de stock condicional (`reingresa_stock`) | T5.1 | PENDIENTE |
 | T5.3 | Reintegro en efectivo → movimiento de caja negativo | T5.1 | PENDIENTE |
 | T5.4 | Reversión del costo congelado (para que el CMV quede correcto) | T5.1 | PENDIENTE |
@@ -161,13 +176,14 @@ completa en la sección 12.1 del blueprint.
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
 | T6.1 | ABM de categorías de gasto (sin "Mercadería" — AD-7) | T1.3 | PENDIENTE |
-| T6.2 | Registro de gastos con medio de pago | T6.1 | PENDIENTE |
+| T6.2 | Registro de gastos con medio de pago, idempotente (§9.7) | T6.1, T0.14 | PENDIENTE |
 | T6.3 | Gasto en efectivo → movimiento de caja vinculado | T6.2, T3.2 | PENDIENTE |
 | T6.4 | Consulta de resultados: ingresos, CMV, margen, gastos, resultado neto | T4.4, T5.4, T6.2 | PENDIENTE |
-| T6.5 | **Agrupación temporal en hora argentina** (AD-13) + test de venta a las 23:30 | T6.4 | PENDIENTE |
+| T6.5 | **Agrupación temporal en hora argentina** (AD-13) + test de venta a las 23:30 | T6.4, T0.7 | PENDIENTE |
 | T6.6 | Rankings: productos por unidades vendidas y por margen; gastos por categoría | T6.4 | PENDIENTE |
 | T6.7 | Tests de cálculo con casos armados a mano (incluyendo devoluciones) | T6.5 | PENDIENTE |
 | T6.8 | Pantallas de gastos y de resultados (solo OWNER) | T6.6 | PENDIENTE |
+| T6.9 | Pantalla de configuración (solo OWNER): editar los 4 parámetros de la sección 10 | T0.13, T1.3 | PENDIENTE |
 
 **T6.4 y T6.6 son críticos**: es el número por el que la clienta compra el
 sistema. Un cálculo mal hecho la hace tomar decisiones equivocadas sobre su

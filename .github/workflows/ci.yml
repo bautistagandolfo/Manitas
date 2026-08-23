@@ -31,6 +31,9 @@ jobs:
       JWT_SECRET: ci-only-not-a-real-secret
       COOKIE_SECRET: ci-only-not-a-real-secret
       LOG_LEVEL: error
+      SEED_OWNER_EMAIL: owner@manitas.local
+      SEED_OWNER_PASSWORD: ci-only-not-a-real-secret
+      SEED_OWNER_NOMBRE: Owner
 
     defaults:
       run:
@@ -49,6 +52,8 @@ jobs:
       - run: npx prisma generate
       - run: npm run lint
       - run: npm run build
+      - run: npx prisma migrate deploy
+      - run: npx prisma db seed
       - run: npm run test
       - run: npm run test:integration
 
