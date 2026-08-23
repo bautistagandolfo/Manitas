@@ -77,7 +77,7 @@ Todos los módulos dependen de esto.
 | T1.1 | Usuarios: hash argon2, alta, listado, edición, baja lógica — no permite desactivar ni bajar de rol al último `OWNER` activo | T0.4 | VERDE |
 | T1.2 | Login + JWT en cookie httpOnly (**12 h** — BLUEPRINT §9.6) + logout | T1.1 | VERDE |
 | T1.3 | Guard de autenticación + `RolesGuard` (OWNER / SELLER) — incluye `GET /auth/me` | T1.2 | VERDE |
-| T1.4 | Pantalla de login + manejo de sesión + rutas protegidas en frontend | T1.3, T0.5 | PENDIENTE |
+| T1.4 | Pantalla de login + manejo de sesión + rutas protegidas en frontend | T1.3, T0.5 | VERDE |
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
