@@ -193,7 +193,7 @@ alta/edición), `/colors`.
 
 | Método | Ruta | Rol | Notas |
 |---|---|---|---|
-| POST | `/stock/entradas` | `OWNER` (ver sección 8 — es la interpretación, no está 100% explícito) | `{ variantId, cantidad, costoUnitario }`, header `Idempotency-Key` (ver sección 11) |
+| POST | `/stock/entradas` | `OWNER` (AMB-11, RESUELTA) | `{ variantId, cantidad, costoUnitario }`. **Sin `Idempotency-Key`** — decisión del PO (2026-08-23, ver `ROADMAP.md`): extender T0.14 acá hubiese exigido agregar `idempotency_key` a `stock_movements`, fuera de lo que pide el blueprint. Riesgo de doble click aceptado conscientemente. |
 | POST | `/stock/ajustes` | `OWNER` | `{ variantId, delta, motivo }` |
 | GET | `/variants/:id/stock-movements` | cualquiera | paginado, historial de solo lectura |
 
@@ -305,8 +305,13 @@ Patrón general: BLUEPRINT §9.4, ya en uso en `auth`/`users.service.ts`
   se respeta la selección tal cual, es una decisión consciente de
   quien la hizo.
 - **Dos ingresos de mercadería del mismo pedido enviados dos veces**
-  (doble click): ver sección 11 — depende de si se decide extender
-  idempotencia acá.
+  (doble click): **riesgo aceptado, no protegido.** Decisión del PO
+  (2026-08-23): no extender T0.14 (idempotencia) acá — hubiese exigido
+  agregar `idempotency_key` a `stock_movements`, fuera de lo que pide
+  el blueprint (§9.7 solo lista `sales`/`returns`/`cash_movements`/
+  `expenses`). Un doble click duplica la cantidad ingresada y pisa
+  `costo_actual` dos veces con el mismo valor — inofensivo para el
+  costo (AD-6 ya asume "el último gana"), pero sí duplica el stock.
 - **Variante dada de baja que recibe un ingreso de mercadería:** se
   permite (recibir stock de algo descatalogado que se va a liquidar no
   es un caso raro en indumentaria) — no se exige `activo = true` para
@@ -481,8 +486,10 @@ dependencias.
 
 ---
 
-**Estado (actualizado 2026-08-23):** T2.1, T2.2 y T0.12 en VERDE.
-AMB-11 RESUELTA (`OWNER`-only). **T2.3 desbloqueado.** Sigue pendiente
-para más adelante en la etapa: AMB-12 (solo bloquea a T2.13), decidir
-si T2.5 depende de T0.14 (recomendado: sí), y ejecutar T0.11 antes de
-T2.12.
+**Estado (actualizado 2026-08-23):** T2.1, T2.2, T2.3, T2.4, T2.6,
+T2.7, T0.12 y T0.14 en VERDE. AMB-11 RESUELTA (`OWNER`-only). **T2.5
+desbloqueado** — el PO decidió explícitamente no extender T0.14 acá
+(hubiese exigido migrar `stock_movements`, fuera de lo que pide el
+blueprint); ver sección 6, edge case de doble click, y `ROADMAP.md`.
+Sigue pendiente: AMB-12 (solo bloquea a T2.13) y ejecutar T0.11 antes
+de T2.12.
