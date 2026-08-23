@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import { VariantsService } from './variants.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
+import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 
 interface PriceHistoryCreateCall {
   data: {
@@ -41,6 +42,7 @@ type MockPrisma = {
     findMany: jest.Mock<Promise<unknown[]>, [FindManyCall]>;
     count: jest.Mock;
   };
+  priceHistory: { findMany: jest.Mock; count: jest.Mock };
   $transaction: jest.Mock;
 };
 
@@ -65,10 +67,21 @@ function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
       findMany: jest.fn<Promise<unknown[]>, [FindManyCall]>(),
       count: jest.fn(),
     },
+    priceHistory: { findMany: jest.fn(), count: jest.fn() },
     $transaction: jest.fn((callback: (tx: MockTx) => unknown) => callback(tx)),
   };
 
   return { prisma, tx };
+}
+
+function priceHistoryQuery(
+  overrides: Partial<PriceHistoryQueryDto> = {},
+): PriceHistoryQueryDto {
+  return Object.assign(
+    new PriceHistoryQueryDto(),
+    { page: 1, pageSize: 20 },
+    overrides,
+  );
 }
 
 function searchQuery(
@@ -436,6 +449,60 @@ describe('VariantsService', () => {
       const call = tx.priceHistory.create.mock.calls[0][0];
       expect(call.data.valorAnterior?.toString()).toBe('10');
       expect(call.data.valorNuevo.toString()).toBe('12');
+    });
+  });
+
+  describe('getPriceHistory (T2.9, AD-16, RN-3)', () => {
+    it('lanza NotFoundException si la variante no existe, sin consultar price_history', async () => {
+      prisma.variant.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getPriceHistory(999, priceHistoryQuery()),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.priceHistory.findMany).not.toHaveBeenCalled();
+    });
+
+    it('devuelve las filas paginadas de price_history de esa variante, más reciente primero', async () => {
+      prisma.variant.findUnique.mockResolvedValue({ id: 1 });
+      const rows = [
+        { id: 5, variantId: 1, campo: 'PRECIO_VENTA', origen: 'MANUAL' },
+        { id: 3, variantId: 1, campo: 'COSTO', origen: 'ALTA' },
+      ];
+      prisma.priceHistory.findMany.mockResolvedValue(rows);
+      prisma.priceHistory.count.mockResolvedValue(2);
+
+      const result = await service.getPriceHistory(
+        1,
+        priceHistoryQuery({ page: 1, pageSize: 20 }),
+      );
+
+      expect(prisma.priceHistory.findMany).toHaveBeenCalledWith({
+        where: { variantId: 1 },
+        orderBy: { createdAt: 'desc' },
+        skip: 0,
+        take: 20,
+      });
+      expect(result).toEqual({
+        items: rows,
+        itemCount: 2,
+        page: 1,
+        pageSize: 20,
+      });
+    });
+
+    it('pagina con skip/take correctos en páginas siguientes', async () => {
+      prisma.variant.findUnique.mockResolvedValue({ id: 1 });
+      prisma.priceHistory.findMany.mockResolvedValue([]);
+      prisma.priceHistory.count.mockResolvedValue(50);
+
+      await service.getPriceHistory(
+        1,
+        priceHistoryQuery({ page: 3, pageSize: 10 }),
+      );
+
+      expect(prisma.priceHistory.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 20, take: 10 }),
+      );
     });
   });
 });

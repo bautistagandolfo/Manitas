@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   Prisma,
+  PriceHistory,
   PriceHistoryCampo,
   PriceHistoryOrigen,
   Variant,
@@ -15,6 +16,7 @@ import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
+import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 import { PaginatedResult } from './products.service';
 
 // RN-3 (BLUEPRINT §5.2, literal): el costo solo lo ve OWNER. Se resuelve
@@ -284,6 +286,37 @@ export class VariantsService {
 
       return updated;
     });
+  }
+
+  // T2.9 — expone el historial que AD-16/RN-10 ya venían escribiendo
+  // (ALTA en create(), MANUAL acá en updatePrice(), INGRESO_MERCADERIA en
+  // stock.service.registrarEntrada, MASIVO cuando exista T2.10). Todo el
+  // endpoint es OWNER-only a nivel de ruta (RN-3: incluye entradas de
+  // COSTO) — no hace falta filtrar filas acá, a diferencia de
+  // `hideOwnerOnlyFields`. Más reciente primero: es una vista de
+  // auditoría, lo último que cambió es lo que más se busca.
+  async getPriceHistory(
+    variantId: number,
+    query: PriceHistoryQueryDto,
+  ): Promise<PaginatedResult<PriceHistory>> {
+    const variant = await this.prisma.variant.findUnique({
+      where: { id: variantId },
+    });
+    if (!variant) {
+      throw new NotFoundException('Variante no encontrada');
+    }
+
+    const [items, itemCount] = await Promise.all([
+      this.prisma.priceHistory.findMany({
+        where: { variantId },
+        orderBy: { createdAt: 'desc' },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      this.prisma.priceHistory.count({ where: { variantId } }),
+    ]);
+
+    return { items, itemCount, page: query.page, pageSize: query.pageSize };
   }
 
   private assertPositive(value: Prisma.Decimal, field: string): void {

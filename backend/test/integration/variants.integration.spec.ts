@@ -97,6 +97,13 @@ describe('Variants (integration)', () => {
 
   afterAll(async () => {
     if (createdVariantIds.length > 0) {
+      // GET /variants/:id/price-history (T2.9) ejercita POST
+      // /stock/entradas para generar una fila INGRESO_MERCADERIA — eso
+      // deja también un stock_movement, que hay que limpiar antes de
+      // poder borrar la variante (FK).
+      await prisma.stockMovement.deleteMany({
+        where: { variantId: { in: createdVariantIds } },
+      });
       await prisma.priceHistory.deleteMany({
         where: { variantId: { in: createdVariantIds } },
       });
@@ -394,6 +401,99 @@ describe('Variants (integration)', () => {
       )
         .send({ precioVenta: '0.00' })
         .expect(400);
+    });
+  });
+
+  describe('GET /variants/:id/price-history (T2.9, AD-16, RN-3)', () => {
+    let variantId: number;
+
+    beforeAll(async () => {
+      const productId = await createTestProduct();
+      const created = await owned(
+        request(app.getHttpServer()).post(`/products/${productId}/variants`),
+      )
+        .send({
+          sku: 'VAR-HISTORY-TEST',
+          precioVenta: '30.00',
+          costoActual: '12.00',
+        })
+        .expect(201);
+      variantId = (created.body as VariantResponseBody).id;
+      createdVariantIds.push(variantId);
+
+      // ALTA (precio + costo) ya quedó al crear la variante. Se suma un
+      // cambio MANUAL de precio y un ingreso de mercadería (costo) para
+      // tener las 4 filas esperadas: ALTA x2, MANUAL, INGRESO_MERCADERIA.
+      await owned(
+        request(app.getHttpServer()).patch(`/variants/${variantId}/price`),
+      )
+        .send({ precioVenta: '35.00' })
+        .expect(200);
+
+      await owned(request(app.getHttpServer()).post('/stock/entradas'))
+        .send({ variantId, cantidad: 5, costoUnitario: '14.00' })
+        .expect(201);
+    });
+
+    it('SELLER da 403 (RN-3: incluye costo)', async () => {
+      await sold(
+        request(app.getHttpServer()).get(
+          `/variants/${variantId}/price-history`,
+        ),
+      ).expect(403);
+    });
+
+    it('OWNER ve las 4 filas paginadas, la más reciente primero', async () => {
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          `/variants/${variantId}/price-history`,
+        ),
+      ).expect(200);
+
+      const body = response.body as {
+        items: { campo: string; origen: string }[];
+        itemCount: number;
+        page: number;
+        pageSize: number;
+      };
+
+      expect(body.itemCount).toBe(4);
+      expect(body.page).toBe(1);
+      expect(body.pageSize).toBe(20);
+      expect(body.items).toHaveLength(4);
+      // Las dos últimas escrituras tienen orden estrictamente determinado
+      // (MANUAL antes que INGRESO_MERCADERIA, ambas después de ALTA) — las
+      // dos filas de ALTA se escriben en la misma transacción (createMany)
+      // y pueden compartir created_at, así que no se les exige un orden
+      // relativo entre sí.
+      expect(body.items[0]).toMatchObject({
+        campo: 'COSTO',
+        origen: 'INGRESO_MERCADERIA',
+      });
+      expect(body.items[1]).toMatchObject({
+        campo: 'PRECIO_VENTA',
+        origen: 'MANUAL',
+      });
+      const origenesRestantes = body.items.slice(2).map((i) => i.origen);
+      expect(origenesRestantes).toEqual(['ALTA', 'ALTA']);
+    });
+
+    it('respeta pageSize (paginado)', async () => {
+      const response = await owned(
+        request(app.getHttpServer())
+          .get(`/variants/${variantId}/price-history`)
+          .query({ page: 1, pageSize: 2 }),
+      ).expect(200);
+
+      const body = response.body as { items: unknown[]; itemCount: number };
+      expect(body.items).toHaveLength(2);
+      expect(body.itemCount).toBe(4);
+    });
+
+    it('variante inexistente da 404', async () => {
+      await owned(
+        request(app.getHttpServer()).get('/variants/999999/price-history'),
+      ).expect(404);
     });
   });
 

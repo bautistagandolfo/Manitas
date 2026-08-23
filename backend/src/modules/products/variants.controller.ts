@@ -8,7 +8,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { UserRole, Variant } from '@prisma/client';
+import { PriceHistory, UserRole, Variant } from '@prisma/client';
 import {
   VariantsService,
   VariantForRole,
@@ -18,6 +18,7 @@ import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
+import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 import { PaginatedResult } from './products.service';
 import { Roles } from '../../common/auth/roles.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
@@ -82,5 +83,16 @@ export class VariantsController {
     @CurrentUser() user: RequestUser,
   ): Promise<Variant> {
     return this.variantsService.updatePrice(id, dto, user.id);
+  }
+
+  // T2.9 — OWNER-only (RN-3, literal: incluye entradas de COSTO).
+  // Distinto de PATCH .../price: acá solo se lee, nunca se escribe.
+  @Roles(UserRole.OWNER)
+  @Get('variants/:id/price-history')
+  getPriceHistory(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: PriceHistoryQueryDto,
+  ): Promise<PaginatedResult<PriceHistory>> {
+    return this.variantsService.getPriceHistory(id, query);
   }
 }
