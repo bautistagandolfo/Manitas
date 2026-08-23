@@ -26,9 +26,15 @@ describe('Variants (integration)', () => {
   let app: INestApplication<App>;
   let ownerCookie: string;
   let sellerCookie: string;
+  let sizeS: number;
+  let sizeM: number;
+  let colorNegro: number;
+  let colorBlanco: number;
   const createdUserIds: number[] = [];
   const createdVariantIds: number[] = [];
   const createdProductIds: number[] = [];
+  const createdSizeIds: number[] = [];
+  const createdColorIds: number[] = [];
 
   function owned(req: request.Test): request.Test {
     return req.set('Cookie', ownerCookie);
@@ -93,6 +99,29 @@ describe('Variants (integration)', () => {
       .send({ email: seller.email, password: 'password123' })
       .expect(200);
     sellerCookie = extractCookie(sellerLogin.headers['set-cookie']);
+
+    const stamp = Date.now();
+    const s = await prisma.size.create({
+      data: { nombre: `S-Grid-${stamp}`, orden: 1 },
+    });
+    sizeS = s.id;
+    createdSizeIds.push(s.id);
+    const m = await prisma.size.create({
+      data: { nombre: `M-Grid-${stamp}`, orden: 2 },
+    });
+    sizeM = m.id;
+    createdSizeIds.push(m.id);
+
+    const negro = await prisma.color.create({
+      data: { nombre: `Negro-Grid-${stamp}` },
+    });
+    colorNegro = negro.id;
+    createdColorIds.push(negro.id);
+    const blanco = await prisma.color.create({
+      data: { nombre: `Blanco-Grid-${stamp}` },
+    });
+    colorBlanco = blanco.id;
+    createdColorIds.push(blanco.id);
   });
 
   afterAll(async () => {
@@ -114,6 +143,14 @@ describe('Variants (integration)', () => {
     if (createdProductIds.length > 0) {
       await prisma.product.deleteMany({
         where: { id: { in: createdProductIds } },
+      });
+    }
+    if (createdSizeIds.length > 0) {
+      await prisma.size.deleteMany({ where: { id: { in: createdSizeIds } } });
+    }
+    if (createdColorIds.length > 0) {
+      await prisma.color.deleteMany({
+        where: { id: { in: createdColorIds } },
       });
     }
     if (createdUserIds.length > 0) {
@@ -401,6 +438,223 @@ describe('Variants (integration)', () => {
       )
         .send({ precioVenta: '0.00' })
         .expect(400);
+    });
+  });
+
+  describe('POST /products/:id/variants/grid (T2.11, RN-8)', () => {
+    function gridBody(overrides: Record<string, unknown> = {}) {
+      return {
+        sizeIds: [sizeS, sizeM],
+        colorIds: [colorNegro, colorBlanco],
+        filas: [
+          {
+            sizeId: sizeS,
+            colorId: colorNegro,
+            stock: 10,
+            precioVenta: '20.00',
+            costo: '10.00',
+          },
+          {
+            sizeId: sizeS,
+            colorId: colorBlanco,
+            stock: 5,
+            precioVenta: '20.00',
+            costo: '10.00',
+          },
+          {
+            sizeId: sizeM,
+            colorId: colorNegro,
+            stock: 8,
+            precioVenta: '20.00',
+            costo: '10.00',
+          },
+          {
+            sizeId: sizeM,
+            colorId: colorBlanco,
+            stock: 0,
+            precioVenta: '20.00',
+            costo: '10.00',
+          },
+        ],
+        ...overrides,
+      };
+    }
+
+    it('SELLER da 403', async () => {
+      const productId = await createTestProduct();
+      await sold(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(gridBody())
+        .expect(403);
+    });
+
+    it('OWNER crea las 4 combinaciones, cada una con su stock/costo vía stock.service y su price_history', async () => {
+      const productId = await createTestProduct();
+
+      const response = await owned(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(gridBody())
+        .expect(201);
+
+      const body = response.body as VariantResponseBody[];
+      expect(body).toHaveLength(4);
+      body.forEach((v) => createdVariantIds.push(v.id));
+
+      // SKU autogenerado: patrón P{productId}-{TALLE}-{COLOR} (sin
+      // acentos/guiones, ver generateSku en variants.service.ts). No se
+      // compara el texto exacto del talle/color (los nombres de fixture
+      // llevan un timestamp) — alcanza con confirmar el prefijo del
+      // producto y que las 4 SKU sean distintas entre sí.
+      const skus = body.map((v) => v.sku);
+      expect(new Set(skus).size).toBe(4);
+      for (const sku of skus) {
+        expect(sku.startsWith(`P${productId}-`)).toBe(true);
+      }
+
+      const variants = await prisma.variant.findMany({
+        where: { productId },
+        orderBy: { sku: 'asc' },
+      });
+      expect(variants).toHaveLength(4);
+
+      const conStock10 = variants.find(
+        (v) => v.sizeId === sizeS && v.colorId === colorNegro,
+      );
+      expect(conStock10?.stockActual).toBe(10);
+      expect(conStock10?.costoActual.toString()).toBe('10');
+
+      const conStockCero = variants.find(
+        (v) => v.sizeId === sizeM && v.colorId === colorBlanco,
+      );
+      expect(conStockCero?.stockActual).toBe(0);
+
+      const movements = await prisma.stockMovement.count({
+        where: { variantId: { in: variants.map((v) => v.id) } },
+      });
+      expect(movements).toBe(4);
+
+      const altaPrecio = await prisma.priceHistory.count({
+        where: {
+          variantId: { in: variants.map((v) => v.id) },
+          origen: PriceHistoryOrigen.ALTA,
+          campo: 'PRECIO_VENTA',
+        },
+      });
+      expect(altaPrecio).toBe(4);
+
+      const entradaCosto = await prisma.priceHistory.count({
+        where: {
+          variantId: { in: variants.map((v) => v.id) },
+          origen: PriceHistoryOrigen.INGRESO_MERCADERIA,
+          campo: 'COSTO',
+        },
+      });
+      expect(entradaCosto).toBe(4);
+    });
+
+    it('respeta el SKU de una fila cuando viene provisto', async () => {
+      const productId = await createTestProduct();
+
+      const response = await owned(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(
+          gridBody({
+            sizeIds: [sizeS],
+            colorIds: [colorNegro],
+            filas: [
+              {
+                sizeId: sizeS,
+                colorId: colorNegro,
+                sku: 'SKU-GRID-MANUAL',
+                stock: 3,
+                precioVenta: '15.00',
+                costo: '7.00',
+              },
+            ],
+          }),
+        )
+        .expect(201);
+
+      const body = response.body as VariantResponseBody[];
+      createdVariantIds.push(body[0].id);
+      expect(body[0].sku).toBe('SKU-GRID-MANUAL');
+    });
+
+    it('rechaza si la cantidad de filas no coincide con sizeIds × colorIds (400)', async () => {
+      const productId = await createTestProduct();
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(
+          gridBody({
+            sizeIds: [sizeS, sizeM],
+            colorIds: [colorNegro],
+          }),
+        )
+        .expect(400);
+    });
+
+    it('todo o nada: si una fila tiene precioVenta o costo <= 0, no crea NINGUNA variante', async () => {
+      const productId = await createTestProduct();
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(
+          gridBody({
+            sizeIds: [sizeS],
+            colorIds: [colorNegro],
+            filas: [
+              {
+                sizeId: sizeS,
+                colorId: colorNegro,
+                stock: 3,
+                precioVenta: '0.00',
+                costo: '7.00',
+              },
+            ],
+          }),
+        )
+        .expect(400);
+
+      const count = await prisma.variant.count({ where: { productId } });
+      expect(count).toBe(0);
+    });
+
+    it('producto inexistente da 404', async () => {
+      await owned(
+        request(app.getHttpServer()).post('/products/999999/variants/grid'),
+      )
+        .send(
+          gridBody({
+            sizeIds: [sizeS],
+            colorIds: [colorNegro],
+            filas: [
+              {
+                sizeId: sizeS,
+                colorId: colorNegro,
+                stock: 3,
+                precioVenta: '10.00',
+                costo: '5.00',
+              },
+            ],
+          }),
+        )
+        .expect(404);
     });
   });
 

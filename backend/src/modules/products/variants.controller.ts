@@ -15,6 +15,7 @@ import {
   VariantSearchResult,
 } from './variants.service';
 import { CreateVariantDto } from './dto/create-variant.dto';
+import { CreateVariantGridDto } from './dto/create-variant-grid.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
@@ -40,6 +41,19 @@ export class VariantsController {
     @CurrentUser() user: RequestUser,
   ): Promise<Variant> {
     return this.variantsService.create(productId, dto, user.id);
+  }
+
+  // T2.11 — OWNER-only (ver el comentario de createGrid() en
+  // variants.service.ts: la spec tiene una fila que sugiere acceso
+  // parcial a SELLER, pero es irreconciliable con costoActual NOT NULL).
+  @Roles(UserRole.OWNER)
+  @Post('products/:productId/variants/grid')
+  createGrid(
+    @Param('productId', ParseIntPipe) productId: number,
+    @Body() dto: CreateVariantGridDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<Variant[]> {
+    return this.variantsService.createGrid(productId, dto, user.id);
   }
 
   // Antes que `variants/:id` a propósito: Nest/Express matchea rutas en

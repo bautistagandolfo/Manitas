@@ -6,8 +6,10 @@ import {
 import { Prisma } from '@prisma/client';
 import { VariantsService } from './variants.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StockService } from '../stock/stock.service';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
 import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
+import { CreateVariantGridDto } from './dto/create-variant-grid.dto';
 
 interface PriceHistoryCreateCall {
   data: {
@@ -21,7 +23,12 @@ interface PriceHistoryCreateCall {
 }
 
 type MockTx = {
-  variant: { create: jest.Mock; update: jest.Mock; findUnique: jest.Mock };
+  variant: {
+    create: jest.Mock;
+    update: jest.Mock;
+    findUnique: jest.Mock;
+    findUniqueOrThrow: jest.Mock;
+  };
   priceHistory: {
     createMany: jest.Mock;
     create: jest.Mock<unknown, [PriceHistoryCreateCall]>;
@@ -42,9 +49,13 @@ type MockPrisma = {
     findMany: jest.Mock<Promise<unknown[]>, [FindManyCall]>;
     count: jest.Mock;
   };
+  size: { findMany: jest.Mock };
+  color: { findMany: jest.Mock };
   priceHistory: { findMany: jest.Mock; count: jest.Mock };
   $transaction: jest.Mock;
 };
+
+type MockStockService = { registrarEntrada: jest.Mock };
 
 function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
   const tx: MockTx = {
@@ -52,6 +63,7 @@ function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
       create: jest.fn(),
       update: jest.fn(),
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
     },
     priceHistory: {
       createMany: jest.fn(),
@@ -67,11 +79,39 @@ function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
       findMany: jest.fn<Promise<unknown[]>, [FindManyCall]>(),
       count: jest.fn(),
     },
+    size: { findMany: jest.fn().mockResolvedValue([]) },
+    color: { findMany: jest.fn().mockResolvedValue([]) },
     priceHistory: { findMany: jest.fn(), count: jest.fn() },
     $transaction: jest.fn((callback: (tx: MockTx) => unknown) => callback(tx)),
   };
 
   return { prisma, tx };
+}
+
+function buildMockStockService(): MockStockService {
+  return { registrarEntrada: jest.fn() };
+}
+
+function gridDto(
+  overrides: Partial<CreateVariantGridDto> = {},
+): CreateVariantGridDto {
+  return Object.assign(
+    new CreateVariantGridDto(),
+    {
+      sizeIds: [1],
+      colorIds: [1],
+      filas: [
+        {
+          sizeId: 1,
+          colorId: 1,
+          stock: 5,
+          precioVenta: '10.00',
+          costo: '5.00',
+        },
+      ],
+    },
+    overrides,
+  );
 }
 
 function priceHistoryQuery(
@@ -121,13 +161,18 @@ function prismaRecordNotFound(): Prisma.PrismaClientKnownRequestError {
 describe('VariantsService', () => {
   let prisma: MockPrisma;
   let tx: MockTx;
+  let stockService: MockStockService;
   let service: VariantsService;
 
   beforeEach(() => {
     const built = buildMockPrisma();
     prisma = built.prisma;
     tx = built.tx;
-    service = new VariantsService(prisma as unknown as PrismaService);
+    stockService = buildMockStockService();
+    service = new VariantsService(
+      prisma as unknown as PrismaService,
+      stockService as unknown as StockService,
+    );
   });
 
   describe('search', () => {
@@ -374,6 +419,167 @@ describe('VariantsService', () => {
           1,
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('createGrid (T2.11, RN-8)', () => {
+    it('lanza NotFoundException si el producto no existe, sin abrir transacción', async () => {
+      prisma.product.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.createGrid(999, gridDto(), 1),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rechaza si la cantidad de filas no coincide con sizeIds × colorIds', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+
+      await expect(
+        service.createGrid(1, gridDto({ sizeIds: [1, 2], colorIds: [1] }), 1),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rechaza si alguna fila tiene precioVenta <= 0', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+
+      await expect(
+        service.createGrid(
+          1,
+          gridDto({
+            filas: [
+              {
+                sizeId: 1,
+                colorId: 1,
+                stock: 5,
+                precioVenta: '0.00',
+                costo: '5.00',
+              },
+            ],
+          }),
+          1,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('rechaza si alguna fila tiene costo <= 0', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+
+      await expect(
+        service.createGrid(
+          1,
+          gridDto({
+            filas: [
+              {
+                sizeId: 1,
+                colorId: 1,
+                stock: 5,
+                precioVenta: '10.00',
+                costo: '-1.00',
+              },
+            ],
+          }),
+          1,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('crea una variante por fila, con price_history ALTA para el precio y registrarEntrada para el stock/costo', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+      tx.variant.create.mockResolvedValue({ id: 10, sku: 'P1-M-NEGRO' });
+      tx.variant.findUniqueOrThrow.mockResolvedValue({
+        id: 10,
+        sku: 'P1-M-NEGRO',
+      });
+
+      const result = await service.createGrid(1, gridDto(), 7);
+
+      expect(tx.variant.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          productId: 1,
+          sizeId: 1,
+          colorId: 1,
+        }) as unknown,
+      });
+      expect(tx.priceHistory.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          variantId: 10,
+          campo: 'PRECIO_VENTA',
+          valorAnterior: null,
+          origen: 'ALTA',
+          userId: 7,
+        }) as unknown,
+      });
+      expect(stockService.registrarEntrada).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          variantId: 10,
+          cantidad: 5,
+          userId: 7,
+        }) as unknown,
+      );
+      expect(result).toEqual([{ id: 10, sku: 'P1-M-NEGRO' }]);
+    });
+
+    it('genera un SKU determinístico a partir de producto/talle/color cuando la fila no trae uno', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 3 });
+      prisma.size.findMany.mockResolvedValue([{ id: 1, nombre: 'M' }]);
+      prisma.color.findMany.mockResolvedValue([{ id: 1, nombre: 'Negro' }]);
+      tx.variant.create.mockResolvedValue({ id: 10 });
+      tx.variant.findUniqueOrThrow.mockResolvedValue({ id: 10 });
+
+      await service.createGrid(3, gridDto(), 7);
+
+      expect(tx.variant.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ sku: 'P3-M-NEGRO' }) as unknown,
+      });
+    });
+
+    it('respeta el SKU de la fila cuando viene provisto, sin generar uno nuevo', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+      tx.variant.create.mockResolvedValue({ id: 10 });
+      tx.variant.findUniqueOrThrow.mockResolvedValue({ id: 10 });
+
+      await service.createGrid(
+        1,
+        gridDto({
+          filas: [
+            {
+              sizeId: 1,
+              colorId: 1,
+              sku: 'SKU-MANUAL',
+              stock: 5,
+              precioVenta: '10.00',
+              costo: '5.00',
+            },
+          ],
+        }),
+        7,
+      );
+
+      expect(tx.variant.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ sku: 'SKU-MANUAL' }) as unknown,
+      });
+    });
+
+    it('traduce SKU duplicado (P2002) a ConflictException', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+      prisma.$transaction.mockRejectedValue(
+        prismaUniqueViolation('variants_sku_key'),
+      );
+
+      await expect(service.createGrid(1, gridDto(), 7)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('traduce sizeId/colorId inexistente (P2003) a BadRequestException', async () => {
+      prisma.product.findUnique.mockResolvedValue({ id: 1 });
+      prisma.$transaction.mockRejectedValue(prismaForeignKeyViolation());
+
+      await expect(service.createGrid(1, gridDto(), 7)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     });
   });
 

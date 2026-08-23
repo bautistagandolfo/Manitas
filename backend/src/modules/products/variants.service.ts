@@ -12,11 +12,13 @@ import {
   Variant,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StockService } from '../stock/stock.service';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
 import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
+import { CreateVariantGridDto } from './dto/create-variant-grid.dto';
 import { PaginatedResult } from './products.service';
 
 // RN-3 (BLUEPRINT §5.2, literal): el costo solo lo ve OWNER. Se resuelve
@@ -106,7 +108,10 @@ function violatedConstraint(
 
 @Injectable()
 export class VariantsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly stockService: StockService,
+  ) {}
 
   // RN-11/RN-12: buscador unificado, paginado en el servidor. Sin `q`,
   // lista todo lo activo (útil para explorar antes de escribir nada).
@@ -317,6 +322,141 @@ export class VariantsService {
     ]);
 
     return { items, itemCount, page: query.page, pageSize: query.pageSize };
+  }
+
+  // T2.11 — RN-8/§12.2: alta de N variantes (talle × color) de una sola
+  // vez. OWNER-only a nivel de ruta: la fila 350 de la spec del módulo
+  // (matriz de permisos) sugiere que SELLER podría usarlo "sin la
+  // columna de costo", pero eso es irreconciliable con el modelo de
+  // datos — `costoActual` es NOT NULL y no existe ningún mecanismo para
+  // fijarlo después de la creación salvo un ingreso de mercadería (que
+  // duplicaría el stock). La fila 411 de la misma spec, y el precedente
+  // ya en VERDE de `create()` (T2.2/T2.3, también OWNER-only por el
+  // mismo motivo: "crear una variante fija su costo inicial"), coinciden
+  // en que el endpoint entero requiere OWNER — esa es la lectura que se
+  // implementa acá.
+  //
+  // A diferencia de create() (una variante suelta, sin stock inicial:
+  // arranca en 0 y sin movimiento, invariante 1 trivialmente cierto),
+  // cada fila de la grilla pasa su stock inicial por
+  // `stock.service.registrarEntrada` (RN-8, textual): "nunca se escribe
+  // stock_actual directo". costoActual se fija en el INSERT con el
+  // mismo valor que después confirma registrarEntrada (no hay otro valor
+  // válido posible antes de la primera entrada — la columna es NOT
+  // NULL), así que su price_history de origen INGRESO_MERCADERIA queda
+  // con valorAnterior == valorNuevo: es records correcto, no un bug —
+  // "el costo inicial se estableció vía esta entrada". precioVenta sí
+  // tiene su propia fila ALTA con valorAnterior null, igual que create().
+  async createGrid(
+    productId: number,
+    dto: CreateVariantGridDto,
+    userId: number,
+  ): Promise<Variant[]> {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+    });
+    if (!product) {
+      throw new NotFoundException('Producto no encontrado');
+    }
+
+    if (dto.filas.length !== dto.sizeIds.length * dto.colorIds.length) {
+      throw new BadRequestException(
+        'La cantidad de filas no coincide con sizeIds × colorIds',
+      );
+    }
+
+    const filas = dto.filas.map((fila) => {
+      const precioVenta = new Prisma.Decimal(fila.precioVenta);
+      const costo = new Prisma.Decimal(fila.costo);
+      this.assertPositive(precioVenta, 'precioVenta');
+      this.assertPositive(costo, 'costo');
+      return { ...fila, precioVenta, costo };
+    });
+
+    const [sizes, colors] = await Promise.all([
+      this.prisma.size.findMany({ where: { id: { in: dto.sizeIds } } }),
+      this.prisma.color.findMany({ where: { id: { in: dto.colorIds } } }),
+    ]);
+    const sizeById = new Map(sizes.map((size) => [size.id, size]));
+    const colorById = new Map(colors.map((color) => [color.id, color]));
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const created: Variant[] = [];
+
+        for (const fila of filas) {
+          const sku =
+            fila.sku ||
+            this.generateSku(
+              productId,
+              sizeById.get(fila.sizeId),
+              colorById.get(fila.colorId),
+            );
+
+          const variant = await tx.variant.create({
+            data: {
+              productId,
+              sizeId: fila.sizeId,
+              colorId: fila.colorId,
+              sku,
+              precioVenta: fila.precioVenta,
+              costoActual: fila.costo,
+            },
+          });
+
+          await tx.priceHistory.create({
+            data: {
+              variantId: variant.id,
+              campo: PriceHistoryCampo.PRECIO_VENTA,
+              valorAnterior: null,
+              valorNuevo: fila.precioVenta,
+              origen: PriceHistoryOrigen.ALTA,
+              userId,
+            },
+          });
+
+          await this.stockService.registrarEntrada(tx, {
+            variantId: variant.id,
+            cantidad: fila.stock,
+            costoUnitario: fila.costo,
+            userId,
+          });
+
+          created.push(
+            await tx.variant.findUniqueOrThrow({ where: { id: variant.id } }),
+          );
+        }
+
+        return created;
+      });
+    } catch (error) {
+      throw this.translateWriteError(error);
+    }
+  }
+
+  // Patrón simple y determinístico: P{productId}-{TALLE}-{COLOR}. Usa el
+  // id del producto (no su nombre) para no colisionar entre productos
+  // distintos que comparten talle/color — la unicidad real la sigue
+  // garantizando la constraint de `sku` en la base (P2002 → 409, vía
+  // translateWriteError). BLUEPRINT §12.2 solo exige "un patrón,
+  // editables" sin fijar cuál: este es el default, y el usuario lo puede
+  // cambiar en la fila antes de enviar el alta o después con un PATCH.
+  private generateSku(
+    productId: number,
+    size: { nombre: string } | undefined,
+    color: { nombre: string } | undefined,
+  ): string {
+    const slug = (value: string): string =>
+      value
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '');
+
+    const parts = [`P${productId}`];
+    if (size) parts.push(slug(size.nombre));
+    if (color) parts.push(slug(color.nombre));
+    return parts.join('-');
   }
 
   private assertPositive(value: Prisma.Decimal, field: string): void {
