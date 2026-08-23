@@ -185,8 +185,8 @@ alta/edición), `/colors`.
 |---|---|---|---|
 | GET | `/variants/search?q=` | cualquiera | RN-11, buscador unificado |
 | GET | `/variants/:id` | cualquiera | `costoActual` **omitido si el rol no es `OWNER`** (RN-3) |
-| POST | `/products/:id/variants` | cualquiera autenticado | alta de **una** variante suelta (talle/color ya elegidos, sin pasar por la grilla) |
-| POST | `/products/:id/variants/grid` | cualquiera autenticado | RN-8, body: `{ sizeIds[], colorIds[], stockPorDefecto?, precioPorDefecto?, costoPorDefecto?, filas: [{ sizeId, colorId, sku?, stock, precioVenta, costo }] }` — genera las combinaciones, cada una vía `stock.service.registrarEntrada` |
+| POST | `/products/:id/variants` | `OWNER` (AMB-11, RESUELTA) | alta de **una** variante suelta (talle/color ya elegidos, sin pasar por la grilla) — crear una variante fija su costo inicial, y esta columna nunca se actualizó tras resolverse AMB-11 (el rol correcto, ya implementado en T2.3, está en la sección 8 y en la fila de abajo) |
+| POST | `/products/:id/variants/grid` | `OWNER` (AMB-11, RESUELTA — ver nota T2.11) | RN-8, body: `{ sizeIds[], colorIds[], stockPorDefecto?, precioPorDefecto?, costoPorDefecto?, filas: [{ sizeId, colorId, sku?, stock, precioVenta, costo }] }` — genera las combinaciones, cada una vía `stock.service.registrarEntrada` |
 | PATCH | `/variants/:id` | cualquiera autenticado | `{ precioVenta?, sku?, barcode?, activo? }` — **nunca `costoActual` ni `stockActual` acá** (eso es RN-3/RN-5, van por sus propios endpoints) |
 
 **Stock:**
@@ -347,7 +347,7 @@ Todos pasan por el mismo `GlobalExceptionFilter` ya construido en
 | Ingreso de mercadería (`POST /stock/entradas`) | ✅ | ❌ (AMB-11, **RESUELTA**: `OWNER`-only) |
 | Ajuste de stock (`POST /stock/ajustes`) | ✅ | ❌ (RN-5, literal: "permitido solo a OWNER") |
 | Actualización masiva de precios | ✅ | ❌ (RN-9, literal: "Solo OWNER") |
-| Alta por grilla | ✅ | ✅ para completar talle/color/SKU/stock; la columna de costo queda deshabilitada para `SELLER` (AMB-11, **RESUELTA**: `OWNER`-only) |
+| Alta por grilla | ✅ | ❌ — corregido en T2.11 (2026-08-23): esta fila sugería que `SELLER` podía usar el endpoint "sin la columna de costo", pero es irreconciliable con el modelo de datos (`costoActual` es NOT NULL y no existe forma de fijarlo después de la creación salvo un ingreso de mercadería, que duplicaría el stock). El endpoint completo requiere `OWNER`, igual que `POST /products/:id/variants` (AMB-11, **RESUELTA**) |
 | Gestión de marcas/categorías/talles/colores | ✅ | ✅ (no excluido explícitamente) |
 
 ## 9. Tests necesarios
