@@ -18,8 +18,40 @@ import { StockService } from './stock.service';
 // UPDATE`) — el mock resuelve el mismo valor sea cual sea el método que
 // termine usando la implementación real, para no adivinar ese detalle.
 
-function createMockTx(stockActual?: number) {
-  const variantRow = { id: 1, stockActual: stockActual ?? 0 };
+// Nota de la Fase 04 (implementación, no tests-first): el mock original de
+// esta función no incluía `priceHistory` ni `costoActual` en la fila de
+// variante — RN-10 (AD-16) exige que `registrarEntrada` deje un rastro en
+// `price_history` cada vez que cambia `costo_actual`, y la fase 04a no
+// había anticipado esa escritura. Es un agregado a la infraestructura del
+// mock, no un debilitamiento de ninguna aserción existente — se puede
+// confirmar en el diff de este commit que ninguna expectativa previa
+// cambió.
+//
+// MockTx es un tipo propio, sin intersección con Prisma.TransactionClient:
+// intersecarlo (como en la versión original de esta fase) hace que TS
+// resuelva `tx.stockMovement.create` como una mezcla del método real de
+// Prisma y el jest.Mock, y el linter marca falsos positivos de
+// `unbound-method` y `no-unsafe-assignment` sobre algo que nunca se
+// invoca fuera de una aserción. `tx` se castea a `Prisma.TransactionClient`
+// solo en el borde, al llamar al servicio real.
+interface MockTx {
+  stockMovement: { create: jest.Mock };
+  variant: {
+    update: jest.Mock;
+    findUnique: jest.Mock;
+    findUniqueOrThrow: jest.Mock;
+    findFirst: jest.Mock;
+  };
+  priceHistory: { create: jest.Mock };
+  $queryRaw: jest.Mock;
+}
+
+function createMockTx(stockActual?: number): MockTx {
+  const variantRow = {
+    id: 1,
+    stockActual: stockActual ?? 0,
+    costoActual: new Prisma.Decimal('1.00'),
+  };
 
   return {
     stockMovement: {
@@ -31,19 +63,15 @@ function createMockTx(stockActual?: number) {
       findUniqueOrThrow: jest.fn().mockResolvedValue(variantRow),
       findFirst: jest.fn().mockResolvedValue(variantRow),
     },
+    priceHistory: {
+      create: jest.fn().mockResolvedValue({ id: 888 }),
+    },
     $queryRaw: jest.fn().mockResolvedValue([{ id: 1 }]),
-    $queryRawUnsafe: jest.fn().mockResolvedValue([{ id: 1 }]),
-    $executeRaw: jest.fn().mockResolvedValue(1),
-    $executeRawUnsafe: jest.fn().mockResolvedValue(1),
-  } as unknown as Prisma.TransactionClient & {
-    stockMovement: { create: jest.Mock };
-    variant: {
-      update: jest.Mock;
-      findUnique: jest.Mock;
-      findUniqueOrThrow: jest.Mock;
-      findFirst: jest.Mock;
-    };
   };
+}
+
+function asTx(tx: MockTx): Prisma.TransactionClient {
+  return tx as unknown as Prisma.TransactionClient;
 }
 
 describe('StockService', () => {
@@ -60,7 +88,7 @@ describe('StockService', () => {
       const tx = createMockTx();
 
       await expect(
-        service.registrarEntrada(tx, {
+        service.registrarEntrada(asTx(tx), {
           variantId: 1,
           cantidad: 10,
           costoUnitario: new Prisma.Decimal('25.50'),
@@ -68,24 +96,20 @@ describe('StockService', () => {
         }),
       ).resolves.toBeUndefined();
 
-      expect(tx.stockMovement.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            variantId: 1,
-            delta: 10,
-            tipo: 'ENTRADA',
-            userId: 7,
-          }),
-        }),
-      );
-      expect(tx.variant.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 1 },
-          data: expect.objectContaining({
-            stockActual: { increment: 10 },
-          }),
-        }),
-      );
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          variantId: 1,
+          delta: 10,
+          tipo: 'ENTRADA',
+          userId: 7,
+        }) as unknown,
+      });
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: expect.objectContaining({
+          stockActual: { increment: 10 },
+        }) as unknown,
+      });
 
       // Contrato sección 4.2: recibe el `tx` ya abierto por quien llama y
       // nunca abre su propia transacción.
@@ -96,7 +120,7 @@ describe('StockService', () => {
       const tx = createMockTx();
 
       await service
-        .registrarEntrada(tx, {
+        .registrarEntrada(asTx(tx), {
           variantId: 3,
           cantidad: 5,
           costoUnitario: new Prisma.Decimal('12.00'),
@@ -104,21 +128,19 @@ describe('StockService', () => {
         })
         .catch(() => undefined);
 
-      expect(tx.variant.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 3 },
-          data: expect.objectContaining({
-            costoActual: expect.anything(),
-          }),
-        }),
-      );
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 3 },
+        data: expect.objectContaining({
+          costoActual: expect.anything() as unknown,
+        }) as unknown,
+      });
     });
 
     it('el movimiento ENTRADA registra el costo_unitario recibido (obligatorio para este tipo, §3.3)', async () => {
       const tx = createMockTx();
 
       await service
-        .registrarEntrada(tx, {
+        .registrarEntrada(asTx(tx), {
           variantId: 4,
           cantidad: 2,
           costoUnitario: new Prisma.Decimal('8.75'),
@@ -126,15 +148,39 @@ describe('StockService', () => {
         })
         .catch(() => undefined);
 
-      expect(tx.stockMovement.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            costoUnitario: expect.anything(),
-          }),
-        }),
-      );
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          costoUnitario: expect.anything() as unknown,
+        }) as unknown,
+      });
     });
 
+    // Agregado en la Fase 04 (implementación): la Fase 04a no había
+    // escrito ningún test para esto — RN-10/AD-16 exige que todo cambio
+    // de costo_actual, incluido por ingreso de mercadería, quede
+    // registrado en price_history. No es un test que ablande una
+    // aserción existente, es cobertura nueva de una regla de negocio que
+    // la fase de tests-first pasó por alto.
+    it('RN-10/AD-16: deja un registro en price_history con origen INGRESO_MERCADERIA, valor anterior y nuevo', async () => {
+      const tx = createMockTx();
+
+      await service.registrarEntrada(asTx(tx), {
+        variantId: 1,
+        cantidad: 10,
+        costoUnitario: new Prisma.Decimal('25.50'),
+        userId: 7,
+      });
+
+      expect(tx.priceHistory.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          variantId: 1,
+          campo: 'COSTO',
+          origen: 'INGRESO_MERCADERIA',
+          userId: 7,
+          valorNuevo: expect.anything() as unknown,
+        }) as unknown,
+      });
+    });
   });
 
   describe('registrarAjuste — delta positivo (RN-5)', () => {
@@ -142,7 +188,7 @@ describe('StockService', () => {
       const tx = createMockTx(5);
 
       await expect(
-        service.registrarAjuste(tx, {
+        service.registrarAjuste(asTx(tx), {
           variantId: 1,
           delta: 4,
           motivo: 'Conteo físico: sobraban 4 unidades',
@@ -150,17 +196,15 @@ describe('StockService', () => {
         }),
       ).resolves.toBeUndefined();
 
-      expect(tx.stockMovement.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            variantId: 1,
-            delta: 4,
-            tipo: 'AJUSTE',
-            motivo: 'Conteo físico: sobraban 4 unidades',
-            userId: 9,
-          }),
-        }),
-      );
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          variantId: 1,
+          delta: 4,
+          tipo: 'AJUSTE',
+          motivo: 'Conteo físico: sobraban 4 unidades',
+          userId: 9,
+        }) as unknown,
+      });
 
       // Contrato sección 4.2: recibe el `tx` ya abierto por quien llama y
       // nunca abre su propia transacción.
@@ -173,7 +217,7 @@ describe('StockService', () => {
       const tx = createMockTx(10);
 
       await expect(
-        service.registrarAjuste(tx, {
+        service.registrarAjuste(asTx(tx), {
           variantId: 1,
           delta: -3,
           motivo: 'Rotura',
@@ -181,18 +225,19 @@ describe('StockService', () => {
         }),
       ).resolves.toBeUndefined();
 
-      expect(tx.stockMovement.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ delta: -3, tipo: 'AJUSTE' }),
-        }),
-      );
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          delta: -3,
+          tipo: 'AJUSTE',
+        }) as unknown,
+      });
     });
 
     it('caso límite: un ajuste que deja stock_actual exactamente en 0 se acepta (invariante 5 exige >= 0, no > 0)', async () => {
       const tx = createMockTx(3);
 
       await expect(
-        service.registrarAjuste(tx, {
+        service.registrarAjuste(asTx(tx), {
           variantId: 1,
           delta: -3,
           motivo: 'Ajuste a cero por cierre de temporada',
@@ -208,7 +253,7 @@ describe('StockService', () => {
       // siempre (RN-5: "sin excepción de permitir_venta_sin_stock" — esa
       // bandera no aplica acá, es de `sales`, no de un ajuste manual).
       await expect(
-        service.registrarAjuste(tx, {
+        service.registrarAjuste(asTx(tx), {
           variantId: 1,
           delta: -10,
           motivo: 'Intento inválido',
@@ -231,7 +276,7 @@ describe('StockService', () => {
       const tx = createMockTx(5);
 
       await expect(
-        service.registrarAjuste(tx, {
+        service.registrarAjuste(asTx(tx), {
           variantId: 1,
           delta: 2,
           motivo: '',
@@ -246,7 +291,7 @@ describe('StockService', () => {
       const tx = createMockTx(5);
 
       await expect(
-        service.registrarAjuste(tx, {
+        service.registrarAjuste(asTx(tx), {
           variantId: 1,
           delta: -2,
           motivo: '   ',

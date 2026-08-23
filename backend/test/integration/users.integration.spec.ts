@@ -243,8 +243,15 @@ describe('Users (integration)', () => {
     // protege "simple requests" como un form submit). El 415 tiene que
     // llegar ANTES que cualquier chequeo de sesión/rol — por eso ni
     // siquiera se manda la cookie acá.
-    const before = await prisma.user.count();
-
+    //
+    // Nota (Fase 04, T2.4): antes comparaba prisma.user.count() antes y
+    // después — con Jest corriendo varios archivos de integración en
+    // paralelo contra la misma base, cualquier otro archivo (por ejemplo
+    // el beforeAll/afterAll de stock.integration.spec.ts) puede crear o
+    // borrar un usuario propio en el medio, y el conteo global cambia sin
+    // que este test haya fallado en lo que realmente prueba. Se cambia a
+    // verificar puntualmente que ESE email no exista — no le importa qué
+    // hagan los demás archivos.
     await request(app.getHttpServer())
       .post('/users')
       .type('form')
@@ -256,8 +263,10 @@ describe('Users (integration)', () => {
       })
       .expect(415);
 
-    const after = await prisma.user.count();
-    expect(after).toBe(before);
+    const created = await prisma.user.findUnique({
+      where: { email: 'users-test-csrf@manitas.local' },
+    });
+    expect(created).toBeNull();
   });
 
   it('GET /users lista usuarios sin exponer el hash de contraseña', async () => {

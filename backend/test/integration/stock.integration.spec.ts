@@ -155,6 +155,24 @@ describe('StockService (integration)', () => {
       });
       expect(movements).toHaveLength(2);
     });
+
+    // Agregado en la Fase 04 (implementación) — RN-10/AD-16, ver el mismo
+    // agregado en stock.service.spec.ts para el porqué.
+    it('RN-10/AD-16: deja un registro en price_history con origen INGRESO_MERCADERIA', async () => {
+      const variantId = await createTestVariant('5.00');
+
+      await entrada(variantId, 8, '11.50');
+
+      const history = await prisma.priceHistory.findFirst({
+        where: { variantId, origen: 'INGRESO_MERCADERIA' },
+      });
+      expect(history).toMatchObject({
+        campo: 'COSTO',
+        valorNuevo: expect.anything() as unknown,
+      });
+      expect(history?.valorAnterior?.toString()).toBe('5');
+      expect(history?.valorNuevo.toString()).toBe('11.5');
+    });
   });
 
   describe('registrarAjuste — delta positivo (RN-5, invariante 1)', () => {
