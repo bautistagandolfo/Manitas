@@ -7,6 +7,8 @@ import { SizesController } from './sizes.controller';
 import { SizesService } from './sizes.service';
 import { ColorsController } from './colors.controller';
 import { ColorsService } from './colors.service';
+import { ProductsController } from './products.controller';
+import { ProductsService } from './products.service';
 
 @Module({
   controllers: [
@@ -14,7 +16,14 @@ import { ColorsService } from './colors.service';
     CategoriesController,
     SizesController,
     ColorsController,
+    ProductsController,
   ],
-  providers: [BrandsService, CategoriesService, SizesService, ColorsService],
+  providers: [
+    BrandsService,
+    CategoriesService,
+    SizesService,
+    ColorsService,
+    ProductsService,
+  ],
 })
 export class ProductsModule {}
