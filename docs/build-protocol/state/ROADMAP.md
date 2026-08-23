@@ -50,7 +50,7 @@ Sin módulos de negocio. Es la base sobre la que se apoya todo.
 | T0.11 | Helpers de formato es-AR (§12.3): moneda, fecha, número — prohibido formatear a mano en un componente | T0.5 | PENDIENTE |
 | T0.12 | Helpers de `Decimal` y redondeo comercial (AD-14): prorrateo a líneas, los dos tests obligatorios de §9.3 | T0.1 | VERDE |
 | T0.13 | Tabla `settings` + servicio tipado de lectura/escritura + seed de los 4 parámetros de la sección 10 | T0.4 | PENDIENTE |
-| T0.14 | Interceptor común de idempotencia (`Idempotency-Key`, índice único — BLUEPRINT §9.7) | T0.1 | PENDIENTE |
+| T0.14 | Interceptor común de idempotencia (`Idempotency-Key`, índice único — BLUEPRINT §9.7) | T0.1 | VERDE |
 
 > T0.1–T0.5 y T0.8 corresponden a las Fases 00 y 01 del protocolo, ya en
 > VERDE (T0.5 solo por el esqueleto: los helpers es-AR quedan en T0.11, y la
@@ -91,7 +91,7 @@ Todos los módulos dependen de esto.
 | T2.2 | ABM de productos | T2.1 | VERDE |
 | T2.3 | ABM de variantes (SKU único, barcode único, precio, costo) | T2.2, **T0.12** | VERDE |
 | T2.4 | **`stock.service`**: movimientos + contador, transaccional. Único punto que escribe stock | T2.3 | VERDE |
-| T2.5 | Ingreso de mercadería con costo → actualiza `costo_actual` + `price_history` | T2.4, **T0.12, T0.14** (idempotencia — ver AMB-11/fase 06) | PENDIENTE |
+| T2.5 | Ingreso de mercadería con costo → actualiza `costo_actual` + `price_history` | T2.4, **T0.12** | PENDIENTE |
 | T2.6 | Ajuste de stock (solo OWNER, motivo obligatorio) | T2.4 | VERDE |
 | T2.7 | Buscador unificado: nombre / SKU / código de barras | T2.3 | VERDE |
 | T2.8 | Test de reconciliación del invariante 1 (`stock_actual == SUM(movimientos)`) | T2.4 | PENDIENTE |
@@ -113,10 +113,17 @@ tienda desde cero (hoy no tiene nada digitalizado) es inviable.
 sección 11): T0.12 (helpers de `Decimal`/redondeo) y T0.11 (helpers de
 formato es-AR) siguen `PENDIENTE` — hay que ejecutarlos antes de arrancar
 los tickets que dependen de ellos. **T2.1 y T2.2 no dependen de ninguno de
-los dos y pueden arrancar ya.** T0.14 (interceptor de idempotencia) como
-dependencia de T2.5 queda sujeto a que se apruebe extenderlo a ingreso de
-mercadería — es un hallazgo técnico de la fase 06, no una ambigüedad de
-negocio (no tiene número AMB); ver el reporte, sección 11.
+los dos y pueden arrancar ya.**
+>
+> **T0.14 (interceptor de idempotencia): construido con el alcance
+> literal de BLUEPRINT §9.7** — `sales`/`returns`/`cash_movements`/
+> `expenses`, las cuatro tablas que ya tienen `idempotency_key` en el
+> schema. Extenderlo a T2.5 (recomendación de la fase 06) hubiese
+> exigido agregar esa columna a `stock_movements`, algo que el
+> blueprint no pide — decisión explícita del PO (2026-08-23): **no**
+> extenderlo, T2.5 queda sin esa dependencia. Ver
+> `state/reports/modulo-products-variants-spec.md` sección 11 para el
+> razonamiento original, y esta nota para la decisión final.
 
 **T2.13 es nuevo (fase 06, `DECISIONES_PENDIENTES.md` C2 — "es un ticket
 nuevo de la Etapa 2, no un extra").** Su formato exacto de columnas queda
