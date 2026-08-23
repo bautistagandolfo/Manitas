@@ -16,6 +16,7 @@ import { LOG_REDACT_PATHS } from './config/logger.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { ProductsModule } from './modules/products/products.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuthGuard } from './common/auth/auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
@@ -52,6 +53,7 @@ import { jsonOnlyMiddleware } from './common/security/json-only.middleware';
     PrismaModule,
     HealthModule,
     AuthModule,
+    ProductsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
