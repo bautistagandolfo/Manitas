@@ -87,7 +87,7 @@ Todos los módulos dependen de esto.
 
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
-| T2.1 | ABM de marcas, categorías, **talles y colores** (listas, AD-15) | T1.3 | PENDIENTE |
+| T2.1 | ABM de marcas, categorías, **talles y colores** (listas, AD-15) | T1.3 | VERDE |
 | T2.2 | ABM de productos | T2.1 | PENDIENTE |
 | T2.3 | ABM de variantes (SKU único, barcode único, precio, costo) | T2.2, **T0.12** | PENDIENTE |
 | T2.4 | **`stock.service`**: movimientos + contador, transaccional. Único punto que escribe stock | T2.3 | PENDIENTE |
