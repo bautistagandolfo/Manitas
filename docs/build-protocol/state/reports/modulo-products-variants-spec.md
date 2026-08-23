@@ -160,8 +160,8 @@ cuatro con la misma forma):
 | Método | Ruta | Rol | Body | Notas |
 |---|---|---|---|---|
 | GET | `/brands` | cualquiera autenticado | — | lista completa, sin paginar (son pocas decenas como mucho — a diferencia de productos/variantes) |
-| POST | `/brands` | `OWNER` | `{ nombre }` | `sizes`/`colors` además llevan `orden` |
-| PATCH | `/brands/:id` | `OWNER` | `{ nombre?, activo? }` | baja lógica vía `activo: false` |
+| POST | `/brands` | cualquiera autenticado | `{ nombre }` | `sizes`/`colors` además llevan `orden`. **Corrección post-spec:** no está en la lista de exclusiones de SELLER (§5.1) — ver sección 8, la tabla original acá decía `OWNER` por error de arrastre, corregido antes de T2.1 |
+| PATCH | `/brands/:id` | cualquiera autenticado | `{ nombre?, activo? }` | baja lógica vía `activo: false` |
 
 Igual para `/categories`, `/sizes` (con `orden: number` en el body de
 alta/edición), `/colors`.
