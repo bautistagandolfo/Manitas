@@ -1,10 +1,14 @@
 import { Controller, Get, HttpException, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Public } from '../common/auth/public.decorator';
 
 @Controller('health')
 export class HealthController {
   constructor(private readonly prisma: PrismaService) {}
 
+  // Pública: la golpean UptimeRobot, el healthcheck de Render y Docker sin
+  // ninguna sesión (BLUEPRINT §9.10).
+  @Public()
   @Get()
   async check(): Promise<{ status: 'ok'; database: 'up' }> {
     try {

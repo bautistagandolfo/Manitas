@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Post,
   Res,
   UnauthorizedException,
@@ -17,10 +19,10 @@ import {
   buildAccessTokenCookieOptions,
 } from './auth-cookie';
 import type { EnvConfig } from '../../config/env.schema';
+import { Public } from '../../common/auth/public.decorator';
+import { CurrentUser } from '../../common/auth/current-user.decorator';
+import type { RequestUser } from '../../common/auth/authenticated-request';
 
-// Sin AuthGuard todavía (llega en T1.3): no hay GET /auth/me acá porque
-// "¿hay sesión válida?" es exactamente lo que hace el guard. Login y
-// logout no necesitan verificar nada, solo emitir/limpiar la cookie.
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -28,6 +30,7 @@ export class AuthController {
     private readonly config: ConfigService<EnvConfig, true>,
   ) {}
 
+  @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -50,9 +53,10 @@ export class AuthController {
     return safeUser;
   }
 
-  // Idempotente a propósito: un logout nunca debería poder fallar de
-  // forma que la persona quede sin saber si cerró sesión (module spec,
-  // sección 4).
+  // Pública también: un logout nunca debería poder fallar por no tener
+  // sesión válida (module spec, sección 4) — si exigiera AuthGuard, una
+  // cookie ya vencida daría 401 en vez del 200 idempotente que se espera.
+  @Public()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   logout(@Res({ passthrough: true }) response: Response): { success: true } {
@@ -61,6 +65,19 @@ export class AuthController {
       buildAccessTokenCookieOptions(this.isProduction()),
     );
     return { success: true };
+  }
+
+  // Requiere sesión (no @Public): lo usa el frontend al cargar la SPA para
+  // saber si hay sesión y quién es.
+  @Get('me')
+  async me(@CurrentUser() currentUser: RequestUser): Promise<SafeAuthUser> {
+    const user = await this.authService.findSafeUserById(currentUser.id);
+
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+
+    return user;
   }
 
   private isProduction(): boolean {

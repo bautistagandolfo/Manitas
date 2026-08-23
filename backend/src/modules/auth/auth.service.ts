@@ -52,12 +52,20 @@ export class AuthService {
 
     return {
       token: this.jwtService.sign(payload),
-      user: {
-        id: user.id,
-        email: user.email,
-        nombre: user.nombre,
-        rol: user.rol,
-      },
+      user: toSafeAuthUser(user),
     };
   }
+
+  // Para GET /auth/me: el JWT solo lleva sub+rol (adrede, para que el
+  // token sea chico y stateless — ver AuthGuard), así que traer nombre y
+  // email para mostrar en el frontend requiere esta única consulta. Se
+  // paga una vez al cargar la SPA, no en cada request.
+  async findSafeUserById(id: number): Promise<SafeAuthUser | null> {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    return user ? toSafeAuthUser(user) : null;
+  }
+}
+
+function toSafeAuthUser(user: User): SafeAuthUser {
+  return { id: user.id, email: user.email, nombre: user.nombre, rol: user.rol };
 }

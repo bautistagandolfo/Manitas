@@ -7,14 +7,16 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 import { UsersService, SafeUser } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdatePasswordDto } from './dto/update-password.dto';
+import { Roles } from '../../common/auth/roles.decorator';
 
-// Sin guards todavía: AuthGuard y RolesGuard se registran a nivel de
-// aplicación en T1.3 (ver modulo-auth-spec.md, sección 3) y protegen estas
-// rutas retroactivamente, sin tocar este archivo.
+// Gestión de usuarios: OWNER-only en todas sus rutas (BLUEPRINT §5.1,
+// module-auth-spec.md sección 8). AuthGuard + RolesGuard corren global.
+@Roles(UserRole.OWNER)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}

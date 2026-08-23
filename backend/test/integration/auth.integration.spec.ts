@@ -126,6 +126,38 @@ describe('Auth (integration)', () => {
       .expect(400);
   });
 
+  it('GET /auth/me devuelve el usuario logueado', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({
+        email: 'auth-test-active@manitas.local',
+        password: 'correct-password123',
+      })
+      .expect(200);
+    const cookie = (
+      login.headers['set-cookie'] as unknown as string[]
+    )[0].split(';')[0];
+
+    const response = await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Cookie', cookie)
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      id: activeUserId,
+      email: 'auth-test-active@manitas.local',
+      nombre: 'Activo',
+      rol: 'SELLER',
+    });
+    expect(
+      (response.body as { passwordHash?: string }).passwordHash,
+    ).toBeUndefined();
+  });
+
+  it('GET /auth/me sin cookie de sesión da 401', async () => {
+    await request(app.getHttpServer()).get('/auth/me').expect(401);
+  });
+
   it('POST /auth/logout siempre da 200 y limpia la cookie', async () => {
     const response = await request(app.getHttpServer())
       .post('/auth/logout')
