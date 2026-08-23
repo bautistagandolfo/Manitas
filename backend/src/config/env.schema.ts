@@ -7,8 +7,11 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().url(),
   FRONTEND_URL: z.string().url().default('http://localhost:5173'),
-  JWT_SECRET: z.string().min(16),
-  COOKIE_SECRET: z.string().min(16),
+  // Seguridad (fase 10): 16 caracteres (128 bits en el mejor caso) es
+  // corto para una clave HMAC-SHA256 — el mínimo recomendado son 256
+  // bits (32 bytes). Ver
+  // state/reports/modulo-auth-secaudit-2026-08-23.md, hallazgo 4.
+  JWT_SECRET: z.string().min(32),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),

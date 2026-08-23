@@ -2,20 +2,24 @@ import {
   MiddlewareConsumer,
   Module,
   NestModule,
+  OnModuleInit,
   ValidationPipe,
 } from '@nestjs/common';
-import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_PIPE, HttpAdapterHost } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import cookieParser from 'cookie-parser';
-import type { Request, Response, NextFunction } from 'express';
+import helmet from 'helmet';
+import type { Express } from 'express';
 import { validateEnv, type EnvConfig } from './config/env.schema';
+import { LOG_REDACT_PATHS } from './config/logger.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuthGuard } from './common/auth/auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
+import { jsonOnlyMiddleware } from './common/security/json-only.middleware';
 
 @Module({
   imports: [
@@ -28,6 +32,16 @@ import { RolesGuard } from './common/auth/roles.guard';
       useFactory: (config: ConfigService<EnvConfig, true>) => ({
         pinoHttp: {
           level: config.get('LOG_LEVEL', { infer: true }),
+          // Seguridad (fase 10): sin esto, el JWT de sesión (header
+          // cookie del request, y también el Set-Cookie de la respuesta
+          // de login) quedaba en texto plano en cada línea de log —
+          // cualquiera con acceso de lectura a logs podía secuestrar
+          // cualquier sesión activa, incluida OWNER, hasta por 12h. Ver
+          // state/reports/modulo-auth-secaudit-2026-08-23.md, hallazgo 2.
+          redact: {
+            paths: LOG_REDACT_PATHS,
+            censor: '[REDACTED]',
+          },
           transport:
             config.get('NODE_ENV', { infer: true }) === 'development'
               ? { target: 'pino-pretty', options: { singleLine: true } }
@@ -55,19 +69,31 @@ import { RolesGuard } from './common/auth/roles.guard';
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })
-export class AppModule implements NestModule {
+export class AppModule implements NestModule, OnModuleInit {
+  constructor(private readonly httpAdapterHost: HttpAdapterHost) {}
+
+  // X-Powered-By (fase 10, hallazgo 5): Express lo vuelve a agregar al
+  // finalizar cada respuesta sin importar qué haya hecho un middleware
+  // antes (removeHeader manual de la fase 08, y hasta helmet() como
+  // middleware) — se confirmó agregando helmet() en configure() y
+  // viendo que el header seguía presente en la respuesta OPTIONS del
+  // preflight de CORS. `app.disable('x-powered-by')` es la única forma
+  // que realmente lo saca siempre: es un setting de la app, no algo que
+  // se pueda revertir por orden de middleware. onModuleInit corre tanto
+  // en bootstrap() (main.ts) como en los tests de integración
+  // (TestingModule + app.init()), así que no hace falta duplicarlo.
+  onModuleInit(): void {
+    this.httpAdapterHost.httpAdapter
+      .getInstance<Express>()
+      .disable('x-powered-by');
+  }
+
   configure(consumer: MiddlewareConsumer): void {
-    consumer
-      .apply(
-        cookieParser(),
-        // QA adversarial (fase 08): Express agrega X-Powered-By en cada
-        // respuesta — expone gratis qué framework corre atrás. No es un
-        // agujero grave, pero no cuesta nada sacarlo.
-        (_req: Request, res: Response, next: NextFunction) => {
-          res.removeHeader('X-Powered-By');
-          next();
-        },
-      )
-      .forRoutes('*');
+    // helmet: headers básicos de seguridad (X-Frame-Options,
+    // X-Content-Type-Options, etc. — fase 10, hallazgo 3) que no
+    // existían. Vía configure() (no en main.ts) para que también corra
+    // en los tests de integración, que arman la app con TestingModule +
+    // createNestApplication() sin pasar por bootstrap().
+    consumer.apply(helmet(), jsonOnlyMiddleware, cookieParser()).forRoutes('*');
   }
 }

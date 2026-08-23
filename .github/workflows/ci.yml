@@ -28,8 +28,7 @@ jobs:
       FRONTEND_URL: http://localhost:5173
       PORT: 3000
       NODE_ENV: test
-      JWT_SECRET: ci-only-not-a-real-secret
-      COOKIE_SECRET: ci-only-not-a-real-secret
+      JWT_SECRET: ci-only-not-a-real-secret-needs-32-chars-min
       LOG_LEVEL: error
       SEED_OWNER_EMAIL: owner@manitas.local
       SEED_OWNER_PASSWORD: ci-only-not-a-real-secret

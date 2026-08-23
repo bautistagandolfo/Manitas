@@ -236,6 +236,30 @@ describe('Users (integration)', () => {
       .expect(400);
   });
 
+  it('remediación fase 10 (CSRF, hallazgo 1): POST /users con Content-Type urlencoded se rechaza con 415, ni siquiera llega a autenticación', async () => {
+    // Antes del fix: un <form> HTML nativo (nunca puede mandar JSON, solo
+    // urlencoded/multipart/text-plain) podía crear un usuario nuevo con la
+    // cookie real de una víctima OWNER, sin que CORS lo bloqueara (CORS no
+    // protege "simple requests" como un form submit). El 415 tiene que
+    // llegar ANTES que cualquier chequeo de sesión/rol — por eso ni
+    // siquiera se manda la cookie acá.
+    const before = await prisma.user.count();
+
+    await request(app.getHttpServer())
+      .post('/users')
+      .type('form')
+      .send({
+        email: 'users-test-csrf@manitas.local',
+        password: 'password123',
+        nombre: 'CSRF',
+        rol: 'OWNER',
+      })
+      .expect(415);
+
+    const after = await prisma.user.count();
+    expect(after).toBe(before);
+  });
+
   it('GET /users lista usuarios sin exponer el hash de contraseña', async () => {
     const response = await authed(
       request(app.getHttpServer()).get('/users'),

@@ -199,6 +199,45 @@ describe('Auth (integration)', () => {
       .expect(200);
     expect(response.headers['x-powered-by']).toBeUndefined();
   });
+
+  it('remediación fase 10 (hallazgo 5): X-Powered-By tampoco aparece en una respuesta OPTIONS', async () => {
+    // El removeHeader manual de la fase 08 (y, se probó, hasta helmet()
+    // como middleware) no alcanzaban para el preflight OPTIONS de CORS —
+    // Express reagrega el header al finalizar la respuesta sin importar
+    // qué haya hecho un middleware antes. app.disable('x-powered-by') en
+    // AppModule.onModuleInit() es la única forma que lo saca siempre,
+    // porque es un setting de la app, no algo revertible por orden de
+    // middleware — por eso este test no depende de método ni código de
+    // estado. Reproducido y verificado a mano contra el server real con
+    // CORS habilitado (main.ts); ver el reporte de la fase 10.
+    const response = await request(app.getHttpServer()).options('/auth/login');
+    expect(response.headers['x-powered-by']).toBeUndefined();
+  });
+
+  it('remediación fase 10 (hallazgo 3): helmet agrega headers de seguridad básicos', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/auth/logout')
+      .expect(200);
+    expect(response.headers['x-frame-options']).toBeDefined();
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['content-security-policy']).toBeDefined();
+  });
+
+  it('remediación fase 10 (CSRF, hallazgo 1): POST /auth/login con Content-Type urlencoded se rechaza con 415, no se procesa como si fuera JSON', async () => {
+    // Un <form> HTML nativo solo puede mandar
+    // application/x-www-form-urlencoded, multipart/form-data o
+    // text/plain — nunca application/json. Antes del fix, Nest parseaba
+    // ese body igual que JSON y el login seguía de largo (login-CSRF: la
+    // víctima queda autenticada como la cuenta que eligió el atacante).
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .type('form')
+      .send({
+        email: 'auth-test-active@manitas.local',
+        password: 'correct-password123',
+      })
+      .expect(415);
+  });
 });
 
 describe('Auth (integration) — rate limit de login', () => {
