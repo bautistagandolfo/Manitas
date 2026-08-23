@@ -203,7 +203,7 @@ alta/edición), `/colors`.
 |---|---|---|---|
 | GET | `/variants/:id/price-history` | `OWNER` (incluye costo — RN-3) | paginado |
 | POST | `/prices/bulk-update/preview` | `OWNER` | `{ filtro: { brandId?, categoryId?, variantIds? }, porcentaje }` → devuelve la lista `{ variantId, sku, precioActual, precioResultante }` **sin escribir nada** |
-| POST | `/prices/bulk-update/apply` | `OWNER` | mismo body que el preview + header `Idempotency-Key`; aplica y escribe `price_history` con `origen = MASIVO` (RN-9) |
+| POST | `/prices/bulk-update/apply` | `OWNER` | mismo body que el preview. **Sin `Idempotency-Key`** — decisión del PO (2026-08-23, ver `ROADMAP.md`, mismo criterio que T2.5): `price_history` no tiene `idempotency_key`, y acá el motivo es más fuerte que en T2.5 — una sola aplicación escribe N filas (una por variante), y el mecanismo de T0.14 está pensado para deduplicar una fila por clave, no un batch completo. Aplica y escribe `price_history` con `origen = MASIVO` (RN-9). Riesgo de doble click (aplicar el mismo aumento dos veces) aceptado conscientemente. |
 
 ### 4.2 API interna de `stock.service.ts` (no HTTP)
 
