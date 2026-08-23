@@ -8,6 +8,7 @@ import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import cookieParser from 'cookie-parser';
+import type { Request, Response, NextFunction } from 'express';
 import { validateEnv, type EnvConfig } from './config/env.schema';
 import { PrismaModule } from './prisma/prisma.module';
 import { HealthModule } from './health/health.module';
@@ -56,6 +57,17 @@ import { RolesGuard } from './common/auth/roles.guard';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(cookieParser()).forRoutes('*');
+    consumer
+      .apply(
+        cookieParser(),
+        // QA adversarial (fase 08): Express agrega X-Powered-By en cada
+        // respuesta — expone gratis qué framework corre atrás. No es un
+        // agujero grave, pero no cuesta nada sacarlo.
+        (_req: Request, res: Response, next: NextFunction) => {
+          res.removeHeader('X-Powered-By');
+          next();
+        },
+      )
+      .forRoutes('*');
   }
 }

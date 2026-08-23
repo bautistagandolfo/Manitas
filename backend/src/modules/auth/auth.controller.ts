@@ -8,11 +8,14 @@ import {
   Post,
   Res,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { AuthService, SafeAuthUser } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { LOGIN_THROTTLE } from './auth-throttle';
 import {
   ACCESS_TOKEN_COOKIE,
   ACCESS_TOKEN_MAX_AGE_MS,
@@ -30,7 +33,17 @@ export class AuthController {
     private readonly config: ConfigService<EnvConfig, true>,
   ) {}
 
+  // Rate limit (QA adversarial, fase 08): es la única ruta pública sin
+  // sesión — sin esto, fuerza bruta y el costo de CPU de argon2 (que corre
+  // siempre, ver auth.service.ts) quedan abiertos a cualquiera.
   @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({
+    [LOGIN_THROTTLE.name]: {
+      limit: LOGIN_THROTTLE.limit,
+      ttl: LOGIN_THROTTLE.ttl,
+    },
+  })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(

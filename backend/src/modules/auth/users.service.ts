@@ -55,6 +55,14 @@ export class UsersService {
   // nadie que lo pueda administrar. No está en el blueprint explícito, es
   // consecuencia directa de "baja lógica" + "solo OWNER gestiona usuarios"
   // (ver modulo-auth-spec.md, sección 2, regla 6).
+  //
+  // QA adversarial (fase 08): un count() sin bloquear filas, bajo READ
+  // COMMITTED (el default de Postgres), NO alcanza acá. Dos bajas
+  // concurrentes de los dos últimos OWNER activos pueden leer cada una
+  // "queda 1 más" al mismo tiempo y las dos pasar — confirmado
+  // reproducible 30/30 veces contra Prisma directo. El mismo patrón de
+  // BLUEPRINT §9.4 (bloquear antes de leer, ordenado por id) aplica acá
+  // igual que para stock, aunque esto no sea dinero ni stock.
   async update(id: number, dto: UpdateUserDto): Promise<SafeUser> {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.user.findUnique({ where: { id } });
@@ -68,9 +76,12 @@ export class UsersService {
         (dto.activo ?? current.activo);
 
       if (wasActiveOwner && !staysActiveOwner) {
-        const otherActiveOwners = await tx.user.count({
-          where: { id: { not: id }, rol: UserRole.OWNER, activo: true },
-        });
+        const activeOwners = await tx.$queryRaw<{ id: number }[]>`
+          SELECT id FROM users WHERE rol = 'OWNER' AND activo = true ORDER BY id FOR UPDATE
+        `;
+        const otherActiveOwners = activeOwners.filter(
+          (owner) => owner.id !== id,
+        ).length;
 
         if (otherActiveOwners === 0) {
           throw new ConflictException(

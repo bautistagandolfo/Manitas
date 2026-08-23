@@ -12,6 +12,7 @@ type MockPrisma = {
     count: jest.Mock;
   };
   $transaction: jest.Mock;
+  $queryRaw: jest.Mock;
 };
 
 function buildMockPrisma(): MockPrisma {
@@ -24,6 +25,7 @@ function buildMockPrisma(): MockPrisma {
       count: jest.fn(),
     },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
   };
 
   // $transaction(async (tx) => ...) — el mock ejecuta el callback pasándole
@@ -108,7 +110,7 @@ describe('UsersService', () => {
         rol: UserRole.OWNER,
         activo: true,
       });
-      prisma.user.count.mockResolvedValue(0);
+      prisma.$queryRaw.mockResolvedValue([{ id: 1 }]);
 
       await expect(service.update(1, { activo: false })).rejects.toBeInstanceOf(
         ConflictException,
@@ -122,7 +124,7 @@ describe('UsersService', () => {
         rol: UserRole.OWNER,
         activo: true,
       });
-      prisma.user.count.mockResolvedValue(0);
+      prisma.$queryRaw.mockResolvedValue([{ id: 1 }]);
 
       await expect(
         service.update(1, { rol: UserRole.SELLER }),
@@ -135,7 +137,7 @@ describe('UsersService', () => {
         rol: UserRole.OWNER,
         activo: true,
       });
-      prisma.user.count.mockResolvedValue(1);
+      prisma.$queryRaw.mockResolvedValue([{ id: 1 }, { id: 2 }]);
       prisma.user.update.mockResolvedValue({ id: 1, activo: false });
 
       await service.update(1, { activo: false });
@@ -143,6 +145,25 @@ describe('UsersService', () => {
       expect(prisma.user.update).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: 1 }, data: { activo: false } }),
       );
+    });
+
+    it('rechaza la baja usando SELECT ... FOR UPDATE (bloquea filas, no un count() sin bloquear — QA adversarial fase 08: un count() plano se probó racea 29/30 veces bajo concurrencia real)', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 1,
+        rol: UserRole.OWNER,
+        activo: true,
+      });
+      prisma.$queryRaw.mockResolvedValue([{ id: 1 }]);
+
+      await expect(service.update(1, { activo: false })).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+
+      const [query] = prisma.$queryRaw.mock.calls[0] as [
+        { raw: string[] } | string[],
+      ];
+      const sql = Array.isArray(query) ? query.join('') : query.raw.join('');
+      expect(sql).toMatch(/FOR UPDATE/i);
     });
 
     it('no chequea el último OWNER al editar a un SELLER', async () => {
@@ -155,7 +176,7 @@ describe('UsersService', () => {
 
       await service.update(2, { activo: false });
 
-      expect(prisma.user.count).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
       expect(prisma.user.update).toHaveBeenCalled();
     });
 
@@ -169,7 +190,7 @@ describe('UsersService', () => {
 
       await service.update(1, { nombre: 'Nuevo nombre' });
 
-      expect(prisma.user.count).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
     });
   });
 

@@ -5,6 +5,7 @@ import type { App } from 'supertest/types';
 import { PrismaClient, UserRole } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { AppModule } from '../../src/app.module';
+import { LOGIN_THROTTLE } from '../../src/modules/auth/auth-throttle';
 
 const prisma = new PrismaClient();
 
@@ -190,5 +191,50 @@ describe('Auth (integration)', () => {
 
   it('POST /auth/logout siempre da 200 aunque no haya sesión (idempotente)', async () => {
     await request(app.getHttpServer()).post('/auth/logout').expect(200);
+  });
+
+  it('QA adversarial: ninguna respuesta expone X-Powered-By', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/auth/logout')
+      .expect(200);
+    expect(response.headers['x-powered-by']).toBeUndefined();
+  });
+});
+
+describe('Auth (integration) — rate limit de login', () => {
+  // App aparte con su propio storage de throttling: si compartiera la de
+  // arriba, los ~7 logins que ya hacen los otros tests contaminarían el
+  // conteo y este test podría fallar (o pasar) por motivos ajenos a lo que
+  // prueba.
+  let app: INestApplication<App>;
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+    app = moduleFixture.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it(`QA adversarial: más de ${LOGIN_THROTTLE.limit} intentos de login por minuto desde la misma IP dan 429`, async () => {
+    const attempts = LOGIN_THROTTLE.limit + 1;
+    const statuses: number[] = [];
+
+    for (let i = 0; i < attempts; i += 1) {
+      const response = await request(app.getHttpServer())
+        .post('/auth/login')
+        .send({
+          email: 'no-existe-para-el-throttle@manitas.local',
+          password: 'cualquier-cosa123',
+        });
+      statuses.push(response.status);
+    }
+
+    expect(statuses.slice(0, LOGIN_THROTTLE.limit)).not.toContain(429);
+    expect(statuses[statuses.length - 1]).toBe(429);
   });
 });

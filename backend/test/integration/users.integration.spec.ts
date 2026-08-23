@@ -171,6 +171,71 @@ describe('Users (integration)', () => {
       .expect(400);
   });
 
+  it('QA adversarial: rechaza un rol fuera del enum en vez de guardarlo tal cual', async () => {
+    await authed(request(app.getHttpServer()).post('/users'))
+      .send({
+        email: 'users-test-bad-role@manitas.local',
+        password: 'password123',
+        nombre: 'X',
+        rol: 'SUPERADMIN',
+      })
+      .expect(400);
+  });
+
+  it('QA adversarial: mass-assignment — un body con campos extra (passwordHash, activo, id) se rechaza entero, no se ignora en silencio', async () => {
+    // whitelist+forbidNonWhitelisted en el ValidationPipe global tiene que
+    // frenar esto: sin eso, alguien podría mandar passwordHash directo y
+    // saltarse el hasheo, o forzar activo:false/un id arbitrario.
+    await authed(request(app.getHttpServer()).post('/users'))
+      .send({
+        email: 'users-test-mass-assignment@manitas.local',
+        password: 'password123',
+        nombre: 'X',
+        rol: 'SELLER',
+        passwordHash: '$argon2id$v=19$m=65536,t=3,p=4$fake$fake',
+        activo: false,
+        id: 999999,
+      })
+      .expect(400);
+  });
+
+  it('QA adversarial: PATCH /users/:id con un campo no permitido (passwordHash) se rechaza, no se aplica parcialmente', async () => {
+    const created = await authed(request(app.getHttpServer()).post('/users'))
+      .send({
+        email: 'users-test-patch-mass-assignment@manitas.local',
+        password: 'password123',
+        nombre: 'X',
+        rol: 'SELLER',
+      })
+      .expect(201);
+    createdUserIds.push((created.body as UserResponseBody).id);
+
+    await authed(
+      request(app.getHttpServer()).patch(
+        `/users/${(created.body as UserResponseBody).id}`,
+      ),
+    )
+      .send({ nombre: 'Nombre nuevo', passwordHash: 'lo-que-sea' })
+      .expect(400);
+  });
+
+  it('QA adversarial: nombre de largo extremo se rechaza, no se trunca en silencio', async () => {
+    await authed(request(app.getHttpServer()).post('/users'))
+      .send({
+        email: 'users-test-long-name@manitas.local',
+        password: 'password123',
+        nombre: 'A'.repeat(500),
+        rol: 'SELLER',
+      })
+      .expect(400);
+  });
+
+  it('QA adversarial: id no numérico en la URL da 400, no 500', async () => {
+    await authed(request(app.getHttpServer()).patch('/users/no-es-un-id'))
+      .send({ nombre: 'Nadie' })
+      .expect(400);
+  });
+
   it('GET /users lista usuarios sin exponer el hash de contraseña', async () => {
     const response = await authed(
       request(app.getHttpServer()).get('/users'),
@@ -286,6 +351,82 @@ describe('Users (integration)', () => {
       await authed(request(app.getHttpServer()).patch(`/users/${soloOwnerId}`))
         .send({ activo: false })
         .expect(409);
+    } finally {
+      await prisma.user.updateMany({
+        where: { id: { in: otherActiveOwners.map((o) => o.id) } },
+        data: { activo: true },
+      });
+    }
+  });
+
+  it('QA adversarial: dos bajas concurrentes de los dos últimos OWNER activos nunca dejan el sistema en 0 OWNER activos', async () => {
+    // Aísla exactamente dos OWNER activos, y dispara dos PATCH simultáneos,
+    // cada uno desactivando a uno de los dos. Sin bloqueo de filas, un
+    // count() bajo READ COMMITTED puede dejar que las dos transacciones
+    // lean "queda 1 más" a la vez y las dos pasen — dejando 0 OWNER
+    // activos, exactamente lo que la regla existe para evitar. Confirmado
+    // reproducible 29/30 veces sin el fix (SELECT ... FOR UPDATE), 0/30
+    // con el fix, en un script aislado directo contra Prisma. Acá se repite
+    // varias veces porque a nivel HTTP una sola vez no siempre alcanza a
+    // abrir la ventana (el overhead de Nest/Express ya introduce cierto
+    // orden) — no correrlo una sola vez sería un falso negativo.
+    const otherActiveOwners = await prisma.user.findMany({
+      where: { rol: UserRole.OWNER, activo: true },
+    });
+    await prisma.user.updateMany({
+      where: { id: { in: otherActiveOwners.map((o) => o.id) } },
+      data: { activo: false },
+    });
+
+    try {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const ownerA = await authed(request(app.getHttpServer()).post('/users'))
+          .send({
+            email: `users-test-race-owner-a-${attempt}@manitas.local`,
+            password: 'password123',
+            nombre: 'Owner A',
+            rol: 'OWNER',
+          })
+          .expect(201);
+        const ownerB = await authed(request(app.getHttpServer()).post('/users'))
+          .send({
+            email: `users-test-race-owner-b-${attempt}@manitas.local`,
+            password: 'password123',
+            nombre: 'Owner B',
+            rol: 'OWNER',
+          })
+          .expect(201);
+        const ownerAId = (ownerA.body as UserResponseBody).id;
+        const ownerBId = (ownerB.body as UserResponseBody).id;
+        createdUserIds.push(ownerAId, ownerBId);
+
+        const [resultA, resultB] = await Promise.all([
+          authed(request(app.getHttpServer()).patch(`/users/${ownerAId}`)).send(
+            { activo: false },
+          ),
+          authed(request(app.getHttpServer()).patch(`/users/${ownerBId}`)).send(
+            { activo: false },
+          ),
+        ]);
+
+        const statuses = [resultA.status, resultB.status].sort();
+        // Una tiene que ganar (200) y la otra ser rechazada (409) — nunca
+        // las dos 200, porque eso dejaría 0 OWNER activos.
+        expect(statuses).toEqual([200, 409]);
+
+        const activeOwnersAfter = await prisma.user.count({
+          where: { rol: UserRole.OWNER, activo: true },
+        });
+        expect(activeOwnersAfter).toBe(1);
+
+        // Desactiva a los dos (ganador incluido) antes de la próxima
+        // vuelta: si reactivara al ganador, la cantidad de OWNER activos
+        // crecería en cada iteración y diluiría la carrera de la siguiente.
+        await prisma.user.updateMany({
+          where: { id: { in: [ownerAId, ownerBId] } },
+          data: { activo: false },
+        });
+      }
     } finally {
       await prisma.user.updateMany({
         where: { id: { in: otherActiveOwners.map((o) => o.id) } },
