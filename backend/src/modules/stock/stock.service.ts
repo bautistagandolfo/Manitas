@@ -32,6 +32,12 @@ export interface RegistrarAjusteInput {
   userId: number;
 }
 
+export interface StockReconciliationMismatch {
+  variantId: number;
+  stockActual: number;
+  sumaMovimientos: number;
+}
+
 @Injectable()
 export class StockService {
   constructor(private readonly prisma: PrismaService) {}
@@ -145,5 +151,44 @@ export class StockService {
       where: { id: input.variantId },
       data: { stockActual: { increment: input.delta } },
     });
+  }
+
+  // T2.8 — invariante 1 (BLUEPRINT §6.1): stock_actual == SUM(delta) para
+  // cada variante. Recorre TODAS las variantes, activas o no: RN-7 exige
+  // que una variante dada de baja con stock > 0 siga contando en la
+  // reconciliación. Devuelve solo las filas que no cuadran — vacío
+  // significa reconciliado.
+  //
+  // Las dos lecturas van dentro de la misma transacción, en REPEATABLE READ:
+  // sin eso, cualquier escritura real que ocurra entre una consulta y la
+  // otra (un ingreso de mercadería de otra sesión, por ejemplo) puede dejar
+  // a las dos consultas viendo un instante distinto del sistema y reportar
+  // un desajuste que en realidad nunca existió. Es de solo lectura — no
+  // compite con el contrato de la sección 4.2 (ese es solo para quien
+  // escribe stock).
+  async reconciliar(): Promise<StockReconciliationMismatch[]> {
+    const [variants, sums] = await this.prisma.$transaction(
+      (tx) =>
+        Promise.all([
+          tx.variant.findMany({ select: { id: true, stockActual: true } }),
+          tx.stockMovement.groupBy({
+            by: ['variantId'],
+            _sum: { delta: true },
+          }),
+        ]),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    const sumaPorVariante = new Map(
+      sums.map((s) => [s.variantId, s._sum.delta ?? 0]),
+    );
+
+    return variants
+      .filter((v) => v.stockActual !== (sumaPorVariante.get(v.id) ?? 0))
+      .map((v) => ({
+        variantId: v.id,
+        stockActual: v.stockActual,
+        sumaMovimientos: sumaPorVariante.get(v.id) ?? 0,
+      }));
   }
 }

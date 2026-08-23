@@ -74,12 +74,35 @@ function asTx(tx: MockTx): Prisma.TransactionClient {
   return tx as unknown as Prisma.TransactionClient;
 }
 
+interface PrismaMock {
+  $transaction: jest.Mock;
+  variant: { findMany: jest.Mock };
+  stockMovement: { groupBy: jest.Mock };
+}
+
+// reconciliar() abre su propia transacción (a diferencia de
+// registrarEntrada/registrarAjuste, que reciben la de quien llama) —
+// $transaction acá simula ese comportamiento invocando el callback con el
+// mismo mock como si fuera el `tx`, ya que a jest.fn() no le importa la
+// diferencia entre PrismaService y TransactionClient.
+function createPrismaMock(): PrismaMock {
+  const mock: PrismaMock = {
+    $transaction: jest.fn(),
+    variant: { findMany: jest.fn() },
+    stockMovement: { groupBy: jest.fn() },
+  };
+  mock.$transaction.mockImplementation((cb: (tx: PrismaMock) => unknown) =>
+    cb(mock),
+  );
+  return mock;
+}
+
 describe('StockService', () => {
   let service: StockService;
-  let prismaMock: { $transaction: jest.Mock };
+  let prismaMock: PrismaMock;
 
   beforeEach(() => {
-    prismaMock = { $transaction: jest.fn() };
+    prismaMock = createPrismaMock();
     service = new StockService(prismaMock as unknown as PrismaService);
   });
 
@@ -300,6 +323,63 @@ describe('StockService', () => {
       ).rejects.toThrow(/motivo/i);
 
       expect(tx.stockMovement.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reconciliar (T2.8, invariante 1)', () => {
+    it('sin variantes, no hay nada que reconciliar: devuelve la lista vacía', async () => {
+      prismaMock.variant.findMany.mockResolvedValue([]);
+      prismaMock.stockMovement.groupBy.mockResolvedValue([]);
+
+      await expect(service.reconciliar()).resolves.toEqual([]);
+    });
+
+    it('cuando stock_actual coincide con SUM(delta), no reporta esa variante', async () => {
+      prismaMock.variant.findMany.mockResolvedValue([
+        { id: 1, stockActual: 7 },
+      ]);
+      prismaMock.stockMovement.groupBy.mockResolvedValue([
+        { variantId: 1, _sum: { delta: 7 } },
+      ]);
+
+      await expect(service.reconciliar()).resolves.toEqual([]);
+    });
+
+    it('una variante sin ningún movimiento reconcilia contra 0, no contra null/undefined', async () => {
+      prismaMock.variant.findMany.mockResolvedValue([
+        { id: 2, stockActual: 0 },
+      ]);
+      prismaMock.stockMovement.groupBy.mockResolvedValue([]);
+
+      await expect(service.reconciliar()).resolves.toEqual([]);
+    });
+
+    it('cuando stock_actual no coincide con SUM(delta), reporta el desajuste con ambos valores', async () => {
+      prismaMock.variant.findMany.mockResolvedValue([
+        { id: 3, stockActual: 10 },
+      ]);
+      prismaMock.stockMovement.groupBy.mockResolvedValue([
+        { variantId: 3, _sum: { delta: 6 } },
+      ]);
+
+      await expect(service.reconciliar()).resolves.toEqual([
+        { variantId: 3, stockActual: 10, sumaMovimientos: 6 },
+      ]);
+    });
+
+    it('reporta solo las variantes desajustadas, no todo el universo de variantes', async () => {
+      prismaMock.variant.findMany.mockResolvedValue([
+        { id: 1, stockActual: 5 },
+        { id: 2, stockActual: 99 },
+      ]);
+      prismaMock.stockMovement.groupBy.mockResolvedValue([
+        { variantId: 1, _sum: { delta: 5 } },
+        { variantId: 2, _sum: { delta: 3 } },
+      ]);
+
+      await expect(service.reconciliar()).resolves.toEqual([
+        { variantId: 2, stockActual: 99, sumaMovimientos: 3 },
+      ]);
     });
   });
 });
