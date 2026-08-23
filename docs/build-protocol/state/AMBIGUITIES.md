@@ -29,7 +29,7 @@ curso que haya generado ambigüedades propias).
 | AMB-8 | BAJO | `customers` (fuera de alcance) | ¿Cuenta corriente / fiado? | Ya confirmado: no fía | ninguno | RESUELTA | — |
 | AMB-9 | MEDIO | `sales` (impresión) | ¿Ticket impreso? | Diferir: no soportar impresora térmica en el MVP | ninguno (aditivo, no bloquea el arranque) | RESUELTA (diferida) | Sí |
 | AMB-10 | ⚠️ ALTO | `cash-registers` / `settings` | Umbral de diferencia de caja | Sin recomendación por defecto — necesita un número real | T0.13 (seed de `settings`), T3.4, Fase 06 de `cash-registers` | RESUELTA — **$500** (monto fijo, no %) | No había recomendación |
-| AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | PENDIENTE | — |
+| AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | RESUELTA — `OWNER`-only las tres | Sí |
 | AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | PENDIENTE | — |
 
 ---
@@ -384,6 +384,11 @@ vuelva el `OWNER`).
 **Bloquea a:** T2.3, T2.5, T2.11 y el resto del cierre de la Etapa 2
 (Fases 07→12 de `products`/`variants`) — los guards de esos endpoints
 dependen de esta respuesta.
+
+**Resolución:** RESUELTA. El PO aprobó la recomendación tal cual:
+`OWNER`-only para las tres — editar `precioVenta` manualmente, completar
+la columna de costo en la grilla de alta, y el ingreso de mercadería.
+T2.3, T2.5 y T2.11 desbloqueados.
 
 ---
 

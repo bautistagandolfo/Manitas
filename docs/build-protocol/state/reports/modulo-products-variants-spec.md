@@ -6,8 +6,9 @@ Dependencia declarada (T1.3, guards de `auth`) VERDE. Fuentes:
 §12.2, §12.4; `MVP_SCOPE.md` §3.2 (riesgo ALTO); `DECISIONES_PENDIENTES.md`
 A3, A4, A5, C2; `state/AMBIGUITIES.md` AMB-4, AMB-6 (ya resueltas).
 
-**⚠️ Hallazgo bloqueante antes de arrancar ejecución de tickets — ver
-sección 11.**
+**Actualizado 2026-08-23:** T2.1, T2.2 y T0.12 en VERDE; AMB-11
+RESUELTA. Ver el estado actualizado al final del documento (después de
+la sección 11).
 
 ---
 
@@ -336,12 +337,12 @@ Todos pasan por el mismo `GlobalExceptionFilter` ya construido en
 | Ver `costoActual` / historial de costos | ✅ | ❌ (RN-3, literal) |
 | Crear/editar producto (nombre, marca, categoría) | ✅ | ✅ — no está en la lista de exclusiones explícitas de §5.1 ("resultados, gestión de usuarios, costos de productos, cierre de caja"); cargar catálogo día a día es tarea típica de vendedor en un local chico |
 | Crear/editar variante — `sku`, `barcode`, `activo` | ✅ | ✅ (mismo razonamiento) |
-| Editar `precioVenta` manual (una variante) | ✅ | **⚠️ sin definir — ver sección 10, pregunta al PO** |
+| Editar `precioVenta` manual (una variante) | ✅ | ❌ (AMB-11, **RESUELTA**: `OWNER`-only) |
 | Editar `costoActual` | ✅ | ❌ (RN-3) |
-| Ingreso de mercadería (`POST /stock/entradas`) | ✅ | **⚠️ inferido `OWNER`-only, no 100% literal — ver sección 10** |
+| Ingreso de mercadería (`POST /stock/entradas`) | ✅ | ❌ (AMB-11, **RESUELTA**: `OWNER`-only) |
 | Ajuste de stock (`POST /stock/ajustes`) | ✅ | ❌ (RN-5, literal: "permitido solo a OWNER") |
 | Actualización masiva de precios | ✅ | ❌ (RN-9, literal: "Solo OWNER") |
-| Alta por grilla | ✅ | ✅ — mismo razonamiento que alta de producto/variante suelta, siempre que no fuerce a cargar costo (ver sección 10: si `SELLER` no puede tocar costo, ¿puede completar la columna "costo" de la grilla? Ver ambigüedad) |
+| Alta por grilla | ✅ | ✅ para completar talle/color/SKU/stock; la columna de costo queda deshabilitada para `SELLER` (AMB-11, **RESUELTA**: `OWNER`-only) |
 | Gestión de marcas/categorías/talles/colores | ✅ | ✅ (no excluido explícitamente) |
 
 ## 9. Tests necesarios
@@ -395,23 +396,14 @@ Todos pasan por el mismo `GlobalExceptionFilter` ya construido en
 Dos preguntas nuevas para el PO, agregadas a `state/AMBIGUITIES.md`
 como AMB-11 y AMB-12 (detalle completo ahí, resumen acá):
 
-- **AMB-11 (⚠️ ALTO):** ¿un `SELLER` puede editar `precioVenta`
-  manualmente (fuera de la actualización masiva, que ya es
-  `OWNER`-only por RN-9), o el precio de venta —igual que el
-  costo— es exclusivo de `OWNER`? El blueprint restringe
-  explícitamente el **costo** a `OWNER` (§5.2) pero nunca dice nada
-  sobre el precio de venta manual. Relacionado: si `SELLER` no
-  puede editar costo, ¿puede de todos modos completar la columna
-  "costo" al cargar la grilla (T2.11), o esa columna se oculta/
-  deshabilita para `SELLER` y solo `OWNER` puede completarla? Y por
-  la misma razón, ¿puede un `SELLER` hacer ingreso de mercadería
-  (`POST /stock/entradas`), que **siempre** requiere `costoUnitario`?
-  **Recomendación:** que las tres cosas (editar precio manual, cargar
-  costo en la grilla, ingreso de mercadería) sean `OWNER`-only,
-  consistente con que el costo en general es su terreno exclusivo —
-  es más simple de explicar como una sola regla ("todo lo que toca
-  costo, o que decide cuánto cuesta algo, es del dueño") que separar
-  precio de costo en la práctica.
+- **AMB-11 — RESUELTA.** ¿Un `SELLER` puede editar `precioVenta`
+  manualmente, cargar el costo en la grilla, o hacer ingreso de
+  mercadería? El PO aprobó la recomendación: las tres,
+  `OWNER`-only — consistente con que el costo en general es su
+  terreno exclusivo (§5.2). Aplicado en la sección 8 (matriz de
+  permisos): `PATCH /variants/:id` con `precioVenta`,
+  `POST /stock/entradas` y la columna de costo de la grilla
+  (`POST /products/:id/variants/grid`) exigen `@Roles(OWNER)`.
 - **AMB-12 (MEDIO):** carga inicial por CSV (`DECISIONES_PENDIENTES.md`
   C2) — el ticket ya está decidido ("es un ticket nuevo de la Etapa
   2, no un extra"), agregado acá como **T2.13** (ver sección 11). Lo
@@ -427,12 +419,8 @@ como AMB-11 y AMB-12 (detalle completo ahí, resumen acá):
   mapeo de columnas del importador — es un cambio acotado, no una
   reapertura del ticket.
 
-**No bloquean el arranque de T2.1–T2.12** (ninguna de las dos toca el
-modelo de datos ni una decisión estructural — a diferencia de, por
-ejemplo, AMB-6 sobre el método de costeo). Si se aprueba la
-recomendación de AMB-11, no hace falta nada más que aplicar los guards
-correspondientes; si no se aprueba, ídem pero con `@Roles()` distintos
-en 3 endpoints. AMB-12 solo bloquea a T2.13 específicamente.
+**AMB-11 resuelta no bloquea nada.** AMB-12 solo bloquea a T2.13
+específicamente — el resto de T2.1–T2.12 nunca dependió de ella.
 
 ## 11. Tickets
 
@@ -493,9 +481,8 @@ dependencias.
 
 ---
 
-**Módulo BLOQUEADO para ejecución de tickets hasta que:**
-
-1. Se resuelvan AMB-11 y AMB-12 (o se apruebe la recomendación).
-2. Se decida si T2.5 depende de T0.14 (recomendado: sí).
-3. Se ejecute T0.12 antes de empezar T2.3, y T0.11 antes de T2.12 (no
-   bloquea T2.1/T2.2, que pueden arrancar ya).
+**Estado (actualizado 2026-08-23):** T2.1, T2.2 y T0.12 en VERDE.
+AMB-11 RESUELTA (`OWNER`-only). **T2.3 desbloqueado.** Sigue pendiente
+para más adelante en la etapa: AMB-12 (solo bloquea a T2.13), decidir
+si T2.5 depende de T0.14 (recomendado: sí), y ejecutar T0.11 antes de
+T2.12.
