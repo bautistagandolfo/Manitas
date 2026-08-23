@@ -29,6 +29,8 @@ curso que haya generado ambigüedades propias).
 | AMB-8 | BAJO | `customers` (fuera de alcance) | ¿Cuenta corriente / fiado? | Ya confirmado: no fía | ninguno | RESUELTA | — |
 | AMB-9 | MEDIO | `sales` (impresión) | ¿Ticket impreso? | Diferir: no soportar impresora térmica en el MVP | ninguno (aditivo, no bloquea el arranque) | RESUELTA (diferida) | Sí |
 | AMB-10 | ⚠️ ALTO | `cash-registers` / `settings` | Umbral de diferencia de caja | Sin recomendación por defecto — necesita un número real | T0.13 (seed de `settings`), T3.4, Fase 06 de `cash-registers` | RESUELTA — **$500** (monto fijo, no %) | No había recomendación |
+| AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | PENDIENTE | — |
+| AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | PENDIENTE | — |
 
 ---
 
@@ -335,3 +337,87 @@ diferencia de $500 o más (a favor o en contra) exige nota al cerrar la
 caja. Es un monto fijo, no un porcentaje — así que `settings.tipo` para
 `umbral_diferencia_caja` es `DECIMAL` con valor `500.00`. T0.13 y T3.4
 desbloqueados.
+
+---
+
+## AMB-11 — ¿`SELLER` puede tocar precio/costo en `products`/`variants`? ⚠️ ALTO RIESGO
+
+**Ubicación:** módulo `products`/`variants` (BLUEPRINT §5.2;
+`state/reports/modulo-products-variants-spec.md`, sección 8 y 10).
+
+**Descripción:** el blueprint dice explícitamente que **el costo**
+(`costo_actual`, `costo_unitario`, historial de costos) es exclusivo
+de `OWNER` (§5.2, literal). No dice nada sobre tres cosas relacionadas
+que aparecieron al especificar el módulo:
+
+1. ¿`SELLER` puede editar `precio_venta` **manualmente**, variante por
+   variante (fuera de la actualización masiva, que ya es `OWNER`-only
+   por RN-9/A5)?
+2. Al cargar una grilla de alta (T2.11), la tabla tiene una columna de
+   costo por variante — ¿`SELLER` puede completarla, o queda
+   deshabilitada/oculta para ese rol?
+3. El ingreso de mercadería (T2.5) **siempre** requiere `costoUnitario`
+   — ¿puede un `SELLER` hacerlo, o es también `OWNER`-only?
+
+**Por qué no se resuelve solo con el código:** es una decisión sobre
+cuánto delega la dueña en el personal de venta respecto de precios y
+costos — la misma clase de decisión que AMB-3 (tope de descuento), no
+algo que se derive de la arquitectura.
+
+**Pregunta para el PO:** de las tres acciones de arriba, ¿cuáles puede
+hacer un `SELLER` y cuáles son exclusivas de `OWNER`?
+
+**RECOMENDACIÓN:** las tres, `OWNER`-only. Es más simple explicar una
+sola regla ("todo lo que decide cuánto cuesta o cuánto vale algo es
+del dueño") que separar precio de costo en la práctica diaria de un
+local chico, y es consistente con que el resto de las operaciones
+"con plata de por medio" del módulo (ajuste de stock, actualización
+masiva) ya son `OWNER`-only en el blueprint.
+
+**RIESGO DE LA RECOMENDACIÓN:** si en la práctica la dueña necesita
+que sus vendedoras puedan recibir mercadería del proveedor (ingreso)
+sin que ella esté presente —típico si no está todos los días en el
+local—, esta recomendación se lo impide y puede generar fricción
+operativa real (mercadería que llega y no se puede cargar hasta que
+vuelva el `OWNER`).
+
+**Bloquea a:** T2.3, T2.5, T2.11 y el resto del cierre de la Etapa 2
+(Fases 07→12 de `products`/`variants`) — los guards de esos endpoints
+dependen de esta respuesta.
+
+---
+
+## AMB-12 — Formato de columnas del CSV de importación
+
+**Ubicación:** módulo `products`/`variants`, carga inicial
+(`DECISIONES_PENDIENTES.md` C2; `state/reports/modulo-products-variants-spec.md`,
+sección 10-11).
+
+**Descripción:** C2 ya decidió que la importación por CSV **es un
+ticket** ("no un extra") — lo que falta es el formato exacto de
+columnas. Depende de B4 (`DECISIONES_PENDIENTES.md`, "¿con qué maneja
+hoy el catálogo y el stock?"), todavía sin responder.
+
+**Por qué no se resuelve solo con el código:** si la clienta ya lleva
+una planilla propia con sus propias columnas, forzarla a adaptarse a
+un formato inventado por el sistema anula el propósito del ticket
+("sin esto el lanzamiento se cae por agotamiento").
+
+**Pregunta para el PO:** ¿la clienta ya usa alguna planilla/Excel para
+su catálogo o stock hoy? Si es así, ¿cuáles son sus columnas?
+
+**RECOMENDACIÓN:** no esperar la respuesta para arrancar T2.13 —
+definir una plantilla propia razonable (nombre, marca, categoría,
+talle, color, SKU, barcode, precio, costo, stock inicial) que se le
+entrega a la clienta para completar, con validación y reporte de
+errores línea por línea. Si B4 revela un formato existente, se ajusta
+el mapeo de columnas del importador — cambio acotado, no reapertura
+del ticket.
+
+**RIESGO DE LA RECOMENDACIÓN:** si la clienta tiene cientos de filas
+ya cargadas en su propio formato, pedirle que las pase a mano a la
+plantilla del sistema puede ser tan lento como cargarlas una por una
+en la grilla — el ahorro de tiempo que motiva el ticket se pierde en
+la práctica si el mapeo no se ajusta rápido después de conocer B4.
+
+**Bloquea a:** T2.13 únicamente. No bloquea T2.1–T2.12.

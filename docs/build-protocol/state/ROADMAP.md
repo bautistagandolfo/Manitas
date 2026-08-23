@@ -89,16 +89,17 @@ Todos los módulos dependen de esto.
 |---|---|---|---|
 | T2.1 | ABM de marcas, categorías, **talles y colores** (listas, AD-15) | T1.3 | PENDIENTE |
 | T2.2 | ABM de productos | T2.1 | PENDIENTE |
-| T2.3 | ABM de variantes (SKU único, barcode único, precio, costo) | T2.2 | PENDIENTE |
+| T2.3 | ABM de variantes (SKU único, barcode único, precio, costo) | T2.2, **T0.12** | PENDIENTE |
 | T2.4 | **`stock.service`**: movimientos + contador, transaccional. Único punto que escribe stock | T2.3 | PENDIENTE |
-| T2.5 | Ingreso de mercadería con costo → actualiza `costo_actual` + `price_history` | T2.4 | PENDIENTE |
+| T2.5 | Ingreso de mercadería con costo → actualiza `costo_actual` + `price_history` | T2.4, **T0.12, T0.14** (idempotencia — ver AMB-11/fase 06) | PENDIENTE |
 | T2.6 | Ajuste de stock (solo OWNER, motivo obligatorio) | T2.4 | PENDIENTE |
 | T2.7 | Buscador unificado: nombre / SKU / código de barras | T2.3 | PENDIENTE |
 | T2.8 | Test de reconciliación del invariante 1 (`stock_actual == SUM(movimientos)`) | T2.4 | PENDIENTE |
-| T2.9 | **`price_history`**: registro de todo cambio de precio y costo (AD-16) | T2.3 | PENDIENTE |
-| T2.10 | **Actualización masiva de precios** con vista previa (blueprint §5.2) | T2.9 | PENDIENTE |
-| T2.11 | **Alta de variantes por grilla** (talles × colores, blueprint §12.2) | T2.3 | PENDIENTE |
-| T2.12 | Pantallas de catálogo, stock e ingreso de mercadería | T2.5, T2.6, T2.7, T2.11 | PENDIENTE |
+| T2.9 | **`price_history`**: registro de todo cambio de precio y costo (AD-16) | T2.3, **T0.12** | PENDIENTE |
+| T2.10 | **Actualización masiva de precios** con vista previa (blueprint §5.2) | T2.9, **T0.12** | PENDIENTE |
+| T2.11 | **Alta de variantes por grilla** (talles × colores, blueprint §12.2) | T2.3, **T0.12** | PENDIENTE |
+| T2.12 | Pantallas de catálogo, stock e ingreso de mercadería | T2.5, T2.6, T2.7, T2.11, **T0.11** | PENDIENTE |
+| T2.13 | **Importación de catálogo por CSV** (productos, variantes, stock inicial, costos), validación con reporte de errores línea por línea (`DECISIONES_PENDIENTES.md` C2) | T2.4, T2.9 | PENDIENTE |
 
 **T2.4 es el ticket más delicado de esta etapa.** Blueprint §9.4 y AD-4.
 El costo solo lo ve `OWNER`.
@@ -106,6 +107,20 @@ El costo solo lo ve `OWNER`.
 **T2.10 y T2.11 no son adornos.** Sin actualización masiva, la clienta vuelve
 a la planilla cuando tenga que remarcar. Sin alta por grilla, cargar la
 tienda desde cero (hoy no tiene nada digitalizado) es inviable.
+
+**T2.3, T2.5, T2.9, T2.10, T2.11 y T2.12 agregan dependencias de Etapa 0**
+(fase 06 de este módulo, `state/reports/modulo-products-variants-spec.md`,
+sección 11): T0.12 (helpers de `Decimal`/redondeo) y T0.11 (helpers de
+formato es-AR) siguen `PENDIENTE` — hay que ejecutarlos antes de arrancar
+los tickets que dependen de ellos. **T2.1 y T2.2 no dependen de ninguno de
+los dos y pueden arrancar ya.** T0.14 (interceptor de idempotencia) como
+dependencia de T2.5 queda sujeto a que se apruebe extenderlo a ingreso de
+mercadería — es un hallazgo técnico de la fase 06, no una ambigüedad de
+negocio (no tiene número AMB); ver el reporte, sección 11.
+
+**T2.13 es nuevo (fase 06, `DECISIONES_PENDIENTES.md` C2 — "es un ticket
+nuevo de la Etapa 2, no un extra").** Su formato exacto de columnas queda
+sujeto a AMB-12.
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
