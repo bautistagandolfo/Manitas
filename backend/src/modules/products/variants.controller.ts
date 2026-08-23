@@ -6,12 +6,19 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { UserRole, Variant } from '@prisma/client';
-import { VariantsService, VariantForRole } from './variants.service';
+import {
+  VariantsService,
+  VariantForRole,
+  VariantSearchResult,
+} from './variants.service';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
+import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
+import { PaginatedResult } from './products.service';
 import { Roles } from '../../common/auth/roles.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { RequestUser } from '../../common/auth/authenticated-request';
@@ -32,6 +39,19 @@ export class VariantsController {
     @CurrentUser() user: RequestUser,
   ): Promise<Variant> {
     return this.variantsService.create(productId, dto, user.id);
+  }
+
+  // Antes que `variants/:id` a propósito: Nest/Express matchea rutas en
+  // orden de declaración dentro del controller, y `:id` es un parámetro
+  // greedy — si esta ruta estática fuera después, "/variants/search"
+  // caería en `findOne` con `id = "search"` (400 de ParseIntPipe) en vez
+  // de llegar acá.
+  @Get('variants/search')
+  search(
+    @Query() query: VariantSearchQueryDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<PaginatedResult<VariantSearchResult>> {
+    return this.variantsService.search(query, user.rol === UserRole.OWNER);
   }
 
   @Get('variants/:id')

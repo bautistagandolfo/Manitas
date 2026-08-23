@@ -27,6 +27,7 @@ describe('POST /stock/ajustes (integration, T2.6)', () => {
   let app: INestApplication<App>;
   let ownerCookie: string;
   let sellerCookie: string;
+  let ownerId: number;
   const createdUserIds: number[] = [];
   const createdProductIds: number[] = [];
   const createdVariantIds: number[] = [];
@@ -63,7 +64,15 @@ describe('POST /stock/ajustes (integration, T2.6)', () => {
           delta: stockActual,
           tipo: StockMovementTipo.ENTRADA,
           costoUnitario: new Prisma.Decimal('20.00'),
-          userId: (await prisma.user.findFirstOrThrow()).id,
+          // El OWNER de este archivo, nunca "el primero que haya en la
+          // tabla" — bajo ejecución en paralelo con otros archivos de
+          // integración, findFirstOrThrow() sin filtro podía agarrar el
+          // usuario de OTRO archivo, dejando un stock_movements huérfano
+          // que rompía el afterAll de ese otro archivo (P2003 al borrar
+          // sus propios usuarios). Encontrado corriendo la suite completa
+          // 3 veces seguidas — no se reproducía corriendo este archivo
+          // solo, porque el problema era la carrera con otros archivos.
+          userId: ownerId,
         },
       });
       await prisma.variant.update({
@@ -95,6 +104,7 @@ describe('POST /stock/ajustes (integration, T2.6)', () => {
       },
     });
     createdUserIds.push(owner.id);
+    ownerId = owner.id;
 
     const seller = await prisma.user.create({
       data: {

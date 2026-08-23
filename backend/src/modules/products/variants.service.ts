@@ -14,6 +14,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { UpdateVariantDto } from './dto/update-variant.dto';
 import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
+import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
+import { PaginatedResult } from './products.service';
 
 // RN-3 (BLUEPRINT §5.2, literal): el costo solo lo ve OWNER. Se resuelve
 // acá (no con `omit` en la query de Prisma) porque la condición es
@@ -36,6 +38,61 @@ function hideOwnerOnlyFields(
   return stripped;
 }
 
+// RN-11: buscador unificado (nombre de producto, SKU o código de barras
+// en un solo campo — un lector de barras es un teclado rápido que
+// termina en Enter, el mismo input sirve para los tres casos). RN-3
+// sigue aplicando acá: el costo se oculta si quien busca no es OWNER,
+// aunque este resultado viaje con datos del producto/talle/color.
+export interface VariantSearchResult {
+  id: number;
+  sku: string;
+  barcode: string | null;
+  precioVenta: Prisma.Decimal;
+  costoActual?: Prisma.Decimal;
+  stockActual: number;
+  activo: boolean;
+  product: { id: number; nombre: string };
+  size: { id: number; nombre: string } | null;
+  color: { id: number; nombre: string } | null;
+}
+
+type VariantSearchRow = Omit<Variant, 'productId' | 'sizeId' | 'colorId'> & {
+  product: { id: number; nombre: string };
+  size: { id: number; nombre: string } | null;
+  color: { id: number; nombre: string } | null;
+};
+
+function toSearchResult(
+  row: VariantSearchRow,
+  isOwner: boolean,
+): VariantSearchResult {
+  const {
+    id,
+    sku,
+    barcode,
+    precioVenta,
+    costoActual,
+    stockActual,
+    activo,
+    product,
+    size,
+    color,
+  } = row;
+
+  return {
+    id,
+    sku,
+    barcode,
+    precioVenta,
+    ...(isOwner && { costoActual }),
+    stockActual,
+    activo,
+    product,
+    size,
+    color,
+  };
+}
+
 function violatedConstraint(
   error: Prisma.PrismaClientKnownRequestError,
 ): string {
@@ -48,6 +105,52 @@ function violatedConstraint(
 @Injectable()
 export class VariantsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // RN-11/RN-12: buscador unificado, paginado en el servidor. Sin `q`,
+  // lista todo lo activo (útil para explorar antes de escribir nada).
+  // Solo variantes activas de productos activos (RN-11 — una variante
+  // dada de baja, o cuyo producto está dado de baja, no debería
+  // resucitar acá aunque la otra mitad siga activa).
+  async search(
+    query: VariantSearchQueryDto,
+    isOwner: boolean,
+  ): Promise<PaginatedResult<VariantSearchResult>> {
+    const q = query.q?.trim();
+
+    const where: Prisma.VariantWhereInput = {
+      activo: true,
+      product: { activo: true },
+      ...(q && {
+        OR: [
+          { sku: { contains: q, mode: 'insensitive' } },
+          { barcode: { contains: q, mode: 'insensitive' } },
+          { product: { nombre: { contains: q, mode: 'insensitive' } } },
+        ],
+      }),
+    };
+
+    const [rows, itemCount] = await Promise.all([
+      this.prisma.variant.findMany({
+        where,
+        include: {
+          product: { select: { id: true, nombre: true } },
+          size: { select: { id: true, nombre: true } },
+          color: { select: { id: true, nombre: true } },
+        },
+        orderBy: [{ product: { nombre: 'asc' } }, { sku: 'asc' }],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      this.prisma.variant.count({ where }),
+    ]);
+
+    return {
+      items: rows.map((row) => toSearchResult(row, isOwner)),
+      itemCount,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
+  }
 
   async findOne(id: number, isOwner: boolean): Promise<VariantForRole> {
     const variant = await this.prisma.variant.findUnique({ where: { id } });

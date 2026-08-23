@@ -6,6 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { VariantsService } from './variants.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
 
 interface PriceHistoryCreateCall {
   data: {
@@ -26,11 +27,19 @@ type MockTx = {
   };
 };
 
+interface FindManyCall {
+  where?: { OR?: unknown[] };
+  skip?: number;
+  take?: number;
+}
+
 type MockPrisma = {
   product: { findUnique: jest.Mock };
   variant: {
     findUnique: jest.Mock;
     update: jest.Mock;
+    findMany: jest.Mock<Promise<unknown[]>, [FindManyCall]>;
+    count: jest.Mock;
   };
   $transaction: jest.Mock;
 };
@@ -50,11 +59,26 @@ function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
 
   const prisma: MockPrisma = {
     product: { findUnique: jest.fn() },
-    variant: { findUnique: jest.fn(), update: jest.fn() },
+    variant: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      findMany: jest.fn<Promise<unknown[]>, [FindManyCall]>(),
+      count: jest.fn(),
+    },
     $transaction: jest.fn((callback: (tx: MockTx) => unknown) => callback(tx)),
   };
 
   return { prisma, tx };
+}
+
+function searchQuery(
+  overrides: Partial<VariantSearchQueryDto> = {},
+): VariantSearchQueryDto {
+  return Object.assign(
+    new VariantSearchQueryDto(),
+    { page: 1, pageSize: 20 },
+    overrides,
+  );
 }
 
 function prismaUniqueViolation(
@@ -91,6 +115,78 @@ describe('VariantsService', () => {
     prisma = built.prisma;
     tx = built.tx;
     service = new VariantsService(prisma as unknown as PrismaService);
+  });
+
+  describe('search', () => {
+    it('filtra por activo=true y product.activo=true siempre, con o sin q', async () => {
+      prisma.variant.findMany.mockResolvedValue([]);
+      prisma.variant.count.mockResolvedValue(0);
+
+      await service.search(searchQuery(), true);
+
+      expect(prisma.variant.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { activo: true, product: { activo: true } },
+        }) as unknown,
+      );
+    });
+
+    it('con q, busca por nombre de producto, sku o barcode (OR, insensible a mayúsculas)', async () => {
+      prisma.variant.findMany.mockResolvedValue([]);
+      prisma.variant.count.mockResolvedValue(0);
+
+      await service.search(searchQuery({ q: 'campera' }), true);
+
+      const call = prisma.variant.findMany.mock.calls[0][0];
+      expect(call.where?.OR).toEqual([
+        { sku: { contains: 'campera', mode: 'insensitive' } },
+        { barcode: { contains: 'campera', mode: 'insensitive' } },
+        { product: { nombre: { contains: 'campera', mode: 'insensitive' } } },
+      ]);
+    });
+
+    it('oculta costoActual de cada resultado si no es OWNER', async () => {
+      prisma.variant.findMany.mockResolvedValue([
+        {
+          id: 1,
+          sku: 'X',
+          barcode: null,
+          precioVenta: new Prisma.Decimal('10.00'),
+          costoActual: new Prisma.Decimal('5.00'),
+          stockActual: 3,
+          activo: true,
+          product: { id: 1, nombre: 'Remera' },
+          size: null,
+          color: null,
+        },
+      ]);
+      prisma.variant.count.mockResolvedValue(1);
+
+      const result = await service.search(searchQuery(), false);
+
+      expect(result.items[0].costoActual).toBeUndefined();
+      expect(result.items[0].precioVenta.toString()).toBe('10');
+      expect(result.items[0].product).toEqual({ id: 1, nombre: 'Remera' });
+    });
+
+    it('pagina en el servidor y devuelve itemCount/page/pageSize', async () => {
+      prisma.variant.findMany.mockResolvedValue([]);
+      prisma.variant.count.mockResolvedValue(45);
+
+      const result = await service.search(
+        searchQuery({ page: 2, pageSize: 10 }),
+        true,
+      );
+
+      expect(prisma.variant.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 10, take: 10 }) as unknown,
+      );
+      expect(result).toMatchObject({
+        itemCount: 45,
+        page: 2,
+        pageSize: 10,
+      });
+    });
   });
 
   describe('findOne', () => {
