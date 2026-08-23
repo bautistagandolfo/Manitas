@@ -1,0 +1,11 @@
+// Fuente de verdad del modelo de datos: BLUEPRINT.md sección 3.
+// Sin modelos todavía — se agregan en la fase 01 (modelo de datos).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

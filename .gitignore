@@ -1,0 +1,16 @@
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables (los reales, nunca los .example)
+.env
+.env.*
+!.env.example

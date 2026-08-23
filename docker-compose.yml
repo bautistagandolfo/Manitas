@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: manitas
+      POSTGRES_PASSWORD: manitas
+      POSTGRES_DB: manitas
+    ports:
+      # 5433 en el host: 5432 puede estar ocupado por un Postgres nativo
+      # instalado aparte. Adentro del contenedor sigue siendo 5432.
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U manitas -d manitas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
