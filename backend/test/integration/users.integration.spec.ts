@@ -139,6 +139,27 @@ describe('Users (integration)', () => {
       .expect(409);
   });
 
+  it('POST /users: dos altas simultáneas con el mismo email — una gana, la otra recibe 409 (no las dos 201)', async () => {
+    const email = 'users-test-race@manitas.local';
+    const payload = {
+      email,
+      password: 'password123',
+      nombre: 'Carrera',
+      rol: 'SELLER',
+    };
+
+    const [first, second] = await Promise.all([
+      authed(request(app.getHttpServer()).post('/users')).send(payload),
+      authed(request(app.getHttpServer()).post('/users')).send(payload),
+    ]);
+
+    const statuses = [first.status, second.status].sort();
+    expect(statuses).toEqual([201, 409]);
+
+    const winner = first.status === 201 ? first : second;
+    createdUserIds.push((winner.body as UserResponseBody).id);
+  });
+
   it('POST /users rechaza un body inválido (email mal formado)', async () => {
     await authed(request(app.getHttpServer()).post('/users'))
       .send({
@@ -196,12 +217,44 @@ describe('Users (integration)', () => {
       where: { id: userId },
     });
     expect(after.passwordHash).not.toBe(before.passwordHash);
+
+    // La contraseña vieja deja de servir para loguearse (module spec,
+    // sección 9): no alcanza con que el hash haya cambiado en la base.
+    const email = (created.body as UserResponseBody).email;
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email, password: 'password123' })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({ email, password: 'nuevaPassword123' })
+      .expect(200);
   });
 
   it('PATCH /users/:id sobre un id inexistente da 404', async () => {
     await authed(request(app.getHttpServer()).patch('/users/999999'))
       .send({ nombre: 'Nadie' })
       .expect(404);
+  });
+
+  it('PATCH /users/:id permite desactivar a un OWNER cuando hay otro OWNER activo', async () => {
+    const extraOwner = await authed(request(app.getHttpServer()).post('/users'))
+      .send({
+        email: 'users-test-extra-owner@manitas.local',
+        password: 'password123',
+        nombre: 'Owner extra',
+        rol: 'OWNER',
+      })
+      .expect(201);
+    const extraOwnerId = (extraOwner.body as UserResponseBody).id;
+    createdUserIds.push(extraOwnerId);
+
+    const updated = await authed(
+      request(app.getHttpServer()).patch(`/users/${extraOwnerId}`),
+    )
+      .send({ activo: false })
+      .expect(200);
+    expect((updated.body as UserResponseBody).activo).toBe(false);
   });
 
   it('PATCH /users/:id rechaza desactivar al único OWNER activo del sistema', async () => {

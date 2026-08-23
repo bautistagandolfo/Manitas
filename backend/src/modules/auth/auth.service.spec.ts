@@ -99,5 +99,15 @@ describe('AuthService', () => {
       });
       expect((user as { passwordHash?: string }).passwordHash).toBeUndefined();
     });
+
+    it('expira en 12 horas (BLUEPRINT §9.6)', () => {
+      const { token } = service.issueToken(testUser);
+
+      const jwtService = new JwtService({ secret: 'test-secret' });
+      const payload = jwtService.verify<{ iat: number; exp: number }>(token);
+      const twelveHoursInSeconds = 12 * 60 * 60;
+
+      expect(payload.exp - payload.iat).toBe(twelveHoursInSeconds);
+    });
   });
 });

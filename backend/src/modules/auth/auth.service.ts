@@ -9,6 +9,8 @@ export interface JwtPayload {
   rol: UserRole;
 }
 
+// Identidad mínima para login/me — no confundir con SafeUser en
+// users.service.ts, que trae la fila completa para la administración.
 export interface SafeAuthUser {
   id: number;
   email: string;

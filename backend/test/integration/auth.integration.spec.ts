@@ -158,14 +158,37 @@ describe('Auth (integration)', () => {
     await request(app.getHttpServer()).get('/auth/me').expect(401);
   });
 
-  it('POST /auth/logout siempre da 200 y limpia la cookie', async () => {
+  it('POST /auth/logout limpia la cookie: la sesión reenviada después ya no sirve', async () => {
+    const login = await request(app.getHttpServer())
+      .post('/auth/login')
+      .send({
+        email: 'auth-test-active@manitas.local',
+        password: 'correct-password123',
+      })
+      .expect(200);
+    const sessionCookie = (
+      login.headers['set-cookie'] as unknown as string[]
+    )[0].split(';')[0];
+
     const response = await request(app.getHttpServer())
       .post('/auth/logout')
+      .set('Cookie', sessionCookie)
       .expect(200);
 
     const setCookie = response.headers['set-cookie'];
     expect(setCookie).toBeDefined();
-    const cookieHeader = (setCookie as unknown as string[]).join(';');
-    expect(cookieHeader).toContain('access_token=;');
+    const clearedCookie = (setCookie as unknown as string[])[0].split(';')[0];
+    expect(clearedCookie).toBe('access_token=');
+
+    // Lo que haría un navegador real: reenvía la cookie que dejó el logout
+    // (vacía) — ya no hay sesión.
+    await request(app.getHttpServer())
+      .get('/auth/me')
+      .set('Cookie', clearedCookie)
+      .expect(401);
+  });
+
+  it('POST /auth/logout siempre da 200 aunque no haya sesión (idempotente)', async () => {
+    await request(app.getHttpServer()).post('/auth/logout').expect(200);
   });
 });

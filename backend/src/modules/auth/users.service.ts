@@ -9,6 +9,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
+// Todo el registro (incluye activo/createdAt/updatedAt) para la gestión
+// OWNER-only de usuarios. No confundir con SafeAuthUser en auth.service.ts:
+// esa es la identidad mínima que ve login/me, esta es la fila completa que
+// necesita la pantalla de administración (para poder reactivar a alguien
+// hay que ver que está inactivo).
 export type SafeUser = Omit<User, 'passwordHash'>;
 
 @Injectable()
