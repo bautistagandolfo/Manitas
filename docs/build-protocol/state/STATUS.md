@@ -18,6 +18,7 @@ dejó MEDIUM/LOW documentados en `TECH_DEBT.md`).
 | 2026-08-23 | Fase 05 — Quality Gate | VERDE | `QUALITY_GATE.md` — commit pendiente (lo hace el usuario) | agente |
 | 2026-08-23 | Fase 06 — Spec del módulo `auth` | VERDE | `state/reports/modulo-auth-spec.md` — sin ambigüedades de negocio pendientes; corregido T1.2 (8h→12h, BLUEPRINT §9.6) y ampliado T1.1 en `ROADMAP.md`; hallazgo fuera de alcance reportado (falta ticket de importación CSV en Etapa 2, `DECISIONES_PENDIENTES.md` Bloque C2) — commit pendiente (lo hace el usuario) | agente |
 | 2026-08-23 | T1.1 — Usuarios (`auth`) | VERDE | commit `3fc165d` en rama `feat/T1.1-usuarios` — 10 tests unitarios + 8 de integración en verde, lint y build en verde. De paso corrigió un bug real: `ValidationPipe`/`GlobalExceptionFilter` no corrían en tests de integración por estar registrados solo en `main.ts` (movidos a `APP_PIPE`/`APP_FILTER` en `AppModule`) | agente |
+| 2026-08-23 | T1.2 — Login + JWT + logout (`auth`) | VERDE | commit `2e9f3b5` en rama `feat/T1.2-login` (ramificada de `feat/T1.1-usuarios`, todavía sin mergear a `main`) — 5 tests unitarios + 6 de integración en verde, lint y build en verde. Sin `GET /auth/me` ni guards: quedan para T1.3 | agente |
 
 <!--
 Agregá una fila nueva por cada fase/ticket/módulo completado. No edites
