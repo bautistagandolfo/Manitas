@@ -4,6 +4,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import {
+  CashMovement,
   CashMovementReferenciaTipo,
   CashMovementTipo,
   CashRegisterSession,
@@ -38,6 +39,21 @@ export interface RegistrarMovimientoInput {
   referenciaId?: number;
   descripcion: string;
   userId: number;
+  // Opcional: solo lo usa T3.3 (ingreso/retiro manual, RN-12, §9.7). Las
+  // filas que genera este módulo automáticamente para sales/returns/
+  // expenses (T3.4+) no lo necesitan — esa idempotencia la garantiza la
+  // clave de la operación completa (venta/devolución/gasto), no cada
+  // movimiento de caja por separado.
+  idempotencyKey?: string;
+}
+
+export interface RegistrarMovimientoManualInput {
+  sessionId: number;
+  tipo: 'INGRESO_MANUAL' | 'RETIRO';
+  monto: Prisma.Decimal.Value;
+  descripcion: string;
+  userId: number;
+  idempotencyKey: string;
 }
 
 // VENTA e INGRESO_MANUAL siempre positivos; el resto siempre negativos
@@ -92,7 +108,7 @@ export class CashRegisterService {
   async registrarMovimiento(
     tx: Prisma.TransactionClient,
     input: RegistrarMovimientoInput,
-  ): Promise<void> {
+  ): Promise<CashMovement> {
     assertPositive(input.monto, 'monto');
     if (!input.descripcion.trim()) {
       throw new BadRequestException(
@@ -112,7 +128,7 @@ export class CashRegisterService {
     const signo = TIPOS_POSITIVOS.has(input.tipo) ? 1 : -1;
     const montoConSigno = new Prisma.Decimal(input.monto).times(signo);
 
-    await tx.cashMovement.create({
+    return tx.cashMovement.create({
       data: {
         sessionId: input.sessionId,
         fecha: new Date(),
@@ -122,7 +138,32 @@ export class CashRegisterService {
         referenciaId: input.referenciaId,
         descripcion: input.descripcion,
         userId: input.userId,
+        idempotencyKey: input.idempotencyKey,
       },
+    });
+  }
+
+  // T3.3 / RN-12 / §9.7: ingreso manual y retiro de efectivo, los dos
+  // tipos que no vienen de una venta/devolución/gasto — alguien los carga
+  // a mano, sin ítem ni comprobante automático detrás. Es el ejemplo
+  // textual del blueprint para idempotencia ("un doble click en un retiro
+  // de $50.000..."), por eso exige `idempotencyKey` (a diferencia de
+  // `registrarMovimiento`, donde es opcional). La detección de la clave
+  // duplicada (P2002 sobre `idempotency_key`) la maneja quien llama
+  // (`withIdempotency`, T0.14) envolviendo esta llamada — acá solo se
+  // reusa toda la lógica de `registrarMovimiento` (signo, lock de sesión,
+  // inmutabilidad tras el cierre) sin duplicarla.
+  async registrarMovimientoManual(
+    tx: Prisma.TransactionClient,
+    input: RegistrarMovimientoManualInput,
+  ): Promise<CashMovement> {
+    return this.registrarMovimiento(tx, {
+      sessionId: input.sessionId,
+      tipo: input.tipo,
+      monto: input.monto,
+      descripcion: input.descripcion,
+      userId: input.userId,
+      idempotencyKey: input.idempotencyKey,
     });
   }
 

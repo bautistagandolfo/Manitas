@@ -329,4 +329,149 @@ describe('CashRegisterService', () => {
       );
     });
   });
+
+  // Fase 04a (T3.3) — `registrarMovimientoManual` TODAVÍA NO EXISTE en
+  // `CashRegisterService` (se agrega recién en la Fase 04, otra sesión); la
+  // regla explícita de esta fase prohíbe editar `cash-register.service.ts`
+  // para agregarle ni siquiera un stub. La firma esperada está fijada por el
+  // ticket T3.3 (spec §4.2, sección 4.2 del reporte del módulo): recibe
+  // siempre `monto` positivo (RN-3, mismo criterio que `registrarMovimiento`)
+  // y un `idempotencyKey` que la Fase 04 va a escribir en la fila (RN-12,
+  // §9.7) — la idempotencia en sí (violación real de la constraint única)
+  // no se prueba acá con Prisma mockeado, eso va en integración.
+  //
+  // `service` no expone el método todavía, así que TypeScript no lo deja
+  // llamar directo — en vez de agregar un stub al servicio real (prohibido
+  // acá), se declara localmente el contrato esperado y se castea `service`
+  // a él solo para que el archivo compile. En runtime, la propiedad no
+  // existe: llamar al método lanza un `TypeError` real ("is not a
+  // function"), que es la razón correcta de rojo para esta fase — nunca un
+  // error de compilación que tumbe también los tests viejos de T3.1/T3.2 de
+  // este mismo archivo.
+  interface CashRegisterServiceWithMovimientoManual {
+    registrarMovimientoManual(
+      tx: Prisma.TransactionClient,
+      input: {
+        sessionId: number;
+        // Contrato del ticket T3.3 (spec §4.2): subconjunto de
+        // `CashMovementTipo`, expresado como unión de literales — los
+        // "enums" que genera Prisma son un `const` + alias de tipo, no un
+        // enum real de TS, así que `CashMovementTipo.INGRESO_MANUAL` no se
+        // puede usar en posición de tipo (namespace merging no aplica acá).
+        tipo: 'INGRESO_MANUAL' | 'RETIRO';
+        monto: Prisma.Decimal.Value;
+        descripcion: string;
+        userId: number;
+        idempotencyKey: string;
+      },
+    ): Promise<{ id: number }>;
+  }
+
+  function withMovimientoManual(
+    s: CashRegisterService,
+  ): CashRegisterServiceWithMovimientoManual {
+    return s;
+  }
+
+  describe('registrarMovimientoManual (RN-12, §9.7)', () => {
+    it('INGRESO_MANUAL: inserta con monto positivo (mismo criterio de signo que registrarMovimiento)', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await withMovimientoManual(service).registrarMovimientoManual(asTx(tx), {
+        sessionId: 1,
+        tipo: CashMovementTipo.INGRESO_MANUAL,
+        monto: new Prisma.Decimal('250.00'),
+        descripcion: 'Ingreso manual de prueba',
+        userId: 7,
+        idempotencyKey: 'idem-key-ingreso-1',
+      });
+
+      expect(tx.cashMovement.create).toHaveBeenCalledTimes(1);
+      const call = tx.cashMovement.create.mock.calls[0][0];
+      expect(call.data.monto.toString()).toBe('250');
+      expect(call.data.tipo).toBe(CashMovementTipo.INGRESO_MANUAL);
+    });
+
+    it('RETIRO: inserta con monto negativo (mismo criterio de signo que registrarMovimiento)', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await withMovimientoManual(service).registrarMovimientoManual(asTx(tx), {
+        sessionId: 1,
+        tipo: CashMovementTipo.RETIRO,
+        monto: new Prisma.Decimal('250.00'),
+        descripcion: 'Retiro de prueba',
+        userId: 7,
+        idempotencyKey: 'idem-key-retiro-1',
+      });
+
+      expect(tx.cashMovement.create).toHaveBeenCalledTimes(1);
+      const call = tx.cashMovement.create.mock.calls[0][0];
+      expect(call.data.monto.toString()).toBe('-250');
+      expect(call.data.tipo).toBe(CashMovementTipo.RETIRO);
+    });
+
+    it('rechaza monto <= 0 (probando 0 y negativo) sin insertar nada', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await expect(
+        withMovimientoManual(service).registrarMovimientoManual(asTx(tx), {
+          sessionId: 1,
+          tipo: CashMovementTipo.INGRESO_MANUAL,
+          monto: new Prisma.Decimal('0.00'),
+          descripcion: 'Monto inválido',
+          userId: 7,
+          idempotencyKey: 'idem-key-cero',
+        }),
+      ).rejects.toThrow(/mayor a 0/i);
+
+      await expect(
+        withMovimientoManual(service).registrarMovimientoManual(asTx(tx), {
+          sessionId: 1,
+          tipo: CashMovementTipo.RETIRO,
+          monto: new Prisma.Decimal('-10.00'),
+          descripcion: 'Monto inválido',
+          userId: 7,
+          idempotencyKey: 'idem-key-negativo',
+        }),
+      ).rejects.toThrow(/mayor a 0/i);
+
+      expect(tx.cashMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('rechaza descripcion vacía sin insertar nada', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await expect(
+        withMovimientoManual(service).registrarMovimientoManual(asTx(tx), {
+          sessionId: 1,
+          tipo: CashMovementTipo.INGRESO_MANUAL,
+          monto: new Prisma.Decimal('100.00'),
+          descripcion: '',
+          userId: 7,
+          idempotencyKey: 'idem-key-sin-desc',
+        }),
+      ).rejects.toThrow(/descripci[oó]n/i);
+
+      expect(tx.cashMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('rechaza registrar un ingreso/retiro manual contra una sesión CERRADA sin insertar nada (RN-8, inmutabilidad tras el cierre)', async () => {
+      const tx = buildMockTx(
+        buildSessionRow({ estado: CashRegisterSessionEstado.CERRADA }),
+      );
+
+      await expect(
+        withMovimientoManual(service).registrarMovimientoManual(asTx(tx), {
+          sessionId: 1,
+          tipo: CashMovementTipo.INGRESO_MANUAL,
+          monto: new Prisma.Decimal('100.00'),
+          descripcion: 'Ingreso contra sesión cerrada',
+          userId: 7,
+          idempotencyKey: 'idem-key-cerrada',
+        }),
+      ).rejects.toThrow(/cerrada/i);
+
+      expect(tx.cashMovement.create).not.toHaveBeenCalled();
+    });
+  });
 });

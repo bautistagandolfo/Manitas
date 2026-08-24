@@ -11,6 +11,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import * as argon2 from 'argon2';
+import { randomUUID } from 'node:crypto';
 import { AppModule } from '../../src/app.module';
 import type { PrismaService } from '../../src/prisma/prisma.service';
 import { CashRegisterService } from '../../src/modules/cash-registers/cash-register.service';
@@ -402,6 +403,260 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
       await expect(
         prisma.$transaction((tx) => service.getSesionAbiertaOrThrow(tx)),
       ).rejects.toThrow(/sesi[oó]n.*abiert/i);
+    });
+  });
+
+  // Fase 04a (T3.3) — `POST /cash-registers/movements/ingreso` y `/retiro`
+  // TODAVÍA NO EXISTEN (`CashRegistersController` hoy solo tiene
+  // `POST /sessions`, regla explícita de esta fase: no se edita el
+  // controller acá) — toda request contra esas rutas debe responder 404
+  // hasta la Fase 04. Es la razón correcta de rojo para los tests de abajo;
+  // no se agrega ningún stub de ruta para forzar otro status.
+  //
+  // RN-12/§9.7 (BLUEPRINT, ejemplo textual: "un doble click en un retiro de
+  // $50.000... el arqueo muestra un faltante fantasma") es el caso más
+  // importante de este ticket — se confirma contando filas reales en
+  // `cash_movements`, nunca solo mirando el status HTTP de la respuesta.
+  async function abrirSesionParaMovimientoManual(
+    userId: number,
+  ): Promise<number> {
+    const session = await prisma.$transaction((tx) =>
+      service.abrirSesion(tx, {
+        montoInicial: new Prisma.Decimal('300.00'),
+        userId,
+      }),
+    );
+    createdSessionIds.push(session.id);
+    return session.id;
+  }
+
+  describe('POST /cash-registers/movements/ingreso (T3.3, RN-12, AMB-13)', () => {
+    it('OWNER con Idempotency-Key real, monto/descripcion válidos → 201, el movimiento queda en la base con tipo INGRESO_MANUAL y signo positivo', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+      const key = randomUUID();
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', key)
+        .send({ monto: '500.00', descripcion: 'Ingreso manual de prueba' })
+        .expect(201);
+
+      const movement = await prisma.cashMovement.findUnique({
+        where: { idempotencyKey: key },
+      });
+      expect(movement).not.toBeNull();
+      expect(movement?.tipo).toBe(CashMovementTipo.INGRESO_MANUAL);
+      expect(movement?.monto.toString()).toBe('500');
+    });
+
+    it('SELLER: 403 (AMB-13, RESUELTA — OWNER-only)', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      await sold(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Intento de SELLER' })
+        .expect(403);
+    });
+
+    it('sin header Idempotency-Key → 400', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .send({ monto: '100.00', descripcion: 'Sin header' })
+        .expect(400);
+    });
+
+    it('doble click: la misma request (mismo Idempotency-Key) mandada dos veces seguidas responde 201/200 con el mismo resultado, pero queda UNA sola fila en cash_movements (BLUEPRINT §9.7, ejemplo textual)', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+      const key = randomUUID();
+      const body = { monto: '250.00', descripcion: 'Doble click en ingreso' };
+
+      const first = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', key)
+        .send(body);
+      expect([200, 201]).toContain(first.status);
+
+      const second = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', key)
+        .send(body);
+      expect([200, 201]).toContain(second.status);
+
+      const firstBody = first.body as { id: number };
+      const secondBody = second.body as { id: number };
+      expect(secondBody.id).toBe(firstBody.id);
+
+      const count = await prisma.cashMovement.count({
+        where: { idempotencyKey: key },
+      });
+      expect(count).toBe(1);
+    });
+
+    it('dos requests con Idempotency-Key DISTINTAS → dos filas distintas (la protección es por clave, no un bloqueo general)', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      const first = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Primer ingreso' })
+        .expect(201);
+
+      const second = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Segundo ingreso' })
+        .expect(201);
+
+      const firstBody = first.body as { id: number };
+      const secondBody = second.body as { id: number };
+      expect(firstBody.id).not.toBe(secondBody.id);
+    });
+
+    it('sin sesión de caja abierta → 409', async () => {
+      await closeAnyOpenSessionDirect();
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Sin sesión abierta' })
+        .expect(409);
+    });
+
+    it('monto <= 0 → 400', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '0.00', descripcion: 'Monto inválido' })
+        .expect(400);
+    });
+  });
+
+  describe('POST /cash-registers/movements/retiro (T3.3, RN-12, AMB-13) — mismos casos que ingreso, signo negativo', () => {
+    it('OWNER con Idempotency-Key real, monto/descripcion válidos → 201, el movimiento queda en la base con tipo RETIRO y signo negativo', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+      const key = randomUUID();
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', key)
+        .send({ monto: '500.00', descripcion: 'Retiro manual de prueba' })
+        .expect(201);
+
+      const movement = await prisma.cashMovement.findUnique({
+        where: { idempotencyKey: key },
+      });
+      expect(movement).not.toBeNull();
+      expect(movement?.tipo).toBe(CashMovementTipo.RETIRO);
+      expect(movement?.monto.toString()).toBe('-500');
+    });
+
+    it('SELLER: 403 (AMB-13, RESUELTA — OWNER-only)', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      await sold(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Intento de SELLER' })
+        .expect(403);
+    });
+
+    it('sin header Idempotency-Key → 400', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .send({ monto: '100.00', descripcion: 'Sin header' })
+        .expect(400);
+    });
+
+    it('doble click: la misma request (mismo Idempotency-Key) mandada dos veces seguidas responde 201/200 con el mismo resultado, pero queda UNA sola fila en cash_movements (BLUEPRINT §9.7, ejemplo textual — retiro)', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+      const key = randomUUID();
+      const body = { monto: '250.00', descripcion: 'Doble click en retiro' };
+
+      const first = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', key)
+        .send(body);
+      expect([200, 201]).toContain(first.status);
+
+      const second = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', key)
+        .send(body);
+      expect([200, 201]).toContain(second.status);
+
+      const firstBody = first.body as { id: number };
+      const secondBody = second.body as { id: number };
+      expect(secondBody.id).toBe(firstBody.id);
+
+      const count = await prisma.cashMovement.count({
+        where: { idempotencyKey: key },
+      });
+      expect(count).toBe(1);
+    });
+
+    it('dos requests con Idempotency-Key DISTINTAS → dos filas distintas (la protección es por clave, no un bloqueo general)', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      const first = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Primer retiro' })
+        .expect(201);
+
+      const second = await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Segundo retiro' })
+        .expect(201);
+
+      const firstBody = first.body as { id: number };
+      const secondBody = second.body as { id: number };
+      expect(firstBody.id).not.toBe(secondBody.id);
+    });
+
+    it('sin sesión de caja abierta → 409', async () => {
+      await closeAnyOpenSessionDirect();
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '100.00', descripcion: 'Sin sesión abierta' })
+        .expect(409);
+    });
+
+    it('monto <= 0 → 400', async () => {
+      await abrirSesionParaMovimientoManual(ownerId);
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/retiro'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({ monto: '0.00', descripcion: 'Monto inválido' })
+        .expect(400);
     });
   });
 });
