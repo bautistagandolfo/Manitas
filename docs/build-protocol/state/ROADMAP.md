@@ -49,7 +49,7 @@ Sin módulos de negocio. Es la base sobre la que se apoya todo.
 | T0.8 | Regla de lint que prohíba `number` para importes (AD-14) | T0.1 | VERDE |
 | T0.11 | Helpers de formato es-AR (§12.3): moneda, fecha, número — prohibido formatear a mano en un componente | T0.5 | VERDE |
 | T0.12 | Helpers de `Decimal` y redondeo comercial (AD-14): prorrateo a líneas, los dos tests obligatorios de §9.3 | T0.1 | VERDE |
-| T0.13 | Tabla `settings` + servicio tipado de lectura/escritura + seed de los 4 parámetros de la sección 10 | T0.4 | PENDIENTE |
+| T0.13 | Tabla `settings` + servicio tipado de lectura/escritura + seed de los 4 parámetros de la sección 10 | T0.4 | VERDE |
 | T0.14 | Interceptor común de idempotencia (`Idempotency-Key`, índice único — BLUEPRINT §9.7) | T0.1 | VERDE |
 
 > T0.1–T0.5 y T0.8 corresponden a las Fases 00 y 01 del protocolo, ya en
@@ -166,6 +166,10 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 > esperar nada más. Recomiendo ejecutar T0.13 antes de T3.4; T3.1, T3.2
 > y T3.3 (una vez resuelta AMB-13) no dependen de T0.13 y pueden
 > avanzar antes.
+>
+> **T0.13 en VERDE (2026-08-24).** `umbral_diferencia_caja` sembrado en
+> $500 (`SettingsService.getDecimal('umbral_diferencia_caja')`).
+> **T3.4 desbloqueada.**
 >
 > **Hallazgo técnico (fase 06 de este módulo): T4.4, T4.7 y T5.3 no
 > listaban `T3.2` como dependencia**, a pesar de que BLUEPRINT §5.3
