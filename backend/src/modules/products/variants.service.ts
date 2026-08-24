@@ -19,6 +19,7 @@ import { UpdateVariantPriceDto } from './dto/update-variant-price.dto';
 import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
 import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 import { CreateVariantGridDto } from './dto/create-variant-grid.dto';
+import { generateSku } from './sku.util';
 import { PaginatedResult } from './products.service';
 
 // RN-3 (BLUEPRINT §5.2, literal): el costo solo lo ve OWNER. Se resuelve
@@ -387,7 +388,7 @@ export class VariantsService {
         for (const fila of filas) {
           const sku =
             fila.sku ||
-            this.generateSku(
+            generateSku(
               productId,
               sizeById.get(fila.sizeId),
               colorById.get(fila.colorId),
@@ -432,31 +433,6 @@ export class VariantsService {
     } catch (error) {
       throw this.translateWriteError(error);
     }
-  }
-
-  // Patrón simple y determinístico: P{productId}-{TALLE}-{COLOR}. Usa el
-  // id del producto (no su nombre) para no colisionar entre productos
-  // distintos que comparten talle/color — la unicidad real la sigue
-  // garantizando la constraint de `sku` en la base (P2002 → 409, vía
-  // translateWriteError). BLUEPRINT §12.2 solo exige "un patrón,
-  // editables" sin fijar cuál: este es el default, y el usuario lo puede
-  // cambiar en la fila antes de enviar el alta o después con un PATCH.
-  private generateSku(
-    productId: number,
-    size: { nombre: string } | undefined,
-    color: { nombre: string } | undefined,
-  ): string {
-    const slug = (value: string): string =>
-      value
-        .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '')
-        .toUpperCase()
-        .replace(/[^A-Z0-9]+/g, '');
-
-    const parts = [`P${productId}`];
-    if (size) parts.push(slug(size.nombre));
-    if (color) parts.push(slug(color.nombre));
-    return parts.join('-');
   }
 
   private assertPositive(value: Prisma.Decimal, field: string): void {

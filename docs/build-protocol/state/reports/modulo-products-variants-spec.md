@@ -205,6 +205,12 @@ alta/edición), `/colors`.
 | POST | `/prices/bulk-update/preview` | `OWNER` | `{ filtro: { brandId?, categoryId?, variantIds? }, porcentaje }` → devuelve la lista `{ variantId, sku, precioActual, precioResultante }` **sin escribir nada** |
 | POST | `/prices/bulk-update/apply` | `OWNER` | mismo body que el preview. **Sin `Idempotency-Key`** — decisión del PO (2026-08-23, ver `ROADMAP.md`, mismo criterio que T2.5): `price_history` no tiene `idempotency_key`, y acá el motivo es más fuerte que en T2.5 — una sola aplicación escribe N filas (una por variante), y el mecanismo de T0.14 está pensado para deduplicar una fila por clave, no un batch completo. Aplica y escribe `price_history` con `origen = MASIVO` (RN-9). Riesgo de doble click (aplicar el mismo aumento dos veces) aceptado conscientemente. |
 
+**Importación (T2.13, AMB-12 RESUELTA):**
+
+| Método | Ruta | Rol | Notas |
+|---|---|---|---|
+| POST | `/products/import` | `OWNER` | `{ csv: string }` (texto plano, no multipart — sin agregar `multer`). Plantilla propia de columnas: `nombre,descripcion,marca,categoria,talle,color,sku,barcode,precio,costo,stock` (obligatorias: `nombre`, `precio`, `costo`, `stock`). Cada fila en su propia transacción — una fila inválida se reporta como error sin abortar el resto (`{ filasCount, exitosas, fallidas, filas: [{ linea, estado, mensaje?, sku? }] }`). Producto/marca/categoría/talle/color se buscan por nombre (case-insensitive) y se crean si no existen; SKU opcional, se autogenera con el mismo patrón que T2.11 si viene vacío. El stock inicial pasa por `stock.service.registrarEntrada` (RN-8, igual que T2.11) — nunca se escribe `stock_actual` directo. Encabezado sin las columnas obligatorias, o CSV sin filas, rechaza el archivo completo con 400 (no es un error de fila). Sin `Idempotency-Key`: reenviar el mismo CSV no duplica nada, cada fila choca con la constraint única de `sku` y se reporta como error de fila. |
+
 ### 4.2 API interna de `stock.service.ts` (no HTTP)
 
 Para que `sales`/`returns`/`cash-registers` (módulos futuros) puedan

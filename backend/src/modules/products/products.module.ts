@@ -14,6 +14,8 @@ import { VariantsController } from './variants.controller';
 import { VariantsService } from './variants.service';
 import { PricesController } from './prices.controller';
 import { PricesService } from './prices.service';
+import { CatalogImportController } from './catalog-import.controller';
+import { CatalogImportService } from './catalog-import.service';
 
 @Module({
   imports: [StockModule],
@@ -25,6 +27,7 @@ import { PricesService } from './prices.service';
     ProductsController,
     VariantsController,
     PricesController,
+    CatalogImportController,
   ],
   providers: [
     BrandsService,
@@ -34,6 +37,7 @@ import { PricesService } from './prices.service';
     ProductsService,
     VariantsService,
     PricesService,
+    CatalogImportService,
   ],
 })
 export class ProductsModule {}
