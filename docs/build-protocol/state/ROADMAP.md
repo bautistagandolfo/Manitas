@@ -143,7 +143,7 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 | T3.1 | Apertura de sesión con monto inicial + constraint de sesión única abierta | T1.3 | VERDE |
 | T3.2 | Movimientos de caja (servicio base, solo efectivo — AD-8) | T3.1 | VERDE |
 | T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | VERDE |
-| T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | PENDIENTE |
+| T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | VERDE |
 | T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | PENDIENTE |
 | T3.6 | Test del invariante 2 (arqueo) | T3.4 | PENDIENTE |
 | T3.7 | Pantallas de apertura, movimientos y cierre | T3.5 | PENDIENTE |

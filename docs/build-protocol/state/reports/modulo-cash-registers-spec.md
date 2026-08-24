@@ -221,7 +221,7 @@ romper esta fase cuando lleguen):
 class CashRegisterService {
   // Usado por este módulo (T3.1, T3.2, T3.3, T3.4):
   abrirSesion(tx, { montoInicial, userId }): Promise<CashRegisterSession>
-  cerrarSesion(tx, { sessionId, montoDeclarado, notaCierre, userId, esOwner }): Promise<CashRegisterSession>
+  cerrarSesion(tx, { sessionId, montoDeclarado, notaCierre, userId, esOwner }): Promise<CashRegisterSessionForRole>
   registrarMovimientoManual(tx, { sessionId, tipo: 'INGRESO_MANUAL' | 'RETIRO', monto, descripcion, userId, idempotencyKey }): Promise<CashMovement>
 
   // Expuesto para sales/returns/expenses (no se llama desde este módulo):
@@ -245,6 +245,19 @@ usar o no según haga falta) y **obligatorio** en
 vía de idempotencia de esos dos tipos). `registrarMovimientoManual` no
 duplica lógica: llama internamente a `registrarMovimiento` con
 `tipo` acotado a `'INGRESO_MANUAL' | 'RETIRO'`.
+
+**Corrección post-spec (T3.4, implementación):** `cerrarSesion`
+devuelve `CashRegisterSessionForRole` (`Omit<CashRegisterSession,
+'montoSistema' | 'diferencia'> & { montoSistema?, diferencia? }`), no
+`CashRegisterSession` a secas — RN-6 exige ocultar esos dos campos por
+completo para quien no es `OWNER`, mismo patrón que `VariantForRole`/
+`hideOwnerOnlyFields` en `products/variants.service.ts`. Además, el
+constructor de `CashRegisterService` pasó a recibir `SettingsService`
+inyectado (junto con `PrismaService`) — no estaba en el diseño
+original de esta sección, pero `cerrarSesion` necesita leer
+`umbral_diferencia_caja` (T0.13) para RN-5, y no tenía sentido que ese
+valor viajara en el `input` de cada llamada cuando ya existe un
+servicio dedicado para leerlo.
 
 Todos los métodos **exigen recibir el `tx` de una transacción ya
 abierta** por quien llama (no abren la suya propia) — porque en
