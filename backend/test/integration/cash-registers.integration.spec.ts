@@ -1030,4 +1030,128 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
       );
     });
   });
+
+  // Fase 04a (T3.6) — `reconciliar` TODAVÍA NO EXISTE en
+  // `CashRegisterService` (se agrega recién en la Fase 04, otra sesión) —
+  // regla explícita de esta fase: no se edita `cash-register.service.ts`.
+  // Toda llamada de abajo debe lanzar `TypeError: ... is not a function`
+  // en runtime; es la razón correcta de rojo para estos dos casos, no un
+  // error de compilación (`service` real ya expone `abrirSesion`/
+  // `registrarMovimiento`/`cerrarSesion`, todos VERDE desde T3.1-T3.4 — se
+  // usan tal cual para armar el escenario real contra Postgres).
+  //
+  // `reconciliar()` no recibe ningún `tx` (spec §4.2, contrato sugerido en
+  // el ticket): abre su propia transacción de solo lectura — mismo patrón
+  // documentado en prosa en `state/STATUS.md` (fila de T2.8) para
+  // `stock.service.reconciliar()`. Por eso se llama directo sobre
+  // `service`, sin envolver en `prisma.$transaction(...)` como el resto de
+  // los métodos de este archivo.
+  describe('reconciliar (T3.6, invariante 2)', () => {
+    interface CashRegisterReconciliationMismatch {
+      sessionId: number;
+      montoSistemaGuardado: Prisma.Decimal;
+      montoSistemaRecalculado: Prisma.Decimal;
+    }
+
+    interface CashRegisterServiceWithReconciliar {
+      reconciliar(): Promise<CashRegisterReconciliationMismatch[]>;
+    }
+
+    function withReconciliar(
+      s: CashRegisterService,
+    ): CashRegisterServiceWithReconciliar {
+      return s;
+    }
+
+    async function abrirSesionParaReconciliar(
+      userId: number,
+      montoInicial: string,
+    ): Promise<number> {
+      const session = await prisma.$transaction((tx) =>
+        service.abrirSesion(tx, {
+          montoInicial: new Prisma.Decimal(montoInicial),
+          userId,
+        }),
+      );
+      createdSessionIds.push(session.id);
+      return session.id;
+    }
+
+    it('sesión cerrada con movimientos reales de distintos tipos, cerrada vía cerrarSesion: reconciliar no la reporta (coincide)', async () => {
+      const sessionId = await abrirSesionParaReconciliar(ownerId, '100.00');
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.VENTA,
+          monto: new Prisma.Decimal('400.00'),
+          descripcion: 'Venta real para T3.6',
+          userId: ownerId,
+        }),
+      );
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.RETIRO,
+          monto: new Prisma.Decimal('50.00'),
+          descripcion: 'Retiro real para T3.6',
+          userId: ownerId,
+        }),
+      );
+      // montoSistema real = 100 (inicial) + 400 (venta) - 50 (retiro) = 450
+      await prisma.$transaction((tx) =>
+        service.cerrarSesion(tx, {
+          sessionId,
+          montoDeclarado: new Prisma.Decimal('450.00'),
+          userId: ownerId,
+          esOwner: true,
+        }),
+      );
+
+      const mismatches = await withReconciliar(service).reconciliar();
+
+      expect(mismatches.some((m) => m.sessionId === sessionId)).toBe(false);
+    });
+
+    it('una sesión cerrada cuyo montoSistema se altera a mano por fuera del servicio: aparece en reconciliar() con los valores correctos (no solo confirma el camino feliz)', async () => {
+      const sessionId = await abrirSesionParaReconciliar(ownerId, '100.00');
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.VENTA,
+          monto: new Prisma.Decimal('400.00'),
+          descripcion: 'Venta real para T3.6 (corrupción)',
+          userId: ownerId,
+        }),
+      );
+      // montoSistema real = 100 (inicial) + 400 (venta) = 500
+      await prisma.$transaction((tx) =>
+        service.cerrarSesion(tx, {
+          sessionId,
+          montoDeclarado: new Prisma.Decimal('500.00'),
+          userId: ownerId,
+          esOwner: true,
+        }),
+      );
+
+      // Corrupción real, directo por Prisma, sorteando el servicio por
+      // completo — mismo espíritu que el test de T2.8 que "prueba que el
+      // chequeo detecta un desajuste real, no solo confirma el camino
+      // feliz".
+      await prisma.cashRegisterSession.update({
+        where: { id: sessionId },
+        data: { montoSistema: new Prisma.Decimal('999.00') },
+      });
+
+      const mismatches = await withReconciliar(service).reconciliar();
+
+      const found = mismatches.find((m) => m.sessionId === sessionId);
+      expect(found).toBeDefined();
+      expect(new Prisma.Decimal(found!.montoSistemaGuardado).toString()).toBe(
+        '999',
+      );
+      expect(
+        new Prisma.Decimal(found!.montoSistemaRecalculado).toString(),
+      ).toBe('500');
+    });
+  });
 });

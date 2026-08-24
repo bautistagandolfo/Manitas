@@ -789,4 +789,321 @@ describe('CashRegisterService', () => {
       expect(tx.cashRegisterSession.update).not.toHaveBeenCalled();
     });
   });
+
+  // Fase 04a (T3.6) — `reconciliar` TODAVÍA NO EXISTE en
+  // `CashRegisterService` (se agrega recién en la Fase 04, otra sesión);
+  // mismo criterio que `registrarMovimientoManual`/`cerrarSesion` más
+  // arriba: no se agrega ni un stub al servicio real, se declara localmente
+  // el contrato esperado (BLUEPRINT §6, invariante 2; spec del módulo,
+  // secciones 3 y 9) y se castea para que el archivo compile — la llamada
+  // real lanza en runtime (`TypeError: ... is not a function`), que es la
+  // razón correcta de rojo para todos los casos de este describe.
+  //
+  // A diferencia de todos los métodos de arriba, `reconciliar()` es la
+  // ÚNICA excepción al contrato de "el servicio nunca abre su propia
+  // transacción" — mismo diseño, documentado en prosa en `state/STATUS.md`
+  // (fila de T2.8), que `stock.service.reconciliar()` ya usa para el
+  // invariante 1: es de solo lectura, no compone con la transacción de
+  // nadie más, y necesita `REPEATABLE READ` para que las dos lecturas
+  // (sesiones cerradas + suma de sus movimientos) vean el mismo instante
+  // consistente del sistema — sin eso, una escritura real entre ambas
+  // lecturas (un cierre concurrente, por ejemplo) podría reportar un
+  // desajuste que en realidad nunca existió. Por eso acá NO se le pasa un
+  // `tx` desde afuera como al resto de los métodos: el mock reemplaza el
+  // propio `PrismaService` inyectado por constructor, interceptando
+  // `$transaction`.
+  describe('reconciliar (T3.6, invariante 2)', () => {
+    interface CashRegisterReconciliationMismatch {
+      sessionId: number;
+      montoSistemaGuardado: Prisma.Decimal;
+      montoSistemaRecalculado: Prisma.Decimal;
+    }
+
+    interface CashRegisterServiceWithReconciliar {
+      reconciliar(): Promise<CashRegisterReconciliationMismatch[]>;
+    }
+
+    interface MovementFixture {
+      sessionId: number;
+      monto: Prisma.Decimal.Value;
+    }
+
+    function sumMovements(
+      movements: MovementFixture[],
+      sessionId: number,
+    ): Prisma.Decimal {
+      return movements
+        .filter((m) => m.sessionId === sessionId)
+        .reduce((acc, m) => acc.plus(m.monto), new Prisma.Decimal('0.00'));
+    }
+
+    // No hay un método fijado para agrupar la suma por sesión (§4.2 de la
+    // spec no lo especifica) — se mockean los tres candidatos más
+    // naturales (`groupBy`, `aggregate` por sesión, `findMany` sumado a
+    // mano), todos resolviendo el mismo resultado a partir de la misma
+    // fixture de movimientos, para no adivinar ese detalle de
+    // implementación.
+    interface ReconciliarMockTx {
+      cashRegisterSession: {
+        findMany: jest.Mock<
+          Promise<SessionRow[]>,
+          [{ where?: { estado?: CashRegisterSessionEstado } } | undefined]
+        >;
+      };
+      cashMovement: {
+        groupBy: jest.Mock<
+          Promise<
+            Array<{ sessionId: number; _sum: { monto: Prisma.Decimal } }>
+          >,
+          [unknown]
+        >;
+        aggregate: jest.Mock<
+          Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+          [{ where?: { sessionId?: number } } | undefined]
+        >;
+        findMany: jest.Mock<Promise<MovementFixture[]>, [unknown]>;
+      };
+    }
+
+    // `allSessions`: TODA la tabla simulada (abiertas y cerradas). El mock
+    // de `findMany` filtra por `where.estado` si la implementación lo manda
+    // (como debería, para no traer sesiones ABIERTA a este chequeo); si no
+    // manda ningún filtro, devuelve todo sin filtrar — así, una
+    // implementación que se olvide de filtrar por CERRADA queda expuesta en
+    // vez de pasar el test en silencio.
+    function buildReconciliarTx(
+      allSessions: SessionRow[],
+      movements: MovementFixture[],
+    ): ReconciliarMockTx {
+      const sessionIdsConMovimientos = [
+        ...new Set(movements.map((m) => m.sessionId)),
+      ];
+      return {
+        cashRegisterSession: {
+          findMany: jest
+            .fn<
+              Promise<SessionRow[]>,
+              [{ where?: { estado?: CashRegisterSessionEstado } } | undefined]
+            >()
+            .mockImplementation((args) => {
+              const estado = args?.where?.estado;
+              return Promise.resolve(
+                estado
+                  ? allSessions.filter((s) => s.estado === estado)
+                  : allSessions,
+              );
+            }),
+        },
+        cashMovement: {
+          groupBy: jest
+            .fn<
+              Promise<
+                Array<{ sessionId: number; _sum: { monto: Prisma.Decimal } }>
+              >,
+              [unknown]
+            >()
+            .mockImplementation(() =>
+              Promise.resolve(
+                sessionIdsConMovimientos.map((sessionId) => ({
+                  sessionId,
+                  _sum: { monto: sumMovements(movements, sessionId) },
+                })),
+              ),
+            ),
+          aggregate: jest
+            .fn<
+              Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+              [{ where?: { sessionId?: number } } | undefined]
+            >()
+            .mockImplementation((args) => {
+              const sessionId = args?.where?.sessionId;
+              return Promise.resolve({
+                _sum: {
+                  monto:
+                    sessionId === undefined
+                      ? null
+                      : sumMovements(movements, sessionId),
+                },
+              });
+            }),
+          findMany: jest
+            .fn<Promise<MovementFixture[]>, [unknown]>()
+            .mockResolvedValue(movements),
+        },
+      };
+    }
+
+    type TransactionMock = jest.Mock<
+      Promise<unknown>,
+      [
+        (t: Prisma.TransactionClient) => unknown,
+        { isolationLevel?: Prisma.TransactionIsolationLevel }?,
+      ]
+    >;
+
+    function buildServiceConPrisma(
+      allSessions: SessionRow[],
+      movements: MovementFixture[],
+    ): {
+      service: CashRegisterServiceWithReconciliar;
+      transactionMock: TransactionMock;
+    } {
+      const tx = buildReconciliarTx(allSessions, movements);
+      const transactionMock: TransactionMock = jest
+        .fn<
+          Promise<unknown>,
+          [
+            (t: Prisma.TransactionClient) => unknown,
+            { isolationLevel?: Prisma.TransactionIsolationLevel }?,
+          ]
+        >()
+        .mockImplementation((callback) =>
+          Promise.resolve(callback(tx as unknown as Prisma.TransactionClient)),
+        );
+      const prisma = {
+        $transaction: transactionMock,
+      } as unknown as PrismaService;
+      const ServiceConstructor = CashRegisterService as unknown as new (
+        p: PrismaService,
+        s: SettingsService,
+      ) => CashRegisterServiceWithReconciliar;
+      const reconciliarService = new ServiceConstructor(
+        prisma,
+        {} as SettingsService,
+      );
+      return { service: reconciliarService, transactionMock };
+    }
+
+    it('sin sesiones cerradas: devuelve una lista vacía', async () => {
+      const { service: reconciliarService } = buildServiceConPrisma([], []);
+
+      const result = await reconciliarService.reconciliar();
+
+      expect(result).toEqual([]);
+    });
+
+    it('varias sesiones cerradas donde montoSistema coincide con la suma real: lista vacía, no reporta nada', async () => {
+      const sessionA = buildSessionRow({
+        id: 10,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoInicial: new Prisma.Decimal('100.00'),
+        montoSistema: new Prisma.Decimal('500.00'), // 100 + 400
+      });
+      const sessionB = buildSessionRow({
+        id: 11,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoInicial: new Prisma.Decimal('50.00'),
+        montoSistema: new Prisma.Decimal('250.00'), // 50 + 200
+      });
+      const movements: MovementFixture[] = [
+        { sessionId: 10, monto: new Prisma.Decimal('400.00') },
+        { sessionId: 11, monto: new Prisma.Decimal('200.00') },
+      ];
+      const { service: reconciliarService } = buildServiceConPrisma(
+        [sessionA, sessionB],
+        movements,
+      );
+
+      const result = await reconciliarService.reconciliar();
+
+      expect(result).toEqual([]);
+    });
+
+    it('una sesión cerrada con montoSistema guardado que NO coincide con la suma real: aparece en la lista con ambos valores', async () => {
+      const sessionCorrupta = buildSessionRow({
+        id: 20,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoInicial: new Prisma.Decimal('100.00'),
+        // Recalculado real = 100 + 400 = 500, pero la fila quedó con 450 —
+        // simula que alguien la alteró por fuera del servicio.
+        montoSistema: new Prisma.Decimal('450.00'),
+      });
+      const movements: MovementFixture[] = [
+        { sessionId: 20, monto: new Prisma.Decimal('400.00') },
+      ];
+      const { service: reconciliarService } = buildServiceConPrisma(
+        [sessionCorrupta],
+        movements,
+      );
+
+      const result = await reconciliarService.reconciliar();
+
+      expect(result).toHaveLength(1);
+      expect(result[0].sessionId).toBe(20);
+      expect(
+        new Prisma.Decimal(result[0].montoSistemaGuardado).toString(),
+      ).toBe('450');
+      expect(
+        new Prisma.Decimal(result[0].montoSistemaRecalculado).toString(),
+      ).toBe('500');
+    });
+
+    it('reporta solo las sesiones que no cuadran, no todo el universo de sesiones cerradas', async () => {
+      const sessionOk = buildSessionRow({
+        id: 30,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoInicial: new Prisma.Decimal('100.00'),
+        montoSistema: new Prisma.Decimal('500.00'), // 100 + 400, correcta
+      });
+      const sessionCorrupta = buildSessionRow({
+        id: 31,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoInicial: new Prisma.Decimal('0.00'),
+        montoSistema: new Prisma.Decimal('999.00'), // debería ser 300
+      });
+      const movements: MovementFixture[] = [
+        { sessionId: 30, monto: new Prisma.Decimal('400.00') },
+        { sessionId: 31, monto: new Prisma.Decimal('300.00') },
+      ];
+      const { service: reconciliarService } = buildServiceConPrisma(
+        [sessionOk, sessionCorrupta],
+        movements,
+      );
+
+      const result = await reconciliarService.reconciliar();
+
+      expect(result).toHaveLength(1);
+      expect(result[0].sessionId).toBe(31);
+    });
+
+    it('una sesión ABIERTA de por medio no se incluye en el chequeo (no tiene montoSistema persistido)', async () => {
+      const sessionCerrada = buildSessionRow({
+        id: 40,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoInicial: new Prisma.Decimal('100.00'),
+        montoSistema: new Prisma.Decimal('500.00'), // 100 + 400, correcta
+      });
+      const sessionAbierta = buildSessionRow({
+        id: 41,
+        estado: CashRegisterSessionEstado.ABIERTA,
+        montoInicial: new Prisma.Decimal('200.00'),
+        montoSistema: null, // nunca se persiste mientras está ABIERTA
+      });
+      const movements: MovementFixture[] = [
+        { sessionId: 40, monto: new Prisma.Decimal('400.00') },
+      ];
+      const { service: reconciliarService } = buildServiceConPrisma(
+        [sessionCerrada, sessionAbierta],
+        movements,
+      );
+
+      const result = await reconciliarService.reconciliar();
+
+      expect(result).toEqual([]);
+      expect(result.some((m) => m.sessionId === 41)).toBe(false);
+    });
+
+    it('lee las sesiones cerradas y sus movimientos dentro de la misma transacción REPEATABLE READ (sección 5 de la spec, mismo patrón que T2.8 para stock)', async () => {
+      const { service: reconciliarService, transactionMock } =
+        buildServiceConPrisma([], []);
+
+      await reconciliarService.reconciliar();
+
+      expect(transactionMock).toHaveBeenCalledTimes(1);
+      const options = transactionMock.mock.calls[0][1];
+      expect(options?.isolationLevel).toBe(
+        Prisma.TransactionIsolationLevel.RepeatableRead,
+      );
+    });
+  });
 });

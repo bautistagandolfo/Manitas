@@ -67,6 +67,12 @@ export interface CerrarSesionInput {
   esOwner: boolean;
 }
 
+export interface CashRegisterReconciliationMismatch {
+  sessionId: number;
+  montoSistemaGuardado: Prisma.Decimal;
+  montoSistemaRecalculado: Prisma.Decimal;
+}
+
 // RN-6 (§5.1, literal: "SELLER no accede a... cierre de caja con
 // totales"): `montoSistema`/`diferencia` se omiten del todo para quien no
 // es OWNER, no se mandan en 0 ni en null — mismo patrón que
@@ -325,5 +331,48 @@ export class CashRegisterService {
     });
 
     return hideOwnerOnlyFields(updated, input.esOwner);
+  }
+
+  // T3.6 — invariante 2 (BLUEPRINT §6.2): monto_sistema == monto_inicial +
+  // SUM(cash_movements.monto) para cada sesión CERRADA. Solo sesiones
+  // CERRADA: una ABIERTA no tiene monto_sistema persistido contra el cual
+  // comparar (eso se recalcula en vivo, ver getSesionAbiertaConTotales).
+  // Devuelve solo las que no cuadran — vacío significa reconciliado.
+  //
+  // Única excepción al contrato de "el servicio nunca abre su propia
+  // transacción" (sección 4.2 de la spec): es de solo lectura, no compone
+  // con la transacción de nadie más. REPEATABLE READ, mismo motivo que
+  // stock.service.reconciliar() (T2.8): sin eso, una escritura real entre
+  // las dos lecturas (un cierre concurrente, por ejemplo) podría reportar
+  // un desajuste que en realidad nunca existió.
+  async reconciliar(): Promise<CashRegisterReconciliationMismatch[]> {
+    const [sessions, sums] = await this.prisma.$transaction(
+      (tx) =>
+        Promise.all([
+          tx.cashRegisterSession.findMany({
+            where: { estado: CashRegisterSessionEstado.CERRADA },
+            select: { id: true, montoInicial: true, montoSistema: true },
+          }),
+          tx.cashMovement.groupBy({
+            by: ['sessionId'],
+            _sum: { monto: true },
+          }),
+        ]),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    const sumaPorSesion = new Map(
+      sums.map((s) => [s.sessionId, s._sum.monto ?? new Prisma.Decimal(0)]),
+    );
+
+    return sessions
+      .map((session) => ({
+        sessionId: session.id,
+        montoSistemaGuardado: session.montoSistema ?? new Prisma.Decimal(0),
+        montoSistemaRecalculado: session.montoInicial.plus(
+          sumaPorSesion.get(session.id) ?? new Prisma.Decimal(0),
+        ),
+      }))
+      .filter((m) => !m.montoSistemaGuardado.equals(m.montoSistemaRecalculado));
   }
 }
