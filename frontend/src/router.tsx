@@ -8,6 +8,7 @@ import { NewProductPage } from './features/catalog/NewProductPage';
 import { ProductDetailPage } from './features/catalog/ProductDetailPage';
 import { VariantGridPage } from './features/catalog/VariantGridPage';
 import { NewVariantPage } from './features/catalog/NewVariantPage';
+import { CashRegisterPage } from './features/cash-registers/CashRegisterPage';
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -18,6 +19,7 @@ export const router = createBrowserRouter([
         element: <AppLayout />,
         children: [
           { path: '/', element: <Navigate to="/catalogo" replace /> },
+          { path: '/caja', element: <CashRegisterPage /> },
           { path: '/catalogo', element: <CatalogPage /> },
           { path: '/catalogo/productos/nuevo', element: <NewProductPage /> },
           {
