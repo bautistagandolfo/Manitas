@@ -146,7 +146,7 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 | T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | VERDE |
 | T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | VERDE |
 | T3.6 | Test del invariante 2 (arqueo) | T3.4 | VERDE |
-| T3.7 | Pantallas de apertura, movimientos y cierre | T3.5 | PENDIENTE |
+| T3.7 | Pantallas de apertura, movimientos y cierre | T3.5 | VERDE |
 
 > **T3.3 bloqueada por AMB-13 (fase 06 de este módulo, nueva):** el
 > blueprint no dice quién puede hacer un ingreso manual o un retiro de
