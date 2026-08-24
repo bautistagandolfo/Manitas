@@ -208,20 +208,61 @@ export class CashRegisterService {
     });
   }
 
+  private async buscarSesionAbierta(
+    tx: Prisma.TransactionClient,
+  ): Promise<CashRegisterSession | null> {
+    return tx.cashRegisterSession.findFirst({
+      where: { estado: CashRegisterSessionEstado.ABIERTA },
+    });
+  }
+
   // Usado por este módulo (T3.3, T3.4) y por sales/returns/expenses
-  // (módulos futuros, RN-10/RN-11) antes de operar — invariante 10.
+  // (módulos futuros, RN-10/RN-11) antes de operar — invariante 10. 409:
+  // pensado para una operación de negocio que no puede seguir sin sesión
+  // abierta, no para el endpoint de lectura (ver
+  // `getSesionAbiertaConTotales`, que usa 404 — semántica distinta para
+  // un GET cuyo propósito es justamente chequear si hay una).
   async getSesionAbiertaOrThrow(
     tx: Prisma.TransactionClient,
   ): Promise<CashRegisterSession> {
-    const session = await tx.cashRegisterSession.findFirst({
-      where: { estado: CashRegisterSessionEstado.ABIERTA },
-    });
+    const session = await this.buscarSesionAbierta(tx);
 
     if (!session) {
       throw new ConflictException('No hay una sesión de caja abierta');
     }
 
     return session;
+  }
+
+  // T3.5 / RN-7 / invariante 2 ("recalculable en cualquier momento,
+  // también con la sesión abierta"). A diferencia de la fila cruda que
+  // `getSesionAbiertaOrThrow` devuelve (con `montoSistema`/`diferencia`
+  // en null hasta el cierre, columnas que solo se escriben en
+  // `cerrarSesion`), acá se calcula `montoSistema` en vivo —
+  // `montoInicial + SUM(cash_movements.monto)` — mismo cálculo que un
+  // cierre real haría en este instante. `diferencia` no aplica a una
+  // sesión todavía abierta (no hay `montoDeclarado` todavía) y queda tal
+  // cual está en la fila (null). Ocultamiento de `montoSistema` para
+  // quien no es OWNER, mismo patrón que `cerrarSesion` (RN-6).
+  async getSesionAbiertaConTotales(
+    tx: Prisma.TransactionClient,
+    esOwner: boolean,
+  ): Promise<CashRegisterSessionForRole> {
+    const session = await this.buscarSesionAbierta(tx);
+
+    if (!session) {
+      throw new NotFoundException('No hay ninguna sesión de caja abierta');
+    }
+
+    const sum = await tx.cashMovement.aggregate({
+      where: { sessionId: session.id },
+      _sum: { monto: true },
+    });
+    const montoSistema = session.montoInicial.plus(
+      sum._sum.monto ?? new Prisma.Decimal(0),
+    );
+
+    return hideOwnerOnlyFields({ ...session, montoSistema }, esOwner);
   }
 
   // T3.4 / RN-4, RN-5, RN-6 / invariante 2. Mismo lock que

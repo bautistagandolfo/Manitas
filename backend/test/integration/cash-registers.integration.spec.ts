@@ -885,4 +885,149 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
       ).rejects.toThrow(/cerrada/i);
     });
   });
+
+  // Fase 04a (T3.5) — `GET /cash-registers/sessions/open` TODAVÍA NO EXISTE
+  // (`CashRegistersController` hoy solo tiene `POST /sessions`,
+  // `POST /movements/ingreso`, `POST /movements/retiro` y
+  // `POST /sessions/:id/close`, regla explícita de esta fase: no se edita
+  // el controller acá) — toda request contra esta ruta responde 404 hasta
+  // la Fase 04.
+  //
+  // RN-7 (spec del módulo, sección 2): no hay una regla de "detección"
+  // activa aparte de este endpoint — como solo puede existir una sesión
+  // ABIERTA a la vez (RN-1), alcanza con exponer la sesión ABIERTA actual
+  // (con su `fechaApertura`) para que el frontend (T3.7) la compare contra
+  // "hoy" en hora argentina y decida si mostrarla como "sesión olvidada".
+  // Este ticket no implementa esa comparación, solo el dato.
+  //
+  // **Mismo caveat que la fase 04a de T3.4** con "sesión inexistente": el
+  // caso "sin ninguna sesión ABIERTA → 404" de más abajo también da 404
+  // HOY, pero por el motivo equivocado (ruta inexistente, no "no hay
+  // sesión abierta") — solape inevitable entre ambos 404, documentado acá
+  // en vez de "resuelto": es la aserción correcta una vez que la Fase 04
+  // implemente la ruta real, no una demostración de rojo por sí sola en
+  // esta fase (a diferencia del resto de los casos de este bloque, que sí
+  // están hoy en rojo por la ausencia real de la ruta).
+  describe('GET /cash-registers/sessions/open (T3.5, RN-7, invariante 2)', () => {
+    async function abrirSesionParaOpen(
+      userId: number,
+      montoInicial: string,
+    ): Promise<number> {
+      const session = await prisma.$transaction((tx) =>
+        service.abrirSesion(tx, {
+          montoInicial: new Prisma.Decimal(montoInicial),
+          userId,
+        }),
+      );
+      createdSessionIds.push(session.id);
+      return session.id;
+    }
+
+    it('OWNER: 200 con la sesión ABIERTA actual, montoSistema recalculado correctamente (montoInicial + SUM(movimientos))', async () => {
+      const sessionId = await abrirSesionParaOpen(ownerId, '100.00');
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.VENTA,
+          monto: new Prisma.Decimal('400.00'),
+          descripcion: 'Venta real para el cálculo en vivo',
+          userId: ownerId,
+        }),
+      );
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.RETIRO,
+          monto: new Prisma.Decimal('50.00'),
+          descripcion: 'Retiro real para el cálculo en vivo',
+          userId: ownerId,
+        }),
+      );
+      // montoSistema esperado = 100 (inicial) + 400 (venta) - 50 (retiro) = 450
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/cash-registers/sessions/open'),
+      ).expect(200);
+
+      const body = response.body as {
+        id: number;
+        estado: string;
+        montoSistema: string;
+      };
+      expect(body.id).toBe(sessionId);
+      expect(body.estado).toBe(CashRegisterSessionEstado.ABIERTA);
+      expect(new Prisma.Decimal(body.montoSistema).toString()).toBe('450');
+    });
+
+    it('SELLER: 200 pero la respuesta NO incluye montoSistema (RN-6, cierre a ciegas aplicado también acá)', async () => {
+      await abrirSesionParaOpen(sellerId, '100.00');
+
+      const response = await sold(
+        request(app.getHttpServer()).get('/cash-registers/sessions/open'),
+      ).expect(200);
+
+      const body = response.body as Record<string, unknown>;
+      expect(body.estado).toBe(CashRegisterSessionEstado.ABIERTA);
+      expect(body.montoSistema).toBeUndefined();
+    });
+
+    it('sin ninguna sesión ABIERTA → 404', async () => {
+      await closeAnyOpenSessionDirect();
+
+      await owned(
+        request(app.getHttpServer()).get('/cash-registers/sessions/open'),
+      ).expect(404);
+    });
+
+    it('la respuesta incluye fechaApertura (necesario para T3.7: comparar contra "hoy" en hora argentina y decidir si es una sesión olvidada)', async () => {
+      const sessionId = await abrirSesionParaOpen(ownerId, '0.00');
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/cash-registers/sessions/open'),
+      ).expect(200);
+
+      const body = response.body as { id: number; fechaApertura: string };
+      expect(body.id).toBe(sessionId);
+      expect(body.fechaApertura).toBeTruthy();
+      expect(new Date(body.fechaApertura).toString()).not.toBe('Invalid Date');
+    });
+
+    it('el montoSistema de una sesión todavía ABIERTA es el mismo que calcularía un cierre real en ese momento (invariante 2, "recalculable en cualquier momento, también con la sesión abierta")', async () => {
+      const sessionId = await abrirSesionParaOpen(ownerId, '250.00');
+      const movimientos = [
+        { tipo: CashMovementTipo.VENTA, monto: '300.00' },
+        { tipo: CashMovementTipo.INGRESO_MANUAL, monto: '75.00' },
+        { tipo: CashMovementTipo.RETIRO, monto: '120.00' },
+        { tipo: CashMovementTipo.GASTO, monto: '20.00' },
+      ] as const;
+      for (const m of movimientos) {
+        await prisma.$transaction((tx) =>
+          service.registrarMovimiento(tx, {
+            sessionId,
+            tipo: m.tipo,
+            monto: new Prisma.Decimal(m.monto),
+            descripcion: `Movimiento ${m.tipo} para verificación de invariante 2`,
+            userId: ownerId,
+          }),
+        );
+      }
+      // Suma manual de los signos reales aplicados por el servicio (RN-3):
+      // VENTA/INGRESO_MANUAL positivos, RETIRO/GASTO negativos.
+      // 250 + 300 + 75 - 120 - 20 = 485
+      const sumaManual = new Prisma.Decimal('250.00')
+        .plus('300.00')
+        .plus('75.00')
+        .minus('120.00')
+        .minus('20.00');
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/cash-registers/sessions/open'),
+      ).expect(200);
+
+      const body = response.body as { montoSistema: string };
+      expect(new Prisma.Decimal(body.montoSistema).toString()).toBe(
+        sumaManual.toString(),
+      );
+    });
+  });
 });

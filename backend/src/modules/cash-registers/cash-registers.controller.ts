@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -30,6 +31,23 @@ export class CashRegistersController {
     private readonly cashRegisterService: CashRegisterService,
     private readonly prisma: PrismaService,
   ) {}
+
+  // T3.5 / RN-7: la "detección de sesión olvidada" es del lado del
+  // frontend (T3.7) — compara `fechaApertura` contra "hoy" en hora
+  // argentina. Este endpoint solo expone la sesión ABIERTA actual (si
+  // hay alguna) con su `montoSistema` recalculado en vivo. Sin @Roles:
+  // cualquiera necesita poder consultar esto antes de operar.
+  @Get('sessions/open')
+  async abierta(
+    @CurrentUser() user: RequestUser,
+  ): Promise<CashRegisterSessionForRole> {
+    return this.prisma.$transaction((tx) =>
+      this.cashRegisterService.getSesionAbiertaConTotales(
+        tx,
+        user.rol === UserRole.OWNER,
+      ),
+    );
+  }
 
   // Sin @Roles: abrir una sesión de caja está abierto a cualquier rol
   // autenticado (BLUEPRINT §5.5 — una vendedora tiene que poder arrancar
