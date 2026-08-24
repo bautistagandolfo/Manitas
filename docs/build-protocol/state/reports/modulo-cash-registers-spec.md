@@ -222,16 +222,29 @@ class CashRegisterService {
   // Usado por este módulo (T3.1, T3.2, T3.3, T3.4):
   abrirSesion(tx, { montoInicial, userId }): Promise<CashRegisterSession>
   cerrarSesion(tx, { sessionId, montoDeclarado, notaCierre, userId, esOwner }): Promise<CashRegisterSession>
-  registrarMovimientoManual(tx, { sessionId, tipo: 'INGRESO_MANUAL' | 'RETIRO', monto, descripcion, userId }): Promise<void>
+  registrarMovimientoManual(tx, { sessionId, tipo: 'INGRESO_MANUAL' | 'RETIRO', monto, descripcion, userId, idempotencyKey }): Promise<CashMovement>
 
   // Expuesto para sales/returns/expenses (no se llama desde este módulo):
   getSesionAbiertaOrThrow(tx): Promise<CashRegisterSession>
   registrarMovimiento(tx, {
-    sessionId, tipo: 'VENTA' | 'DEVOLUCION' | 'ANULACION' | 'GASTO',
-    monto, referenciaTipo, referenciaId, descripcion, userId,
-  }): Promise<void>
+    sessionId, tipo: 'VENTA' | 'DEVOLUCION' | 'ANULACION' | 'GASTO' | 'INGRESO_MANUAL' | 'RETIRO',
+    monto, referenciaTipo, referenciaId, descripcion, userId, idempotencyKey,
+  }): Promise<CashMovement>
 }
 ```
+
+**Corrección post-spec (T3.3, implementación):** el diseño original de
+esta sección no devolvía nada (`Promise<void>`) ni pedía
+`idempotencyKey` en `registrarMovimientoManual` — quedó corregido acá
+al descubrir, implementando T3.3, que `withIdempotency` (T0.14)
+necesita comparar la fila recién insertada contra la encontrada por
+clave duplicada, lo que exige devolver la fila real. `idempotencyKey`
+quedó como campo **opcional** en `registrarMovimiento` (T3.4+ lo puede
+usar o no según haga falta) y **obligatorio** en
+`registrarMovimientoManual` (T3.3 siempre lo necesita, es la única
+vía de idempotencia de esos dos tipos). `registrarMovimientoManual` no
+duplica lógica: llama internamente a `registrarMovimiento` con
+`tipo` acotado a `'INGRESO_MANUAL' | 'RETIRO'`.
 
 Todos los métodos **exigen recibir el `tx` de una transacción ya
 abierta** por quien llama (no abren la suya propia) — porque en
