@@ -308,6 +308,18 @@ export class CatalogImportService {
     return sku;
   }
 
+  // Fase 08 (QA adversarial) — hallazgo real: a diferencia de
+  // brand/category/size/color (que sí tienen `nombre` único en el
+  // schema, así que una carrera ahí ya queda protegida por la base),
+  // `products.nombre` NO es único. Sin este lock, dos imports
+  // concurrentes con el mismo nombre nuevo podían los dos leer "no
+  // existe" antes de que ninguno hiciera commit y crear DOS productos
+  // duplicados — confirmado empíricamente (15/15 carreras) con dos
+  // find-or-create en paralelo contra Prisma directo, mismo patrón que
+  // el "doble click" que este check tiene que resistir.
+  // `pg_advisory_xact_lock` serializa por nombre (hash) sin necesitar
+  // una migración de schema, y se libera solo al terminar la
+  // transacción de la fila.
   private async resolveProduct(
     tx: Prisma.TransactionClient,
     nombre: string,
@@ -318,6 +330,8 @@ export class CatalogImportService {
     const key = nombre.toLowerCase();
     const cached = caches.products.get(key);
     if (cached !== undefined) return cached;
+
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key})::bigint)`;
 
     const existing = await tx.product.findFirst({
       where: { nombre: { equals: nombre, mode: 'insensitive' } },

@@ -656,6 +656,55 @@ describe('Variants (integration)', () => {
         )
         .expect(404);
     });
+
+    it('rechaza una grilla con más de 1000 filas (400, Fase 08 QA)', async () => {
+      const productId = await createTestProduct();
+
+      const filas = Array.from({ length: 1001 }, () => ({
+        sizeId: sizeS,
+        colorId: colorNegro,
+        stock: 1,
+        precioVenta: '10.00',
+        costo: '5.00',
+      }));
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(
+          gridBody({
+            sizeIds: [sizeS],
+            colorIds: [colorNegro],
+            filas,
+          }),
+        )
+        .expect(400);
+
+      const count = await prisma.variant.count({ where: { productId } });
+      expect(count).toBe(0);
+    });
+
+    it('rechaza sizeIds/colorIds con más de 50 elementos (400, Fase 08 QA)', async () => {
+      const productId = await createTestProduct();
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/products/${productId}/variants/grid`,
+        ),
+      )
+        .send(
+          gridBody({
+            sizeIds: Array.from({ length: 51 }, (_v, i) => sizeS + i),
+            colorIds: [colorNegro],
+          }),
+        )
+        .expect(400);
+
+      const count = await prisma.variant.count({ where: { productId } });
+      expect(count).toBe(0);
+    });
   });
 
   describe('GET /variants/:id/price-history (T2.9, AD-16, RN-3)', () => {

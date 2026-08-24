@@ -83,6 +83,7 @@ interface MockTx {
   color: { findFirst: jest.Mock; create: jest.Mock };
   variant: { create: jest.Mock };
   priceHistory: { create: jest.Mock };
+  $executeRaw: jest.Mock;
 }
 
 function buildMockTx(): MockTx {
@@ -94,6 +95,10 @@ function buildMockTx(): MockTx {
     color: { findFirst: jest.fn(), create: jest.fn() },
     variant: { create: jest.fn() },
     priceHistory: { create: jest.fn() },
+    // Fase 08 (QA adversarial) — resolveProduct toma un advisory lock
+    // (pg_advisory_xact_lock) antes de buscar/crear el producto, ver
+    // catalog-import.service.ts. Mock sin efecto, solo para que exista.
+    $executeRaw: jest.fn().mockResolvedValue(undefined),
   };
 }
 

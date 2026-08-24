@@ -133,6 +133,11 @@ describe('StockService', () => {
           stockActual: { increment: 10 },
         }) as unknown,
       });
+      // Fase 08 (QA adversarial, Stryker): sin esta aserción, un mutante
+      // que reemplaza el `where` de esta lectura por `{}` sobrevive.
+      expect(tx.variant.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 1 },
+      });
 
       // Contrato sección 4.2: recibe el `tx` ya abierto por quien llama y
       // nunca abre su propia transacción.
@@ -228,10 +233,42 @@ describe('StockService', () => {
           userId: 9,
         }) as unknown,
       });
+      // Fase 08 (QA adversarial, Stryker): match exacto (no
+      // objectContaining) para matar mutantes que vacían este objeto.
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 4 } },
+      });
+      // Delta positivo no necesita el lock de §7/§9.4 (ese es solo para
+      // delta negativo) — si esta rama se saltea o el `if` se evalúa mal,
+      // el flujo cae en la rama de abajo y termina llamando $queryRaw.
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
 
       // Contrato sección 4.2: recibe el `tx` ya abierto por quien llama y
       // nunca abre su propia transacción.
       expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('caso límite delta = 0: toma la rama positiva (>= 0, no > 0) y no pide el lock de la rama negativa', async () => {
+      const tx = createMockTx(5);
+
+      await expect(
+        service.registrarAjuste(asTx(tx), {
+          variantId: 1,
+          delta: 0,
+          motivo: 'Conteo físico: sin diferencias',
+          userId: 9,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ delta: 0, tipo: 'AJUSTE' }) as unknown,
+      });
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 0 } },
+      });
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
     });
   });
 
@@ -253,6 +290,20 @@ describe('StockService', () => {
           delta: -3,
           tipo: 'AJUSTE',
         }) as unknown,
+      });
+      // Fase 08 (QA adversarial, Stryker): match exacto para matar
+      // mutantes que vacían el `data`/`where` de este update final.
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: -3 } },
+      });
+      // §7/§9.4: bloquea la fila antes de leer stock_actual — verifica
+      // que el lock se pida por el id correcto (no un query vacío).
+      expect(tx.$queryRaw).toHaveBeenCalled();
+      const rawCall = tx.$queryRaw.mock.calls[0] as unknown[];
+      expect(rawCall).toContain(1);
+      expect(tx.variant.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 1 },
       });
     });
 
@@ -380,6 +431,30 @@ describe('StockService', () => {
       await expect(service.reconciliar()).resolves.toEqual([
         { variantId: 2, stockActual: 99, sumaMovimientos: 3 },
       ]);
+    });
+
+    // Fase 08 (QA adversarial, Stryker): ninguno de los tests anteriores
+    // verifica la FORMA de las consultas en sí (solo lo que devuelven vía
+    // el mock) — sin esto, mutantes que vacían el `select`/`by`/`_sum` o
+    // sacan el isolationLevel sobreviven porque el mock ignora sus
+    // argumentos y devuelve igual el valor seteado a mano.
+    it('consulta variant.findMany y stockMovement.groupBy con la forma exacta esperada, en REPEATABLE READ (§ concurrencia)', async () => {
+      prismaMock.variant.findMany.mockResolvedValue([]);
+      prismaMock.stockMovement.groupBy.mockResolvedValue([]);
+
+      await service.reconciliar();
+
+      expect(prismaMock.variant.findMany).toHaveBeenCalledWith({
+        select: { id: true, stockActual: true },
+      });
+      expect(prismaMock.stockMovement.groupBy).toHaveBeenCalledWith({
+        by: ['variantId'],
+        _sum: { delta: true },
+      });
+      expect(prismaMock.$transaction).toHaveBeenCalledWith(
+        expect.any(Function) as unknown,
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      );
     });
   });
 });

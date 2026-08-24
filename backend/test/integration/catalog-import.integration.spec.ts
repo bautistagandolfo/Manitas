@@ -291,6 +291,64 @@ describe('POST /products/import (integration, T2.13, AMB-12)', () => {
     expect(productCount).toBe(1);
   });
 
+  // Fase 08 (QA adversarial) — hallazgo real: a diferencia de
+  // brand/category/size/color (con `nombre` único en el schema),
+  // `products.nombre` no lo es. Sin el advisory lock de
+  // `resolveProduct`, dos imports concurrentes con el mismo nombre
+  // nuevo (el "doble click" que esta fase exige probar) podían crear
+  // dos productos duplicados — confirmado empíricamente (15/15
+  // carreras) antes del fix. Repetido varias veces con nombres frescos:
+  // a nivel HTTP la ventana de la carrera es más angosta que a nivel de
+  // Prisma directo (mismo motivo documentado en
+  // stock.integration.spec.ts para la concurrencia de ajustes).
+  it('doble import concurrente con el mismo nombre de producto nuevo no crea productos duplicados', async () => {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const nombreProducto = `Carrera Import Test ${Date.now()}-${attempt}`;
+      const sku1 = `CARRERA-A-${Date.now()}-${attempt}`;
+      const sku2 = `CARRERA-B-${Date.now()}-${attempt}`;
+      // Talles distintos: dos variantes reales del mismo producto, no
+      // dos filas "sin talle ni color" chocando entre sí (eso ya lo
+      // cubre el test de UNIQUE NULLS NOT DISTINCT en
+      // variants.integration.spec.ts, y no es lo que este test quiere
+      // probar).
+      const talle1 = `CarreraTalleA-${Date.now()}-${attempt}`;
+      const talle2 = `CarreraTalleB-${Date.now()}-${attempt}`;
+
+      const csvA =
+        'nombre,talle,sku,precio,costo,stock\n' +
+        `${nombreProducto},${talle1},${sku1},10.00,5.00,1\n`;
+      const csvB =
+        'nombre,talle,sku,precio,costo,stock\n' +
+        `${nombreProducto},${talle2},${sku2},20.00,10.00,2\n`;
+
+      await Promise.all([
+        owned(request(app.getHttpServer()).post('/products/import')).send({
+          csv: csvA,
+        }),
+        owned(request(app.getHttpServer()).post('/products/import')).send({
+          csv: csvB,
+        }),
+      ]);
+
+      await trackCreatedByName(nombreProducto);
+      await trackReferenceData(talle1, 'size');
+      await trackReferenceData(talle2, 'size');
+
+      const productCount = await prisma.product.count({
+        where: { nombre: { equals: nombreProducto, mode: 'insensitive' } },
+      });
+      expect(productCount).toBe(1);
+
+      const variant1 = await prisma.variant.findUnique({
+        where: { sku: sku1 },
+      });
+      const variant2 = await prisma.variant.findUnique({
+        where: { sku: sku2 },
+      });
+      expect(variant1?.productId).toBe(variant2?.productId);
+    }
+  });
+
   it('genera el SKU automáticamente cuando la celda viene vacía', async () => {
     const nombreProducto = `Producto Sin SKU Test ${Date.now()}`;
 

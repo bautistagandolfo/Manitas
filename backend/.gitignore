@@ -12,6 +12,10 @@ dist
 # Test coverage
 coverage
 
+# Stryker mutation testing
+.stryker-tmp
+reports/mutation
+
 # Playwright
 playwright-report
 test-results

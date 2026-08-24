@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsDecimal,
@@ -47,14 +48,20 @@ export class GridFilaDto {
 }
 
 export class CreateVariantGridDto {
+  // Fase 08 (QA adversarial) — sin tope, un alta con un array enorme
+  // procesa `filas` secuencialmente dentro de una única transacción
+  // (VariantsService.createGrid) y puede colgarla. 50 talles/colores ya
+  // es muy por encima de lo que maneja una tienda real.
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayMaxSize(50)
   @Type(() => Number)
   @IsInt({ each: true })
   sizeIds!: number[];
 
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayMaxSize(50)
   @Type(() => Number)
   @IsInt({ each: true })
   colorIds!: number[];
@@ -79,6 +86,7 @@ export class CreateVariantGridDto {
 
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayMaxSize(1000)
   @ValidateNested({ each: true })
   @Type(() => GridFilaDto)
   filas!: GridFilaDto[];
