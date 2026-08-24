@@ -98,7 +98,7 @@ Todos los módulos dependen de esto.
 | T2.9 | **`price_history`**: registro de todo cambio de precio y costo (AD-16) | T2.3, **T0.12** | VERDE |
 | T2.10 | **Actualización masiva de precios** con vista previa (blueprint §5.2) | T2.9, **T0.12** | VERDE |
 | T2.11 | **Alta de variantes por grilla** (talles × colores, blueprint §12.2) | T2.3, **T0.12** | VERDE |
-| T2.12 | Pantallas de catálogo, stock e ingreso de mercadería | T2.5, T2.6, T2.7, T2.11, **T0.11** | PENDIENTE |
+| T2.12 | Pantallas de catálogo, stock e ingreso de mercadería | T2.5, T2.6, T2.7, T2.11, **T0.11** | VERDE |
 | T2.13 | **Importación de catálogo por CSV** (productos, variantes, stock inicial, costos), validación con reporte de errores línea por línea (`DECISIONES_PENDIENTES.md` C2) | T2.4, T2.9 | PENDIENTE |
 
 **T2.4 es el ticket más delicado de esta etapa.** Blueprint §9.4 y AD-4.
