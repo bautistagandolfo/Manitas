@@ -142,7 +142,7 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 |---|---|---|---|
 | T3.1 | Apertura de sesión con monto inicial + constraint de sesión única abierta | T1.3 | VERDE |
 | T3.2 | Movimientos de caja (servicio base, solo efectivo — AD-8) | T3.1 | VERDE |
-| T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | **BLOQUEADO por AMB-13** |
+| T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | PENDIENTE |
 | T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | PENDIENTE |
 | T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | PENDIENTE |
 | T3.6 | Test del invariante 2 (arqueo) | T3.4 | PENDIENTE |
@@ -156,6 +156,9 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 > operativo del módulo. Recomendación: `OWNER`-only para ambas. Ver
 > `state/AMBIGUITIES.md` AMB-13 y
 > `state/reports/modulo-cash-registers-spec.md` sección 10.
+>
+> **AMB-13 RESUELTA (2026-08-24):** el PO aprobó la recomendación —
+> `OWNER`-only para `INGRESO_MANUAL` y `RETIRO`. **T3.3 desbloqueada.**
 >
 > **T3.4 sigue esperando T0.13** (`settings`, todavía `PENDIENTE`) para
 > el valor real de `umbral_diferencia_caja` — AMB-10 ya está
