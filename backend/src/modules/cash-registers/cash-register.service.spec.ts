@@ -154,6 +154,16 @@ function asTx(tx: MockTx): Prisma.TransactionClient {
   return tx as unknown as Prisma.TransactionClient;
 }
 
+// Fase 08 (QA adversarial) — mismo patrón que
+// `products/brands.service.spec.ts`/`auth/users.service.spec.ts` para
+// simular una violación real de constraint sin tocar Postgres.
+function prismaUniqueViolation(): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+    code: 'P2002',
+    clientVersion: '6.19.3',
+  });
+}
+
 describe('CashRegisterService', () => {
   let service: CashRegisterService;
 
@@ -214,6 +224,79 @@ describe('CashRegisterService', () => {
       ).rejects.toThrow(/negativo/i);
 
       expect(tx.cashRegisterSession.create).not.toHaveBeenCalled();
+    });
+
+    it('Fase 08 (QA adversarial): rechaza montoInicial que excede la precisión Decimal(12,2) de la columna sin llegar a insertar (antes de esta fase, Postgres lo rechazaba con un 500 crudo — "numeric field overflow")', async () => {
+      const tx = buildMockTx(null);
+
+      await expect(
+        service.abrirSesion(asTx(tx), {
+          montoInicial: new Prisma.Decimal('99999999999999.00'),
+          userId: 7,
+        }),
+      ).rejects.toThrow('El monto inicial es demasiado grande');
+
+      expect(tx.cashRegisterSession.create).not.toHaveBeenCalled();
+    });
+
+    it('Fase 08 (QA adversarial): traduce P2002 (constraint única de sesión abierta) a 409 "Ya hay una sesión de caja abierta" (RN-1) — no cubierto por ningún test unitario hasta esta fase, solo por integración', async () => {
+      const tx = buildMockTx(null);
+      tx.cashRegisterSession.create.mockRejectedValueOnce(
+        prismaUniqueViolation(),
+      );
+
+      await expect(
+        service.abrirSesion(asTx(tx), {
+          montoInicial: new Prisma.Decimal('100.00'),
+          userId: 7,
+        }),
+      ).rejects.toThrow(/ya hay una sesi[oó]n/i);
+    });
+
+    it('Fase 08 (QA adversarial): un error que NO es P2002 se propaga tal cual, sin traducirlo a un mensaje de negocio equivocado', async () => {
+      const tx = buildMockTx(null);
+      const otroError = new Error(
+        'fallo de conexión, no relacionado con la constraint',
+      );
+      tx.cashRegisterSession.create.mockRejectedValueOnce(otroError);
+
+      await expect(
+        service.abrirSesion(asTx(tx), {
+          montoInicial: new Prisma.Decimal('100.00'),
+          userId: 7,
+        }),
+      ).rejects.toBe(otroError);
+    });
+
+    it('Fase 08 (QA adversarial): un PrismaClientKnownRequestError con OTRO código (no P2002) se propaga tal cual, sin traducirlo', async () => {
+      const tx = buildMockTx(null);
+      const otroCodigo = new Prisma.PrismaClientKnownRequestError(
+        'Record not found',
+        { code: 'P2025', clientVersion: '6.19.3' },
+      );
+      tx.cashRegisterSession.create.mockRejectedValueOnce(otroCodigo);
+
+      await expect(
+        service.abrirSesion(asTx(tx), {
+          montoInicial: new Prisma.Decimal('100.00'),
+          userId: 7,
+        }),
+      ).rejects.toBe(otroCodigo);
+    });
+
+    it('Fase 08 (QA adversarial): un error con .code = "P2002" que NO es instancia de PrismaClientKnownRequestError no se traduce (evita traducir por casualidad de forma, no de tipo real)', async () => {
+      const tx = buildMockTx(null);
+      const parecidoPeroNoLoEs = Object.assign(new Error('parecido'), {
+        code: 'P2002',
+      });
+      tx.cashRegisterSession.create.mockRejectedValueOnce(parecidoPeroNoLoEs);
+
+      await expect(
+        service.abrirSesion(asTx(tx), {
+          montoInicial: new Prisma.Decimal('100.00'),
+          userId: 7,
+        }),
+      ).rejects.toBe(parecidoPeroNoLoEs);
     });
   });
 
@@ -282,7 +365,7 @@ describe('CashRegisterService', () => {
           descripcion: 'Monto inválido',
           userId: 7,
         }),
-      ).rejects.toThrow(/mayor a 0/i);
+      ).rejects.toThrow('monto tiene que ser mayor a 0');
 
       await expect(
         service.registrarMovimiento(asTx(tx), {
@@ -292,7 +375,23 @@ describe('CashRegisterService', () => {
           descripcion: 'Monto inválido',
           userId: 7,
         }),
-      ).rejects.toThrow(/mayor a 0/i);
+      ).rejects.toThrow('monto tiene que ser mayor a 0');
+
+      expect(tx.cashMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('Fase 08 (QA adversarial): rechaza un monto que excede la precisión Decimal(12,2) de la columna sin insertar nada', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await expect(
+        service.registrarMovimiento(asTx(tx), {
+          sessionId: 1,
+          tipo: CashMovementTipo.INGRESO_MANUAL,
+          monto: new Prisma.Decimal('99999999999999.00'),
+          descripcion: 'Monto demasiado grande',
+          userId: 7,
+        }),
+      ).rejects.toThrow('El monto es demasiado grande');
 
       expect(tx.cashMovement.create).not.toHaveBeenCalled();
     });
@@ -306,6 +405,22 @@ describe('CashRegisterService', () => {
           tipo: CashMovementTipo.INGRESO_MANUAL,
           monto: new Prisma.Decimal('100.00'),
           descripcion: '',
+          userId: 7,
+        }),
+      ).rejects.toThrow(/descripci[oó]n/i);
+
+      expect(tx.cashMovement.create).not.toHaveBeenCalled();
+    });
+
+    it('Fase 08 (QA adversarial): rechaza una descripcion que es solo espacios en blanco (no alcanza con chequear no-vacío, tiene que recortarse primero)', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await expect(
+        service.registrarMovimiento(asTx(tx), {
+          sessionId: 1,
+          tipo: CashMovementTipo.INGRESO_MANUAL,
+          monto: new Prisma.Decimal('100.00'),
+          descripcion: '   ',
           userId: 7,
         }),
       ).rejects.toThrow(/descripci[oó]n/i);
@@ -330,6 +445,22 @@ describe('CashRegisterService', () => {
 
       expect(tx.cashMovement.create).not.toHaveBeenCalled();
     });
+
+    it('Fase 08 (QA adversarial): busca la sesión por el id exacto recibido antes de insertar el movimiento', async () => {
+      const tx = buildMockTx(buildSessionRow({ id: 1 }));
+
+      await service.registrarMovimiento(asTx(tx), {
+        sessionId: 1,
+        tipo: CashMovementTipo.INGRESO_MANUAL,
+        monto: new Prisma.Decimal('100.00'),
+        descripcion: 'Chequeo de forma exacta del query',
+        userId: 7,
+      });
+
+      expect(tx.cashRegisterSession.findUniqueOrThrow).toHaveBeenCalledWith({
+        where: { id: 1 },
+      });
+    });
   });
 
   describe('getSesionAbiertaOrThrow (RN-10, invariante 9)', () => {
@@ -349,6 +480,90 @@ describe('CashRegisterService', () => {
       await expect(service.getSesionAbiertaOrThrow(asTx(tx))).rejects.toThrow(
         /sesi[oó]n.*abiert/i,
       );
+    });
+
+    it('Fase 08 (QA adversarial): busca específicamente la sesión en estado ABIERTA, no cualquier sesión', async () => {
+      const tx = buildMockTx(buildSessionRow());
+
+      await service.getSesionAbiertaOrThrow(asTx(tx));
+
+      expect(tx.cashRegisterSession.findFirst).toHaveBeenCalledWith({
+        where: { estado: CashRegisterSessionEstado.ABIERTA },
+      });
+    });
+  });
+
+  // Fase 08 (QA adversarial) — gap real de cobertura encontrado con Stryker:
+  // T3.5 solo tenía tests de integración (`GET /cash-registers/sessions/open`)
+  // para este método — a nivel unitario, con Prisma mockeado, nunca se había
+  // probado ni el cálculo en vivo de `montoSistema` ni el ocultamiento para
+  // SELLER (RN-6) de forma aislada.
+  describe('getSesionAbiertaConTotales (T3.5, RN-6, RN-7, invariante 2)', () => {
+    it('OWNER: calcula montoSistema = montoInicial + SUM(movimientos) y lo incluye en el resultado', async () => {
+      const abierta = buildSessionRow({
+        id: 5,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx(abierta);
+      tx.cashMovement.aggregate.mockResolvedValueOnce({
+        _sum: { monto: new Prisma.Decimal('250.00') },
+      });
+
+      const result = await service.getSesionAbiertaConTotales(asTx(tx), true);
+
+      expect(new Prisma.Decimal(result.montoSistema!).toString()).toBe('350');
+      expect(result.diferencia).toBeNull();
+    });
+
+    it('cuando la sesión todavía no tiene ningún movimiento (SUM null), montoSistema queda igual a montoInicial (0, no una excepción)', async () => {
+      const abierta = buildSessionRow({
+        id: 5,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx(abierta);
+      tx.cashMovement.aggregate.mockResolvedValueOnce({
+        _sum: { monto: null },
+      });
+
+      const result = await service.getSesionAbiertaConTotales(asTx(tx), true);
+
+      expect(new Prisma.Decimal(result.montoSistema!).toString()).toBe('100');
+    });
+
+    it('SELLER: la respuesta NO incluye montoSistema (RN-6, mismo criterio que cerrarSesion)', async () => {
+      const abierta = buildSessionRow({ id: 5 });
+      const tx = buildMockTx(abierta);
+      tx.cashMovement.aggregate.mockResolvedValueOnce({
+        _sum: { monto: new Prisma.Decimal('50.00') },
+      });
+
+      const result = await service.getSesionAbiertaConTotales(asTx(tx), false);
+
+      expect(result.montoSistema).toBeUndefined();
+      expect('montoSistema' in result).toBe(false);
+    });
+
+    it('sin ninguna sesión ABIERTA → 404 (NotFoundException), no el 409 de getSesionAbiertaOrThrow (semántica distinta para un GET)', async () => {
+      const tx = buildMockTx(null);
+
+      await expect(
+        service.getSesionAbiertaConTotales(asTx(tx), true),
+      ).rejects.toThrow(/ninguna sesi[oó]n/i);
+    });
+
+    it('busca específicamente la sesión ABIERTA y suma los movimientos de esa sesión exacta', async () => {
+      const abierta = buildSessionRow({ id: 5 });
+      const tx = buildMockTx(abierta);
+
+      await service.getSesionAbiertaConTotales(asTx(tx), true);
+
+      expect(tx.cashRegisterSession.findFirst).toHaveBeenCalledWith({
+        where: { estado: CashRegisterSessionEstado.ABIERTA },
+      });
+      expect(tx.cashMovement.aggregate).toHaveBeenCalledWith({
+        where: { sessionId: 5 },
+        _sum: { monto: true },
+      });
     });
   });
 
@@ -633,6 +848,113 @@ describe('CashRegisterService', () => {
       expect(new Prisma.Decimal(data.montoDeclarado!).toString()).toBe('500');
     });
 
+    it('Fase 08 (QA adversarial): recorta espacios de notaCierre antes de guardarla', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      const { service } = buildServiceConSettings();
+
+      await service.cerrarSesion(asTx(tx), {
+        sessionId: 1,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        notaCierre: '   todo en orden   ',
+        userId: 7,
+        esOwner: true,
+      });
+
+      const data = lastUpdateCallData(tx);
+      expect(data.notaCierre).toBe('todo en orden');
+    });
+
+    it('Fase 08 (QA adversarial): sin notaCierre (ni undefined ni string vacío/solo-espacios) guarda null, no undefined ni string vacío', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      const { service } = buildServiceConSettings();
+
+      await service.cerrarSesion(asTx(tx), {
+        sessionId: 1,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        notaCierre: '   ',
+        userId: 7,
+        esOwner: true,
+      });
+
+      const data = lastUpdateCallData(tx);
+      expect(data.notaCierre).toBeNull();
+    });
+
+    it('Fase 08 (QA adversarial): busca/suma/actualiza la sesión exacta recibida por sessionId', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      const { service } = buildServiceConSettings();
+
+      await service.cerrarSesion(asTx(tx), {
+        sessionId: 1,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        userId: 7,
+        esOwner: true,
+      });
+
+      expect(tx.cashRegisterSession.findUnique).toHaveBeenCalledWith({
+        where: { id: 1 },
+      });
+      expect(tx.cashMovement.aggregate).toHaveBeenCalledWith({
+        where: { sessionId: 1 },
+        _sum: { monto: true },
+      });
+      expect(tx.cashRegisterSession.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 1 } }),
+      );
+    });
+
+    it('Fase 08 (QA adversarial): rechaza montoDeclarado negativo sin tomar el lock ni actualizar nada (antes de esta fase, un "efectivo contado" negativo se aceptaba y cerraba la sesión con una diferencia sin sentido físico)', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('-50.00'),
+          userId: 7,
+          esOwner: true,
+        }),
+      ).rejects.toThrow(/no puede ser negativo/i);
+
+      expect(tx.cashRegisterSession.update).not.toHaveBeenCalled();
+    });
+
+    it('Fase 08 (QA adversarial): rechaza montoDeclarado que excede la precisión Decimal(12,2) de la columna sin tomar el lock ni actualizar nada', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('99999999999999.00'),
+          userId: 7,
+          esOwner: true,
+        }),
+      ).rejects.toThrow('El efectivo contado es demasiado grande');
+
+      expect(tx.cashRegisterSession.update).not.toHaveBeenCalled();
+    });
+
     it('diferencia por debajo del umbral (ej. $100, umbral $500) sin nota → cierra igual, sin exigir nada', async () => {
       const abierta = buildSessionRow({
         id: 1,
@@ -751,6 +1073,12 @@ describe('CashRegisterService', () => {
 
       expect(result.montoSistema).toBeUndefined();
       expect(result.diferencia).toBeUndefined();
+      // Fase 08 (QA adversarial): el resto de los campos tiene que
+      // sobrevivir intacto — el ocultamiento es selectivo (delete de dos
+      // propiedades puntuales), no "devolver un objeto vacío".
+      expect(result.id).toBe(1);
+      expect(result.estado).toBe(CashRegisterSessionEstado.CERRADA);
+      expect(new Prisma.Decimal(result.montoDeclarado!).toString()).toBe('500');
     });
 
     it('rechaza cerrar una sesión que ya está CERRADA', async () => {
@@ -947,6 +1275,7 @@ describe('CashRegisterService', () => {
     ): {
       service: CashRegisterServiceWithReconciliar;
       transactionMock: TransactionMock;
+      tx: ReconciliarMockTx;
     } {
       const tx = buildReconciliarTx(allSessions, movements);
       const transactionMock: TransactionMock = jest
@@ -971,7 +1300,7 @@ describe('CashRegisterService', () => {
         prisma,
         {} as SettingsService,
       );
-      return { service: reconciliarService, transactionMock };
+      return { service: reconciliarService, transactionMock, tx };
     }
 
     it('sin sesiones cerradas: devuelve una lista vacía', async () => {
@@ -980,6 +1309,21 @@ describe('CashRegisterService', () => {
       const result = await reconciliarService.reconciliar();
 
       expect(result).toEqual([]);
+    });
+
+    it('Fase 08 (QA adversarial): filtra por estado CERRADA y trae solo id/montoInicial/montoSistema; agrupa los movimientos por sessionId sumando monto — forma exacta de las dos queries, no solo el resultado final', async () => {
+      const { service: reconciliarService, tx } = buildServiceConPrisma([], []);
+
+      await reconciliarService.reconciliar();
+
+      expect(tx.cashRegisterSession.findMany).toHaveBeenCalledWith({
+        where: { estado: CashRegisterSessionEstado.CERRADA },
+        select: { id: true, montoInicial: true, montoSistema: true },
+      });
+      expect(tx.cashMovement.groupBy).toHaveBeenCalledWith({
+        by: ['sessionId'],
+        _sum: { monto: true },
+      });
     });
 
     it('varias sesiones cerradas donde montoSistema coincide con la suma real: lista vacía, no reporta nada', async () => {

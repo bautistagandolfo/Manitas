@@ -108,6 +108,28 @@ const TIPOS_POSITIVOS = new Set<CashMovementTipo>([
   CashMovementTipo.INGRESO_MANUAL,
 ]);
 
+// Fase 08 (QA adversarial) — hallazgo real: las tres columnas de plata de
+// este módulo (`monto_inicial`, `monto_declarado`, `cash_movements.monto`)
+// son `Decimal(12, 2)` en la base (máximo absoluto representable
+// 9999999999.99). Sin este chequeo, un valor que lo supera no lo rechaza
+// ningún DTO (`@IsDecimal` valida formato, no magnitud) ni el servicio —
+// llega crudo a Postgres, que lo rechaza con "numeric field overflow"
+// (código 22003), un `PrismaClientUnknownRequestError` sin `.code`
+// traducible como P2002/P2003 — el `GlobalExceptionFilter` no tiene forma
+// de distinguirlo de cualquier otro fallo interno y responde 500 genérico.
+// Validar acá, antes de tocar Prisma, evita el 500 igual que
+// `assertPositive`/`isNegative()` evitan el `CHECK` crudo de la base.
+const MAX_MONTO_ABSOLUTO = new Prisma.Decimal('9999999999.99');
+
+function assertDentroDePrecision(
+  value: Prisma.Decimal.Value,
+  field: string,
+): void {
+  if (new Prisma.Decimal(value).abs().greaterThan(MAX_MONTO_ABSOLUTO)) {
+    throw new BadRequestException(`${field} es demasiado grande`);
+  }
+}
+
 @Injectable()
 export class CashRegisterService {
   constructor(
@@ -126,6 +148,7 @@ export class CashRegisterService {
     if (new Prisma.Decimal(input.montoInicial).isNegative()) {
       throw new BadRequestException('El monto inicial no puede ser negativo');
     }
+    assertDentroDePrecision(input.montoInicial, 'El monto inicial');
 
     try {
       return await tx.cashRegisterSession.create({
@@ -157,6 +180,7 @@ export class CashRegisterService {
     input: RegistrarMovimientoInput,
   ): Promise<CashMovement> {
     assertPositive(input.monto, 'monto');
+    assertDentroDePrecision(input.monto, 'El monto');
     if (!input.descripcion.trim()) {
       throw new BadRequestException(
         'Ingresá una descripción para el movimiento',
@@ -280,6 +304,21 @@ export class CashRegisterService {
     tx: Prisma.TransactionClient,
     input: CerrarSesionInput,
   ): Promise<CashRegisterSessionForRole> {
+    // Fase 08 — hallazgo real: nada validaba `montoDeclarado` (el efectivo
+    // que la persona contó y declara al cerrar) antes de esta fase. Mismo
+    // principio físico que ya aplica a `montoInicial` (sección 6 de la
+    // spec, "no tiene sentido físico empezar el día con -$500 en el
+    // cajón") — contar efectivo negativo tampoco tiene sentido, y sin este
+    // chequeo el sistema aceptaba el cierre igual, calculando una
+    // `diferencia` sin ningún significado real. Validado antes de tomar el
+    // lock de la sesión: es un error del input, no depende de su estado.
+    if (new Prisma.Decimal(input.montoDeclarado).isNegative()) {
+      throw new BadRequestException(
+        'El efectivo contado no puede ser negativo',
+      );
+    }
+    assertDentroDePrecision(input.montoDeclarado, 'El efectivo contado');
+
     await tx.$queryRaw`SELECT id FROM cash_register_sessions WHERE id = ${input.sessionId} FOR UPDATE`;
     const session = await tx.cashRegisterSession.findUnique({
       where: { id: input.sessionId },

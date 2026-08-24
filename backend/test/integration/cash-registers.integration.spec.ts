@@ -1242,4 +1242,71 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
       }
     });
   });
+
+  // Fase 08 (QA adversarial) — dos hallazgos reales, confirmados primero
+  // contra el servidor de desarrollo real antes de escribir estos tests:
+  // (1) `montoDeclarado` negativo se aceptaba sin validar (nada análogo al
+  // chequeo que ya tenía `montoInicial`); (2) un monto que excede la
+  // precisión `Decimal(12,2)` de la columna llegaba crudo a Postgres, que
+  // lo rechazaba con "numeric field overflow" — un
+  // `PrismaClientUnknownRequestError` sin `.code` traducible, que el
+  // `GlobalExceptionFilter` no distinguía de cualquier otro fallo interno
+  // y respondía 500 genérico en vez de un 400 de validación.
+  describe('Fase 08 — QA adversarial: validación de magnitud de montos', () => {
+    it('POST /cash-registers/sessions/:id/close con montoDeclarado negativo → 400, la sesión sigue ABIERTA', async () => {
+      const openResponse = await owned(
+        request(app.getHttpServer()).post('/cash-registers/sessions'),
+      ).send({ montoInicial: '100.00' });
+      const sessionId = (openResponse.body as { id: number }).id;
+      createdSessionIds.push(sessionId);
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: '-50.00', notaCierre: 'no debería aceptarse' })
+        .expect(400);
+
+      const session = await prisma.cashRegisterSession.findUniqueOrThrow({
+        where: { id: sessionId },
+      });
+      expect(session.estado).toBe(CashRegisterSessionEstado.ABIERTA);
+      expect(session.montoDeclarado).toBeNull();
+    });
+
+    it('POST /cash-registers/sessions con montoInicial que excede Decimal(12,2) → 400, no 500, y no queda ninguna sesión creada', async () => {
+      await owned(request(app.getHttpServer()).post('/cash-registers/sessions'))
+        .send({ montoInicial: '99999999999999.00' })
+        .expect(400);
+
+      const abierta = await prisma.cashRegisterSession.findFirst({
+        where: { estado: CashRegisterSessionEstado.ABIERTA },
+      });
+      expect(abierta).toBeNull();
+    });
+
+    it('POST /cash-registers/movements/ingreso con monto que excede Decimal(12,2) → 400, no 500, y no queda ningún movimiento creado', async () => {
+      const openResponse = await owned(
+        request(app.getHttpServer()).post('/cash-registers/sessions'),
+      ).send({ montoInicial: '100.00' });
+      const sessionId = (openResponse.body as { id: number }).id;
+      createdSessionIds.push(sessionId);
+
+      await owned(
+        request(app.getHttpServer()).post('/cash-registers/movements/ingreso'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          monto: '99999999999999.00',
+          descripcion: 'no debería aceptarse',
+        })
+        .expect(400);
+
+      const movimientos = await prisma.cashMovement.count({
+        where: { sessionId },
+      });
+      expect(movimientos).toBe(0);
+    });
+  });
 });
