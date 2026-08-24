@@ -1,4 +1,8 @@
-import { Prisma, CashMovementTipo, CashRegisterSessionEstado } from '@prisma/client';
+import {
+  Prisma,
+  CashMovementTipo,
+  CashRegisterSessionEstado,
+} from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { CashRegisterService } from './cash-register.service';
 
@@ -57,16 +61,44 @@ function buildSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
   };
 }
 
+// Fase 04 (implementación) — hallazgo de tooling, no de negocio: los
+// `jest.fn()` sin tipar dejaban `.mock.calls[0][0]` como `any` y disparaban
+// `no-unsafe-member-access` en cada sitio que lo leía. Se tipan acá con el
+// mismo patrón que `prices.service.spec.ts`/`variants.service.spec.ts`
+// (`jest.Mock<ReturnType, [ArgsTuple]>`) — no cambia ninguna aserción
+// existente, solo el tipo del mock.
+interface CashRegisterSessionCreateCall {
+  data: {
+    fechaApertura: Date;
+    userIdApertura: number;
+    montoInicial: Prisma.Decimal.Value;
+    estado?: CashRegisterSessionEstado;
+  };
+}
+
+interface CashMovementCreateCall {
+  data: {
+    sessionId: number;
+    fecha: Date;
+    tipo: CashMovementTipo;
+    monto: Prisma.Decimal;
+    referenciaTipo?: string;
+    referenciaId?: number;
+    descripcion: string;
+    userId: number;
+  };
+}
+
 interface MockTx {
   cashRegisterSession: {
-    create: jest.Mock;
+    create: jest.Mock<Promise<SessionRow>, [CashRegisterSessionCreateCall]>;
     findUnique: jest.Mock;
     findUniqueOrThrow: jest.Mock;
     findFirst: jest.Mock;
     update: jest.Mock;
   };
   cashMovement: {
-    create: jest.Mock;
+    create: jest.Mock<Promise<{ id: number }>, [CashMovementCreateCall]>;
   };
   $queryRaw: jest.Mock;
 }
@@ -77,7 +109,9 @@ interface MockTx {
 function buildMockTx(sessionOrNull: SessionRow | null): MockTx {
   return {
     cashRegisterSession: {
-      create: jest.fn().mockResolvedValue(sessionOrNull ?? buildSessionRow()),
+      create: jest
+        .fn<Promise<SessionRow>, [CashRegisterSessionCreateCall]>()
+        .mockResolvedValue(sessionOrNull ?? buildSessionRow()),
       findUnique: jest.fn().mockResolvedValue(sessionOrNull),
       findUniqueOrThrow: jest
         .fn()
@@ -90,7 +124,9 @@ function buildMockTx(sessionOrNull: SessionRow | null): MockTx {
       update: jest.fn().mockResolvedValue(sessionOrNull ?? buildSessionRow()),
     },
     cashMovement: {
-      create: jest.fn().mockResolvedValue({ id: 999 }),
+      create: jest
+        .fn<Promise<{ id: number }>, [CashMovementCreateCall]>()
+        .mockResolvedValue({ id: 999 }),
     },
     $queryRaw: jest
       .fn()
@@ -124,13 +160,9 @@ describe('CashRegisterService', () => {
 
       expect(result.estado).toBe(CashRegisterSessionEstado.ABIERTA);
       expect(tx.cashRegisterSession.create).toHaveBeenCalledTimes(1);
-      const call = tx.cashRegisterSession.create.mock.calls[0][0] as {
-        data: Record<string, unknown>;
-      };
+      const call = tx.cashRegisterSession.create.mock.calls[0][0];
       expect(call.data.userIdApertura).toBe(7);
-      expect((call.data.montoInicial as Prisma.Decimal).toString()).toBe(
-        '500',
-      );
+      expect(new Prisma.Decimal(call.data.montoInicial).toString()).toBe('500');
       expect(call.data.estado ?? CashRegisterSessionEstado.ABIERTA).toBe(
         CashRegisterSessionEstado.ABIERTA,
       );
@@ -189,10 +221,8 @@ describe('CashRegisterService', () => {
         });
 
         expect(tx.cashMovement.create).toHaveBeenCalledTimes(1);
-        const call = tx.cashMovement.create.mock.calls[0][0] as {
-          data: Record<string, unknown>;
-        };
-        expect((call.data.monto as Prisma.Decimal).toString()).toBe('250');
+        const call = tx.cashMovement.create.mock.calls[0][0];
+        expect(call.data.monto.toString()).toBe('250');
         expect(call.data.tipo).toBe(tipo);
       },
     );
@@ -211,10 +241,8 @@ describe('CashRegisterService', () => {
         });
 
         expect(tx.cashMovement.create).toHaveBeenCalledTimes(1);
-        const call = tx.cashMovement.create.mock.calls[0][0] as {
-          data: Record<string, unknown>;
-        };
-        expect((call.data.monto as Prisma.Decimal).toString()).toBe('-250');
+        const call = tx.cashMovement.create.mock.calls[0][0];
+        expect(call.data.monto.toString()).toBe('-250');
         expect(call.data.tipo).toBe(tipo);
       },
     );

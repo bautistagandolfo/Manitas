@@ -18,6 +18,7 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ProductsModule } from './modules/products/products.module';
 import { StockModule } from './modules/stock/stock.module';
+import { CashRegistersModule } from './modules/cash-registers/cash-registers.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuthGuard } from './common/auth/auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
@@ -56,6 +57,7 @@ import { jsonOnlyMiddleware } from './common/security/json-only.middleware';
     AuthModule,
     ProductsModule,
     StockModule,
+    CashRegistersModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

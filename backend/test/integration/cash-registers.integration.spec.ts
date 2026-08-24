@@ -144,13 +144,28 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
   });
 
   afterAll(async () => {
-    if (createdSessionIds.length > 0) {
-      await prisma.cashMovement.deleteMany({
-        where: { sessionId: { in: createdSessionIds } },
+    // Fase 04 (implementación) — hallazgo de tooling, no de negocio: el
+    // trigger `cash_movements_immutable_after_close` (RN-8, agregado en
+    // esta fase) bloquea CUALQUIER escritura sobre `cash_movements` de una
+    // sesión CERRADA, incluido el DELETE de limpieza — varios tests de
+    // este archivo cierran sesiones a propósito. Reabrir cada sesión antes
+    // de borrar sus movimientos (update directo sobre
+    // `cash_register_sessions`, que el trigger no toca) es la limpieza
+    // correcta: no desactiva la protección real, solo evita que la
+    // limpieza de datos de prueba choque contra el mismo invariante que el
+    // archivo está probando. Una sesión por vez, y se borra por completo
+    // antes de reabrir la siguiente — el índice único parcial de sesión
+    // ABIERTA (RN-1) no tolera dos al mismo tiempo. `Set` porque el mismo
+    // id puede haber quedado dos veces en el array (la propia prueba lo
+    // agrega al crearlo, y `closeAnyOpenSessionDirect` lo vuelve a agregar
+    // si lo encuentra abierto en el `afterEach` siguiente).
+    for (const id of new Set(createdSessionIds)) {
+      await prisma.cashRegisterSession.update({
+        where: { id },
+        data: { estado: CashRegisterSessionEstado.ABIERTA },
       });
-      await prisma.cashRegisterSession.deleteMany({
-        where: { id: { in: createdSessionIds } },
-      });
+      await prisma.cashMovement.deleteMany({ where: { sessionId: id } });
+      await prisma.cashRegisterSession.delete({ where: { id } });
     }
     if (createdUserIds.length > 0) {
       await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
@@ -185,9 +200,7 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
     });
 
     it('400 con montoInicial negativo', async () => {
-      await owned(
-        request(app.getHttpServer()).post('/cash-registers/sessions'),
-      )
+      await owned(request(app.getHttpServer()).post('/cash-registers/sessions'))
         .send({ montoInicial: '-1.00' })
         .expect(400);
     });
@@ -201,9 +214,7 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
       const firstBody = first.body as { id: number };
       createdSessionIds.push(firstBody.id);
 
-      await sold(
-        request(app.getHttpServer()).post('/cash-registers/sessions'),
-      )
+      await sold(request(app.getHttpServer()).post('/cash-registers/sessions'))
         .send({ montoInicial: '50.00' })
         .expect(409);
     });
@@ -313,6 +324,50 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
           }),
         ),
       ).rejects.toThrow(/cerrada/i);
+
+      const count = await prisma.cashMovement.count({
+        where: { sessionId: cerrada.id },
+      });
+      expect(count).toBe(0);
+    });
+
+    // Cobertura agregada en la Fase 04 (implementación), no de la Fase 04a:
+    // RN-8 pide que la inmutabilidad tras el cierre se refuerce "a nivel de
+    // base de datos" (BLUEPRINT §5.5, literal) — hasta este ticket esa
+    // protección solo existía en CashRegisterService.registrarMovimiento
+    // (probado arriba). Este caso confirma el trigger de la migración
+    // `20260824181450_cash_movements_immutable_after_close` de forma
+    // independiente, insertando directo por Prisma y sorteando el servicio
+    // por completo — mismo criterio que el test del CHECK de signo de más
+    // arriba (defensa en profundidad real, no solo a nivel de aplicación).
+    it('el trigger de la base rechaza un INSERT directo contra una sesión CERRADA, sorteando el servicio (RN-8, defensa en profundidad)', async () => {
+      const cerrada = await prisma.cashRegisterSession.create({
+        data: {
+          fechaApertura: new Date(),
+          userIdApertura: ownerId,
+          montoInicial: new Prisma.Decimal('100.00'),
+          estado: CashRegisterSessionEstado.CERRADA,
+          fechaCierre: new Date(),
+          userIdCierre: ownerId,
+          montoDeclarado: new Prisma.Decimal('100.00'),
+          montoSistema: new Prisma.Decimal('100.00'),
+          diferencia: new Prisma.Decimal('0.00'),
+        },
+      });
+      createdSessionIds.push(cerrada.id);
+
+      await expect(
+        prisma.cashMovement.create({
+          data: {
+            sessionId: cerrada.id,
+            fecha: new Date(),
+            tipo: CashMovementTipo.INGRESO_MANUAL,
+            monto: new Prisma.Decimal('20.00'),
+            descripcion: 'Inserción directa contra sesión cerrada',
+            userId: ownerId,
+          },
+        }),
+      ).rejects.toThrow();
 
       const count = await prisma.cashMovement.count({
         where: { sessionId: cerrada.id },
