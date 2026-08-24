@@ -31,6 +31,7 @@ curso que haya generado ambigüedades propias).
 | AMB-10 | ⚠️ ALTO | `cash-registers` / `settings` | Umbral de diferencia de caja | Sin recomendación por defecto — necesita un número real | T0.13 (seed de `settings`), T3.4, Fase 06 de `cash-registers` | RESUELTA — **$500** (monto fijo, no %) | No había recomendación |
 | AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | RESUELTA — `OWNER`-only las tres | Sí |
 | AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | RESUELTA — plantilla propia | Sí |
+| AMB-13 | ⚠️ ALTO | `cash-registers` | ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? | `OWNER`-only para ambas | T3.3, Fase 06 de `cash-registers` | PENDIENTE | — |
 
 ---
 
@@ -433,3 +434,49 @@ costo, stock inicial), sin esperar B4. Si B4 revela un formato
 existente más adelante, se ajusta el mapeo de columnas del importador
 como cambio acotado, no como reapertura del ticket. **T2.13
 desbloqueado.**
+
+---
+
+## AMB-13 — ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? ⚠️ ALTO RIESGO
+
+**Ubicación:** módulo `cash-registers` (BLUEPRINT §5.5, §3.6;
+`state/reports/modulo-cash-registers-spec.md`, secciones 8 y 10).
+
+**Descripción:** el blueprint es explícito sobre quién puede *abrir*
+una sesión (cualquiera — necesario para que una vendedora sola pueda
+arrancar el día) y quién puede *cerrarla* ("cierre a ciegas": cualquiera
+declara el efectivo contado, pero solo `OWNER` ve `monto_sistema` y
+`diferencia`, §5.5). No dice una palabra sobre quién puede hacer un
+`INGRESO_MANUAL` o un `RETIRO` — los dos tipos de movimiento de caja
+que no vienen de una venta/devolución/gasto, sino que alguien los carga
+a mano, sin ningún ítem ni comprobante detrás que los explique.
+
+**Por qué no se resuelve solo con el código:** a diferencia de
+`products`/`variants` (AMB-11), acá no hay ningún texto en el blueprint
+que sugiera que es una tarea típica de `SELLER` (como sí lo es cargar
+catálogo) — y un `RETIRO` es, literalmente, sacar plata del cajón sin
+que ninguna otra regla del sistema lo valide contra un ticket o una
+cantidad esperada. Es la operación de mayor riesgo de mal uso —error u
+otra cosa— de todo el módulo.
+
+**Pregunta para el PO:** ¿un `SELLER` puede registrar un ingreso manual
+o un retiro de efectivo por su cuenta, o son exclusivos de `OWNER`?
+
+**RECOMENDACIÓN:** `OWNER`-only para las dos. Es consistente con que el
+resto de las acciones "con plata de por medio y sin comprobante
+automático detrás" del sistema (ajuste de stock con motivo, ingreso de
+mercadería, edición de precio/costo) ya son `OWNER`-only por decisión
+explícita del blueprint o por AMB-11. La apertura y el cierre quedan
+abiertos a cualquiera porque el blueprint mismo lo exige para que el
+local pueda operar sin que la dueña esté físicamente presente todos los
+días — pero un ingreso/retiro no tiene esa misma necesidad operativa
+tan clara: no bloquea la posibilidad de vender.
+
+**RIESGO DE LA RECOMENDACIÓN:** si en la práctica la dueña no está
+presente todo el día y necesita que su vendedora pueda, por ejemplo,
+sacar cambio del cajón para ir a comprar algo puntual, esta
+recomendación se lo impide y puede generar la misma fricción operativa
+que ya se señaló en AMB-11 para el ingreso de mercadería.
+
+**Bloquea a:** T3.3 y su Fase 06 (`cash-registers`) — el guard de esos
+dos endpoints depende de esta respuesta.

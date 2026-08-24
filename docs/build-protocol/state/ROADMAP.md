@@ -142,11 +142,37 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 |---|---|---|---|
 | T3.1 | Apertura de sesión con monto inicial + constraint de sesión única abierta | T1.3 | PENDIENTE |
 | T3.2 | Movimientos de caja (servicio base, solo efectivo — AD-8) | T3.1 | PENDIENTE |
-| T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | PENDIENTE |
+| T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | **BLOQUEADO por AMB-13** |
 | T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | PENDIENTE |
 | T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | PENDIENTE |
 | T3.6 | Test del invariante 2 (arqueo) | T3.4 | PENDIENTE |
 | T3.7 | Pantallas de apertura, movimientos y cierre | T3.5 | PENDIENTE |
+
+> **T3.3 bloqueada por AMB-13 (fase 06 de este módulo, nueva):** el
+> blueprint no dice quién puede hacer un ingreso manual o un retiro de
+> efectivo — a diferencia de `products`/`variants` (AMB-11), acá no hay
+> ningún texto que sugiera que es tarea típica de `SELLER`, y mover
+> efectivo fuera del flujo normal de venta es el punto de mayor riesgo
+> operativo del módulo. Recomendación: `OWNER`-only para ambas. Ver
+> `state/AMBIGUITIES.md` AMB-13 y
+> `state/reports/modulo-cash-registers-spec.md` sección 10.
+>
+> **T3.4 sigue esperando T0.13** (`settings`, todavía `PENDIENTE`) para
+> el valor real de `umbral_diferencia_caja` — AMB-10 ya está
+> **RESUELTA** ($500 fijo), así que T0.13 puede sembrar ese valor sin
+> esperar nada más. Recomiendo ejecutar T0.13 antes de T3.4; T3.1, T3.2
+> y T3.3 (una vez resuelta AMB-13) no dependen de T0.13 y pueden
+> avanzar antes.
+>
+> **Hallazgo técnico (fase 06 de este módulo): T4.4, T4.7 y T5.3 no
+> listaban `T3.2` como dependencia**, a pesar de que BLUEPRINT §5.3
+> (paso 7, y la regla de anulación) y §5.4 (reintegro en efectivo)
+> dejan claro que ambos necesitan llamar al servicio base de
+> `cash-registers` para registrar sus propios movimientos de caja —
+> mismo servicio que `T6.3` (gastos) sí lista correctamente. Corregido
+> acá agregando `T3.2` a las tres. Ver
+> `state/reports/modulo-cash-registers-spec.md` sección 11 para el
+> detalle.
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
@@ -161,10 +187,10 @@ El módulo más crítico del sistema.
 | T4.1 | Servicio de venta transaccional con **bloqueo de filas ordenado por id** (blueprint §9.4), respeta `permitir_venta_sin_stock` | T2.4, T3.2, T0.13 | PENDIENTE |
 | T4.2 | Congelado de precio y costo en la línea (AD-5) + `descripcion_snapshot` | T4.1 | PENDIENTE |
 | T4.3 | Descuentos: N por venta, límite del vendedor (`max_descuento_vendedor_pct`) y autorización de OWNER | T4.1, T0.13 | PENDIENTE |
-| T4.4 | Pagos: N por venta, validación suma = total, impacto en caja solo si es efectivo | T4.1 | PENDIENTE |
+| T4.4 | Pagos: N por venta, validación suma = total, impacto en caja solo si es efectivo | T4.1, **T3.2** | PENDIENTE |
 | T4.5 | Aplicar el interceptor de idempotencia (T0.14) a la venta | T4.1, T0.14 | PENDIENTE |
 | T4.6 | **Ajuste de redondeo** + tests de las reglas de redondeo (§9.3) | T4.4, T0.12 | PENDIENTE |
-| T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4 | PENDIENTE |
+| T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4, **T3.2** | PENDIENTE |
 | T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | PENDIENTE |
 | T4.9 | Test de concurrencia: dos ventas simultáneas de la última unidad | T4.1 | PENDIENTE |
 | T4.10 | **Pantalla de venta con teclado y lector** (blueprint §12.1) | T4.5, T4.6 | PENDIENTE |
@@ -184,7 +210,7 @@ completa en la sección 12.1 del blueprint.
 |---|---|---|---|
 | T5.1 | Devolución contra venta existente, con validación de plazo (`dias_plazo_devolucion`), cantidades e idempotencia (§9.7) | T4.4, T0.13, T0.14 | PENDIENTE |
 | T5.2 | Reingreso de stock condicional (`reingresa_stock`) | T5.1 | PENDIENTE |
-| T5.3 | Reintegro en efectivo → movimiento de caja negativo | T5.1 | PENDIENTE |
+| T5.3 | Reintegro en efectivo → movimiento de caja negativo | T5.1, **T3.2** | PENDIENTE |
 | T5.4 | Reversión del costo congelado (para que el CMV quede correcto) | T5.1 | PENDIENTE |
 | T5.5 | Cambio: devolución + venta nueva ligadas | T5.3 | PENDIENTE |
 | T5.6 | Test del invariante 8 (no devolver más de lo vendido) | T5.1 | PENDIENTE |
