@@ -1154,4 +1154,92 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
       ).toBe('500');
     });
   });
+
+  // Fase 07 (cierre del módulo) — gap real encontrado contrastando contra
+  // la spec: la sección 9 ("Tests necesarios") exige explícitamente un
+  // "test de concurrencia explícito" entre un movimiento y un cierre
+  // simultáneos sobre la misma sesión, mismo patrón que el ajuste de stock
+  // negativo concurrente de T2.4 — el código ya implementa el lock
+  // (`SELECT ... FOR UPDATE` sobre la fila de sesión, en
+  // `registrarMovimiento` y en `cerrarSesion`, desde T3.2/T3.4) pero ningún
+  // test lo había ejercitado bajo carrera real hasta esta fase.
+  describe('concurrencia: movimiento vs cierre simultáneos sobre la misma sesión (sección 5 de la spec, RN-8)', () => {
+    it('el lock serializa siempre: el cierre nunca falla por la carrera, y el montoSistema final nunca deja de reflejar exactamente los movimientos que terminaron insertados de verdad', async () => {
+      // Repetido varias veces con una sesión fresca cada vez — la ventana
+      // real de la carrera es angosta, una sola vuelta podría no alcanzar a
+      // exponer una regresión del lock (mismo motivo que T2.4).
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const session = await prisma.$transaction((tx) =>
+          service.abrirSesion(tx, {
+            montoInicial: new Prisma.Decimal('100.00'),
+            userId: ownerId,
+          }),
+        );
+        createdSessionIds.push(session.id);
+
+        const [movimientoResult, cierreResult] = await Promise.allSettled([
+          prisma.$transaction((tx) =>
+            service.registrarMovimientoManual(tx, {
+              sessionId: session.id,
+              tipo: 'INGRESO_MANUAL',
+              monto: new Prisma.Decimal('50.00'),
+              descripcion: `Carrera ingreso intento ${attempt}`,
+              userId: ownerId,
+              idempotencyKey: randomUUID(),
+            }),
+          ),
+          prisma.$transaction((tx) =>
+            service.cerrarSesion(tx, {
+              sessionId: session.id,
+              montoDeclarado: new Prisma.Decimal('150.00'),
+              userId: ownerId,
+              esOwner: true,
+            }),
+          ),
+        ]);
+
+        // En una carrera de 2 (el movimiento y el único cierre posible), el
+        // cierre siempre gana el lock en algún momento — o lo toma primero
+        // y cierra sin ver el movimiento (que después lo ve CERRADA y se
+        // rechaza), o lo toma después de que el movimiento ya insertó y
+        // commiteó (y entonces sí lo ve en su SUM). Nunca hay un tercero
+        // que se adelante a cerrar, así que el cierre nunca debería
+        // rechazarse por la carrera en sí.
+        expect(cierreResult.status).toBe('fulfilled');
+
+        const finalSession = await prisma.cashRegisterSession.findUniqueOrThrow(
+          { where: { id: session.id } },
+        );
+        const movimientos = await prisma.cashMovement.findMany({
+          where: { sessionId: session.id },
+        });
+        const sumaReal = movimientos.reduce(
+          (acc, m) => acc.plus(m.monto),
+          new Prisma.Decimal(0),
+        );
+        const montoSistemaEsperado = finalSession.montoInicial.plus(sumaReal);
+
+        // Invariante 2, bajo carrera real: pase lo que pase, el
+        // montoSistema persistido tiene que reflejar exactamente los
+        // movimientos que terminaron insertados — nunca uno de más
+        // (contado sin existir) ni uno de menos (insertado pero no visto
+        // por el SUM del cierre, que es justo el bug que el lock previene).
+        expect(finalSession.montoSistema).not.toBeNull();
+        expect(finalSession.montoSistema!.equals(montoSistemaEsperado)).toBe(
+          true,
+        );
+
+        if (movimientoResult.status === 'fulfilled') {
+          expect(movimientos).toHaveLength(1);
+        } else {
+          // Único motivo válido de rechazo acá: RN-8, la sesión ya estaba
+          // CERRADA cuando el movimiento alcanzó a tomar el lock.
+          expect(movimientos).toHaveLength(0);
+          expect((movimientoResult.reason as Error).message).toContain(
+            'ya está cerrada',
+          );
+        }
+      }
+    });
+  });
 });
