@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   CashMovement,
@@ -13,6 +14,8 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertPositive } from '../../common/money/money.util';
+import { SettingsService } from '../../common/settings/settings.service';
+import { SETTINGS_KEYS } from '../../common/settings/settings-keys';
 
 // Único punto del sistema que escribe cash_movements y abre/cierra sesiones
 // de caja (mismo principio que CLAUDE.md regla 4 aplica a stock.service.ts).
@@ -56,6 +59,41 @@ export interface RegistrarMovimientoManualInput {
   idempotencyKey: string;
 }
 
+export interface CerrarSesionInput {
+  sessionId: number;
+  montoDeclarado: Prisma.Decimal.Value;
+  notaCierre?: string;
+  userId: number;
+  esOwner: boolean;
+}
+
+// RN-6 (§5.1, literal: "SELLER no accede a... cierre de caja con
+// totales"): `montoSistema`/`diferencia` se omiten del todo para quien no
+// es OWNER, no se mandan en 0 ni en null — mismo patrón que
+// `VariantForRole`/`hideOwnerOnlyFields` en `products/variants.service.ts`
+// para `costoActual`. Se decide acá (no con un `omit` de Prisma en la
+// query) porque la condición es dinámica según quién pregunta.
+export type CashRegisterSessionForRole = Omit<
+  CashRegisterSession,
+  'montoSistema' | 'diferencia'
+> & {
+  montoSistema?: Prisma.Decimal | null;
+  diferencia?: Prisma.Decimal | null;
+};
+
+function hideOwnerOnlyFields(
+  session: CashRegisterSession,
+  isOwner: boolean,
+): CashRegisterSessionForRole {
+  if (isOwner) {
+    return session;
+  }
+  const stripped: CashRegisterSessionForRole = { ...session };
+  delete stripped.montoSistema;
+  delete stripped.diferencia;
+  return stripped;
+}
+
 // VENTA e INGRESO_MANUAL siempre positivos; el resto siempre negativos
 // (BLUEPRINT §3.6, RN-3). Mismo CHECK reforzado en la base como defensa en
 // profundidad, no como la única barrera.
@@ -66,7 +104,10 @@ const TIPOS_POSITIVOS = new Set<CashMovementTipo>([
 
 @Injectable()
 export class CashRegisterService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+  ) {}
 
   // RN-1 / invariante 9: no hay lógica de exclusión acá — el índice único
   // parcial `cash_register_sessions_one_open_key` (fase 01) es la barrera
@@ -181,5 +222,67 @@ export class CashRegisterService {
     }
 
     return session;
+  }
+
+  // T3.4 / RN-4, RN-5, RN-6 / invariante 2. Mismo lock que
+  // `registrarMovimiento` (sección 5 de la spec): bloquea la fila de
+  // sesión ANTES de sumar los movimientos, para que un movimiento y un
+  // cierre concurrentes no puedan dejar `monto_sistema` calculado sin ver
+  // un movimiento que sí terminó insertado (o viceversa).
+  async cerrarSesion(
+    tx: Prisma.TransactionClient,
+    input: CerrarSesionInput,
+  ): Promise<CashRegisterSessionForRole> {
+    await tx.$queryRaw`SELECT id FROM cash_register_sessions WHERE id = ${input.sessionId} FOR UPDATE`;
+    const session = await tx.cashRegisterSession.findUnique({
+      where: { id: input.sessionId },
+    });
+
+    if (!session) {
+      throw new NotFoundException('Sesión de caja no encontrada');
+    }
+    if (session.estado !== CashRegisterSessionEstado.ABIERTA) {
+      throw new ConflictException('La sesión de caja ya está cerrada');
+    }
+
+    const sum = await tx.cashMovement.aggregate({
+      where: { sessionId: input.sessionId },
+      _sum: { monto: true },
+    });
+    const montoSistema = session.montoInicial.plus(
+      sum._sum.monto ?? new Prisma.Decimal(0),
+    );
+    const montoDeclarado = new Prisma.Decimal(input.montoDeclarado);
+    const diferencia = montoDeclarado.minus(montoSistema);
+    const notaCierre = input.notaCierre?.trim() || null;
+
+    // RN-5: la nota solo es obligatoria cuando cierra un OWNER — exigírsela
+    // a un SELLER revelaría que existe una diferencia, justo lo que RN-6
+    // le oculta (§5.5, literal).
+    if (input.esOwner) {
+      const umbral = await this.settings.getDecimal(
+        SETTINGS_KEYS.UMBRAL_DIFERENCIA_CAJA,
+      );
+      if (diferencia.abs().greaterThanOrEqualTo(umbral) && !notaCierre) {
+        throw new BadRequestException(
+          `La diferencia es de $${diferencia.abs().toString()}: agregá una nota explicando qué pasó`,
+        );
+      }
+    }
+
+    const updated = await tx.cashRegisterSession.update({
+      where: { id: input.sessionId },
+      data: {
+        estado: CashRegisterSessionEstado.CERRADA,
+        fechaCierre: new Date(),
+        userIdCierre: input.userId,
+        montoDeclarado,
+        montoSistema,
+        diferencia,
+        notaCierre,
+      },
+    });
+
+    return hideOwnerOnlyFields(updated, input.esOwner);
   }
 }

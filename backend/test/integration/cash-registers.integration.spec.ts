@@ -15,6 +15,8 @@ import { randomUUID } from 'node:crypto';
 import { AppModule } from '../../src/app.module';
 import type { PrismaService } from '../../src/prisma/prisma.service';
 import { CashRegisterService } from '../../src/modules/cash-registers/cash-register.service';
+import { SettingsService } from '../../src/common/settings/settings.service';
+import { SETTINGS_KEYS } from '../../src/common/settings/settings-keys';
 
 // Fase 04a (T3.1 + T3.2) — tests de integración escritos ANTES de la
 // implementación, contra Postgres real (nunca mockeado, BLUEPRINT §9.8,
@@ -41,7 +43,14 @@ import { CashRegisterService } from '../../src/modules/cash-registers/cash-regis
 // esta fase debe dejar documentada — no se modifica `app.module.ts` acá.
 
 const prisma = new PrismaClient();
-const service = new CashRegisterService(prisma as unknown as PrismaService);
+const settingsService = new SettingsService(prisma as unknown as PrismaService);
+// Fase 04 (implementación, T3.4): CashRegisterService pasó a depender de
+// SettingsService (RN-5, lee `umbral_diferencia_caja` real de T0.13) — el
+// constructor ahora toma dos argumentos.
+const service = new CashRegisterService(
+  prisma as unknown as PrismaService,
+  settingsService,
+);
 
 function extractCookie(setCookieHeader: unknown): string {
   const cookies = setCookieHeader as string[];
@@ -657,6 +666,223 @@ describe('cash-registers (integration, T3.1 + T3.2)', () => {
         .set('Idempotency-Key', randomUUID())
         .send({ monto: '0.00', descripcion: 'Monto inválido' })
         .expect(400);
+    });
+  });
+
+  // Fase 04a (T3.4) — `POST /cash-registers/sessions/:id/close` TODAVÍA NO
+  // EXISTE (`CashRegistersController` hoy solo tiene `POST /sessions` y las
+  // dos rutas de movimiento manual de T3.3, regla explícita de esta fase:
+  // no se edita el controller acá) — toda request contra esta ruta debe
+  // responder 404 hasta la Fase 04. Es la razón correcta de rojo para casi
+  // todos los tests de abajo.
+  //
+  // **Caveat señalado, no corregido**: el caso "cerrar una sesión
+  // inexistente → 404" de más abajo va a devolver 404 incluso HOY, pero por
+  // el motivo equivocado (ruta inexistente, no "sesión no encontrada") — es
+  // un solape inevitable entre "la ruta no existe" y "la ruta existe pero
+  // la sesión no", ambos 404. Se deja igual porque es la aserción correcta
+  // una vez que la Fase 04 implemente la ruta real; no demuestra rojo por
+  // sí solo en esta fase, a diferencia del resto de los casos de este
+  // bloque.
+  //
+  // El umbral se lee del `SettingsService` real (sembrado por T0.13,
+  // AMB-10 RESUELTA en $500) en vez de hardcodearlo como número mágico —
+  // los comentarios de cada test igual mencionan "$500" porque es el valor
+  // real esperado hoy, para que el test se lea sin tener que ir a buscar el
+  // seed.
+  describe('POST /cash-registers/sessions/:id/close (T3.4, RN-4, RN-5, RN-6, invariante 2)', () => {
+    let umbralDiferenciaCaja: Prisma.Decimal;
+
+    beforeAll(async () => {
+      umbralDiferenciaCaja = await settingsService.getDecimal(
+        SETTINGS_KEYS.UMBRAL_DIFERENCIA_CAJA,
+      );
+    });
+
+    async function abrirSesionParaCierre(
+      userId: number,
+      montoInicial: string,
+    ): Promise<number> {
+      const session = await prisma.$transaction((tx) =>
+        service.abrirSesion(tx, {
+          montoInicial: new Prisma.Decimal(montoInicial),
+          userId,
+        }),
+      );
+      createdSessionIds.push(session.id);
+      return session.id;
+    }
+
+    it('OWNER cierra con movimientos reales: 200, la sesión queda CERRADA en la base con montoSistema/diferencia correctos, y la respuesta HTTP los incluye', async () => {
+      const sessionId = await abrirSesionParaCierre(ownerId, '100.00');
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.VENTA,
+          monto: new Prisma.Decimal('400.00'),
+          descripcion: 'Venta real para el arqueo',
+          userId: ownerId,
+        }),
+      );
+      // montoSistema esperado = 100 (inicial) + 400 (venta) = 500
+
+      const response = await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: '500.00' })
+        .expect(200);
+
+      const body = response.body as {
+        estado: string;
+        montoSistema: string;
+        diferencia: string;
+      };
+      expect(body.estado).toBe(CashRegisterSessionEstado.CERRADA);
+      expect(new Prisma.Decimal(body.montoSistema).toString()).toBe('500');
+      expect(new Prisma.Decimal(body.diferencia).toString()).toBe('0');
+
+      const stored = await prisma.cashRegisterSession.findUniqueOrThrow({
+        where: { id: sessionId },
+      });
+      expect(stored.estado).toBe(CashRegisterSessionEstado.CERRADA);
+      expect(stored.montoSistema?.toString()).toBe('500');
+      expect(stored.diferencia?.toString()).toBe('0');
+    });
+
+    it('SELLER cierra: 200, la respuesta HTTP NO incluye montoSistema ni diferencia (RN-6, cierre a ciegas)', async () => {
+      const sessionId = await abrirSesionParaCierre(sellerId, '100.00');
+      await prisma.$transaction((tx) =>
+        service.registrarMovimiento(tx, {
+          sessionId,
+          tipo: CashMovementTipo.VENTA,
+          monto: new Prisma.Decimal('400.00'),
+          descripcion: 'Venta real para el arqueo (SELLER)',
+          userId: sellerId,
+        }),
+      );
+
+      const response = await sold(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: '500.00' })
+        .expect(200);
+
+      const body = response.body as Record<string, unknown>;
+      expect(body.estado).toBe(CashRegisterSessionEstado.CERRADA);
+      expect(body.montoSistema).toBeUndefined();
+      expect(body.diferencia).toBeUndefined();
+    });
+
+    it('diferencia real >= umbral_diferencia_caja (config real T0.13, hoy $500) cerrando OWNER SIN notaCierre → 400', async () => {
+      const sessionId = await abrirSesionParaCierre(ownerId, '0.00');
+      // Sin movimientos: montoSistema = 0. Declarar exactamente el umbral
+      // como faltante dispara RN-5 (>=, no >).
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: umbralDiferenciaCaja.toString() })
+        .expect(400);
+    });
+
+    it('diferencia real >= umbral_diferencia_caja cerrando OWNER CON notaCierre → 200, la nota queda guardada', async () => {
+      const sessionId = await abrirSesionParaCierre(ownerId, '0.00');
+      const nota =
+        'Faltante grande: se cuenta que el POS se trabó a mitad de turno.';
+
+      const response = await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({
+          montoDeclarado: umbralDiferenciaCaja.toString(),
+          notaCierre: nota,
+        })
+        .expect(200);
+
+      const body = response.body as { estado: string };
+      expect(body.estado).toBe(CashRegisterSessionEstado.CERRADA);
+
+      const stored = await prisma.cashRegisterSession.findUniqueOrThrow({
+        where: { id: sessionId },
+      });
+      expect(stored.notaCierre).toBe(nota);
+    });
+
+    it('diferencia real >= umbral_diferencia_caja cerrando SELLER SIN nota → 200 (RN-6, nunca se le exige)', async () => {
+      const sessionId = await abrirSesionParaCierre(sellerId, '0.00');
+
+      await sold(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: umbralDiferenciaCaja.toString() })
+        .expect(200);
+    });
+
+    it('cerrar una sesión que ya está CERRADA → rechazada (409, mismo patrón de errores que el resto del módulo)', async () => {
+      const sessionId = await abrirSesionParaCierre(ownerId, '100.00');
+      await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: '100.00' })
+        .expect(200);
+
+      await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: '100.00' })
+        .expect(409);
+    });
+
+    it('cerrar una sesión inexistente → 404', async () => {
+      await owned(
+        request(app.getHttpServer()).post(
+          '/cash-registers/sessions/999999999/close',
+        ),
+      )
+        .send({ montoDeclarado: '100.00' })
+        .expect(404);
+    });
+
+    // Caso opcional del enunciado (ya cubierto en espíritu por los tests de
+    // RN-8 más arriba, pero encadenado explícitamente con el flujo HTTP de
+    // este ticket): una vez cerrada por esta ruta nueva, un movimiento
+    // nuevo contra esa sesión sigue rechazado por la misma protección de
+    // T3.1/T3.2 (aplicación) + el trigger de la migración (base).
+    it('después de cerrar vía HTTP, un movimiento nuevo contra esa sesión es rechazado (RN-8, encadenado con este flujo)', async () => {
+      const sessionId = await abrirSesionParaCierre(ownerId, '100.00');
+      await owned(
+        request(app.getHttpServer()).post(
+          `/cash-registers/sessions/${sessionId}/close`,
+        ),
+      )
+        .send({ montoDeclarado: '100.00' })
+        .expect(200);
+
+      await expect(
+        prisma.$transaction((tx) =>
+          service.registrarMovimiento(tx, {
+            sessionId,
+            tipo: CashMovementTipo.VENTA,
+            monto: new Prisma.Decimal('50.00'),
+            descripcion: 'Venta contra sesión recién cerrada por HTTP',
+            userId: ownerId,
+          }),
+        ),
+      ).rejects.toThrow(/cerrada/i);
     });
   });
 });

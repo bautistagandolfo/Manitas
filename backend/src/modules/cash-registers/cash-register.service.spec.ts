@@ -4,6 +4,7 @@ import {
   CashRegisterSessionEstado,
 } from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
+import type { SettingsService } from '../../common/settings/settings.service';
 import { CashRegisterService } from './cash-register.service';
 
 // Fase 04a (T3.1 + T3.2) — tests escritos ANTES de la implementación, contra
@@ -95,10 +96,20 @@ interface MockTx {
     findUnique: jest.Mock;
     findUniqueOrThrow: jest.Mock;
     findFirst: jest.Mock;
-    update: jest.Mock;
+    update: jest.Mock<Promise<SessionRow>, [unknown]>;
   };
   cashMovement: {
     create: jest.Mock<Promise<{ id: number }>, [CashMovementCreateCall]>;
+    // Fase 04a (T3.4) — RN-4/invariante 2: `cerrarSesion` necesita sumar los
+    // movimientos de la sesión para calcular `montoSistema`. La spec no fija
+    // qué método real de Prisma usa la implementación (`aggregate` vs
+    // `findMany` sumado a mano) — se eligió `aggregate` acá por ser el más
+    // idiomático para un `SUM`, documentado explícitamente en vez de
+    // adivinado en silencio.
+    aggregate: jest.Mock<
+      Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+      [unknown]
+    >;
   };
   $queryRaw: jest.Mock;
 }
@@ -121,12 +132,17 @@ function buildMockTx(sessionOrNull: SessionRow | null): MockTx {
             : Promise.reject(new Error('No record found')),
         ),
       findFirst: jest.fn().mockResolvedValue(sessionOrNull),
-      update: jest.fn().mockResolvedValue(sessionOrNull ?? buildSessionRow()),
+      update: jest
+        .fn<Promise<SessionRow>, [unknown]>()
+        .mockResolvedValue(sessionOrNull ?? buildSessionRow()),
     },
     cashMovement: {
       create: jest
         .fn<Promise<{ id: number }>, [CashMovementCreateCall]>()
         .mockResolvedValue({ id: 999 }),
+      aggregate: jest
+        .fn<Promise<{ _sum: { monto: Prisma.Decimal | null } }>, [unknown]>()
+        .mockResolvedValue({ _sum: { monto: new Prisma.Decimal('0.00') } }),
     },
     $queryRaw: jest
       .fn()
@@ -142,11 +158,17 @@ describe('CashRegisterService', () => {
   let service: CashRegisterService;
 
   beforeEach(() => {
-    // El constructor recibe PrismaService (contrato del repo, mismo patrón
-    // que `new StockService(prisma)`), pero los tres métodos bajo test
-    // reciben siempre el `tx` de una transacción ya abierta (sección 4.2:
-    // "no abren la suya propia") — el prisma inyectado no se usa acá.
-    service = new CashRegisterService({} as PrismaService);
+    // El constructor recibe PrismaService y SettingsService (Fase 04, T3.4:
+    // cerrarSesion necesita leer `umbral_diferencia_caja`), pero los
+    // métodos de este describe reciben siempre el `tx` de una transacción
+    // ya abierta (sección 4.2: "no abren la suya propia") y no llaman a
+    // `cerrarSesion` — ninguna de las dos dependencias inyectadas se usa
+    // acá. `cerrarSesion` tiene su propia instancia con un mock real de
+    // `SettingsService` más abajo (`buildServiceConSettings`).
+    service = new CashRegisterService(
+      {} as PrismaService,
+      {} as SettingsService,
+    );
   });
 
   describe('abrirSesion (RN-1, invariante 9)', () => {
@@ -472,6 +494,299 @@ describe('CashRegisterService', () => {
       ).rejects.toThrow(/cerrada/i);
 
       expect(tx.cashMovement.create).not.toHaveBeenCalled();
+    });
+  });
+
+  // Fase 04a (T3.4) — `cerrarSesion` TODAVÍA NO EXISTE en
+  // `CashRegisterService` (se agrega recién en la Fase 04, otra sesión);
+  // mismo criterio que `registrarMovimientoManual` en la fase 04a de T3.3:
+  // no se agrega ni un stub al servicio real, se declara localmente el
+  // contrato esperado (spec §4.2) y se castea para que el archivo compile,
+  // dejando que la llamada real lance en runtime (razón correcta de rojo).
+  //
+  // Umbral (RN-5): comparar la diferencia contra `umbral_diferencia_caja`
+  // (sembrado en $500 por T0.13, AMB-10 RESUELTA). El contrato de
+  // `cerrarSesion` documentado en la spec (sección 4.2) y en el propio
+  // ticket NO recibe ese valor como parte del `input` — se asume acá que la
+  // Fase 04 lo resuelve inyectando `SettingsService` en el constructor de
+  // `CashRegisterService` (mismo mecanismo que el resto del sistema usa
+  // para leer parámetros configurables). Como no se puede tocar el
+  // constructor real en esta fase, el servicio de este describe se
+  // instancia con un cast local a un constructor de 2 argumentos (prisma,
+  // settings) — hoy, antes de la implementación, el argumento extra
+  // simplemente se ignora (el constructor real solo toma 1) y
+  // `cerrarSesion` sigue sin existir, así que el rojo sigue siendo por la
+  // razón correcta (`TypeError: ... is not a function`). **Ambigüedad
+  // señalada, no resuelta unilateralmente**: si el diseño real de la
+  // Fase 04 difiere de esta asunción (por ejemplo, si el umbral viaja
+  // como parte del `input` en vez de por constructor), este bloque va a
+  // necesitar un ajuste menor de wiring, sin tocar las aserciones de
+  // negocio en sí.
+  describe('cerrarSesion (RN-4, RN-5, RN-6, invariante 2)', () => {
+    interface CerrarSesionInput {
+      sessionId: number;
+      montoDeclarado: Prisma.Decimal.Value;
+      notaCierre?: string;
+      userId: number;
+      esOwner: boolean;
+    }
+
+    interface CashRegisterSessionForRole extends Omit<
+      SessionRow,
+      'montoSistema' | 'diferencia'
+    > {
+      // Mismo patrón que `VariantForRole`/`hideOwnerOnlyFields` en
+      // `variants.service.ts` (products/variants): el campo se omite del
+      // todo para quien no es OWNER, no se manda en 0 ni en null.
+      montoSistema?: Prisma.Decimal;
+      diferencia?: Prisma.Decimal;
+    }
+
+    interface CashRegisterServiceWithCerrarSesion {
+      cerrarSesion(
+        tx: Prisma.TransactionClient,
+        input: CerrarSesionInput,
+      ): Promise<CashRegisterSessionForRole>;
+    }
+
+    type CashRegisterServiceConstructorConSettings = new (
+      prisma: PrismaService,
+      settings: SettingsService,
+    ) => CashRegisterServiceWithCerrarSesion;
+
+    // $500.00 — valor real sembrado por T0.13 (AMB-10, RESUELTA), leído acá
+    // vía un `SettingsService` mockeado (nunca como un número mágico suelto
+    // sin explicar de dónde sale).
+    const UMBRAL_DIFERENCIA_CAJA_SEMBRADO = '500.00';
+
+    function buildServiceConSettings(
+      umbral: Prisma.Decimal.Value = UMBRAL_DIFERENCIA_CAJA_SEMBRADO,
+    ): {
+      service: CashRegisterServiceWithCerrarSesion;
+      settings: { getDecimal: jest.Mock };
+    } {
+      const settings = {
+        getDecimal: jest.fn().mockResolvedValue(new Prisma.Decimal(umbral)),
+      };
+      const ServiceConSettings =
+        CashRegisterService as unknown as CashRegisterServiceConstructorConSettings;
+      const service = new ServiceConSettings(
+        {} as PrismaService,
+        settings as unknown as SettingsService,
+      );
+      return { service, settings };
+    }
+
+    // Sesión ABIERTA con montoInicial=100 más una suma de movimientos
+    // configurable — fixture compartida por los casos de cálculo de abajo.
+    function buildTxParaCierre(
+      sessionRow: SessionRow | null,
+      sumaMovimientos: string,
+    ): MockTx {
+      const tx = buildMockTx(sessionRow);
+      tx.cashMovement.aggregate.mockResolvedValue({
+        _sum: { monto: new Prisma.Decimal(sumaMovimientos) },
+      });
+      return tx;
+    }
+
+    function lastUpdateCallData(tx: MockTx): {
+      estado?: CashRegisterSessionEstado;
+      montoDeclarado?: Prisma.Decimal.Value;
+      montoSistema?: Prisma.Decimal.Value;
+      diferencia?: Prisma.Decimal.Value;
+      notaCierre?: string | null;
+    } {
+      const call = tx.cashRegisterSession.update.mock.calls[0][0] as {
+        data: {
+          estado?: CashRegisterSessionEstado;
+          montoDeclarado?: Prisma.Decimal.Value;
+          montoSistema?: Prisma.Decimal.Value;
+          diferencia?: Prisma.Decimal.Value;
+          notaCierre?: string | null;
+        };
+      };
+      return call.data;
+    }
+
+    it('camino feliz: montoDeclarado == montoSistema calculado → diferencia 0, no exige nota, cierra la sesión (estado CERRADA)', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00'); // montoSistema = 500
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('500.00'),
+          userId: 7,
+          esOwner: true,
+        }),
+      ).resolves.toBeDefined();
+
+      const data = lastUpdateCallData(tx);
+      expect(data.estado).toBe(CashRegisterSessionEstado.CERRADA);
+      expect(new Prisma.Decimal(data.montoSistema!).toString()).toBe('500');
+      expect(new Prisma.Decimal(data.diferencia!).toString()).toBe('0');
+      expect(new Prisma.Decimal(data.montoDeclarado!).toString()).toBe('500');
+    });
+
+    it('diferencia por debajo del umbral (ej. $100, umbral $500) sin nota → cierra igual, sin exigir nada', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00'); // montoSistema = 500
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('600.00'), // diferencia = 100
+          userId: 7,
+          esOwner: true,
+        }),
+      ).resolves.toBeDefined();
+
+      const data = lastUpdateCallData(tx);
+      expect(data.estado).toBe(CashRegisterSessionEstado.CERRADA);
+      expect(new Prisma.Decimal(data.diferencia!).toString()).toBe('100');
+    });
+
+    it('diferencia exactamente igual al umbral ($500), SIN notaCierre, cerrando esOwner: true → rechaza (RN-5, caso límite ">=")', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00'); // montoSistema = 500
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('1000.00'), // diferencia = 500
+          userId: 7,
+          esOwner: true,
+        }),
+      ).rejects.toThrow(/diferencia/i);
+
+      expect(tx.cashRegisterSession.update).not.toHaveBeenCalled();
+    });
+
+    it('misma diferencia de $500 SIN notaCierre, cerrando esOwner: false (SELLER) → NO rechaza, cierra igual (RN-6, cierre a ciegas)', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00'); // montoSistema = 500
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('1000.00'), // diferencia = 500
+          userId: 7,
+          esOwner: false,
+        }),
+      ).resolves.toBeDefined();
+
+      const data = lastUpdateCallData(tx);
+      expect(data.estado).toBe(CashRegisterSessionEstado.CERRADA);
+    });
+
+    it('esOwner: true → el resultado devuelto incluye montoSistema y diferencia', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      tx.cashRegisterSession.update.mockResolvedValue({
+        ...abierta,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        montoSistema: new Prisma.Decimal('500.00'),
+        diferencia: new Prisma.Decimal('0.00'),
+      });
+      const { service } = buildServiceConSettings();
+
+      const result = await service.cerrarSesion(asTx(tx), {
+        sessionId: 1,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        userId: 7,
+        esOwner: true,
+      });
+
+      expect(result.montoSistema).toBeDefined();
+      expect(result.diferencia).toBeDefined();
+      expect(new Prisma.Decimal(result.montoSistema!).toString()).toBe('500');
+      expect(new Prisma.Decimal(result.diferencia!).toString()).toBe('0');
+    });
+
+    it('esOwner: false → el resultado devuelto OCULTA montoSistema y diferencia (mismo criterio que VariantForRole/hideOwnerOnlyFields)', async () => {
+      const abierta = buildSessionRow({
+        id: 1,
+        montoInicial: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildTxParaCierre(abierta, '400.00');
+      // La fila "cruda" que devolvería Prisma SÍ trae montoSistema/
+      // diferencia — la ocultación tiene que ser una decisión activa del
+      // servicio, no una casualidad de lo que el mock resolvió.
+      tx.cashRegisterSession.update.mockResolvedValue({
+        ...abierta,
+        estado: CashRegisterSessionEstado.CERRADA,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        montoSistema: new Prisma.Decimal('500.00'),
+        diferencia: new Prisma.Decimal('0.00'),
+      });
+      const { service } = buildServiceConSettings();
+
+      const result = await service.cerrarSesion(asTx(tx), {
+        sessionId: 1,
+        montoDeclarado: new Prisma.Decimal('500.00'),
+        userId: 7,
+        esOwner: false,
+      });
+
+      expect(result.montoSistema).toBeUndefined();
+      expect(result.diferencia).toBeUndefined();
+    });
+
+    it('rechaza cerrar una sesión que ya está CERRADA', async () => {
+      const cerrada = buildSessionRow({
+        id: 1,
+        estado: CashRegisterSessionEstado.CERRADA,
+      });
+      const tx = buildTxParaCierre(cerrada, '0.00');
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 1,
+          montoDeclarado: new Prisma.Decimal('100.00'),
+          userId: 7,
+          esOwner: true,
+        }),
+      ).rejects.toThrow(/cerrada/i);
+
+      expect(tx.cashRegisterSession.update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza cerrar una sesión inexistente', async () => {
+      const tx = buildTxParaCierre(null, '0.00');
+      const { service } = buildServiceConSettings();
+
+      await expect(
+        service.cerrarSesion(asTx(tx), {
+          sessionId: 999,
+          montoDeclarado: new Prisma.Decimal('100.00'),
+          userId: 7,
+          esOwner: true,
+        }),
+      ).rejects.toThrow(/no encontrada/i);
+
+      expect(tx.cashRegisterSession.update).not.toHaveBeenCalled();
     });
   });
 });

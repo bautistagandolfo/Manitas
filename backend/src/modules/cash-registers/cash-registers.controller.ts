@@ -1,9 +1,22 @@
-import { Body, Controller, Post, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseIntPipe,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
 import { CashMovement, CashRegisterSession, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CashRegisterService } from './cash-register.service';
+import {
+  CashRegisterService,
+  CashRegisterSessionForRole,
+} from './cash-register.service';
 import { OpenSessionDto } from './dto/open-session.dto';
 import { ManualMovementDto } from './dto/manual-movement.dto';
+import { CloseSessionDto } from './dto/close-session.dto';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import { Roles } from '../../common/auth/roles.decorator';
 import type { RequestUser } from '../../common/auth/authenticated-request';
@@ -92,6 +105,29 @@ export class CashRegistersController {
           });
         }),
       () => this.prisma.cashMovement.findUnique({ where: { idempotencyKey } }),
+    );
+  }
+
+  // Sin @Roles: "cierre a ciegas" (§5.5, RN-6) — cualquiera puede cerrar
+  // declarando el efectivo contado, pero `esOwner` (derivado del rol real
+  // de la sesión, nunca de algo que mande el cliente) decide adentro del
+  // servicio si se exige nota y si la respuesta incluye montoSistema/
+  // diferencia.
+  @HttpCode(HttpStatus.OK)
+  @Post('sessions/:id/close')
+  async cerrar(
+    @Param('id', ParseIntPipe) sessionId: number,
+    @Body() dto: CloseSessionDto,
+    @CurrentUser() user: RequestUser,
+  ): Promise<CashRegisterSessionForRole> {
+    return this.prisma.$transaction((tx) =>
+      this.cashRegisterService.cerrarSesion(tx, {
+        sessionId,
+        montoDeclarado: dto.montoDeclarado,
+        notaCierre: dto.notaCierre,
+        userId: user.id,
+        esOwner: user.rol === UserRole.OWNER,
+      }),
     );
   }
 }
