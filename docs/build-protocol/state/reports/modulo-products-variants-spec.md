@@ -153,10 +153,13 @@ directamente:
 Prefijo común `/api` omitido (ya establecido en `main.ts`). Todos
 requieren sesión (`AuthGuard` global); el rol exigido se indica por
 endpoint. Todo listado pagina con `page`/`pageSize` (RN-12) y devuelve
-`{ items, totalItems, page, pageSize }`. **Corrección post-spec (T2.2):**
-"total" a secas dispara el linter local `no-number-money` (BLUEPRINT §9.3
-trata cualquier "total" tipado `number` como sospechoso de ser plata) —
-se usa `totalItems` en la implementación real desde T2.2 en adelante.
+`{ items, itemCount, page, pageSize }`. **Corrección post-spec (T2.2,
+re-verificada en la Fase 07):** "total" a secas dispara el linter local
+`no-number-money` (BLUEPRINT §9.3 trata cualquier "total" tipado
+`number` como sospechoso de ser plata, incluso dentro de "totalItems")
+— se usa `itemCount` en la implementación real desde T2.2 en adelante.
+Esta nota decía "totalItems" hasta la Fase 07 — quedó desactualizada
+apenas se escribió, la implementación real siempre usó `itemCount`.
 
 **Catálogo auxiliar** (`brands`, `categories`, `sizes`, `colors` — los
 cuatro con la misma forma):
@@ -499,3 +502,14 @@ desbloqueado** — el PO decidió explícitamente no extender T0.14 acá
 blueprint); ver sección 6, edge case de doble click, y `ROADMAP.md`.
 Sigue pendiente: AMB-12 (solo bloquea a T2.13) y ejecutar T0.11 antes
 de T2.12.
+
+**Fase 07 — cierre del módulo (2026-08-23): T2.1–T2.13 completos.**
+Auditoría contra esta spec, ver `state/STATUS.md` para el detalle
+completo. Tres inconsistencias reales corregidas (edge case de
+variantes inactivas en bulk-update sin implementar, y dos casos de
+regla de negocio duplicada entre tickets). Dos gaps de alcance
+reportados, no corregidos (necesitan su propia decisión): falta
+`GET /variants/:id/stock-movements` (documentado en la sección 4.1,
+nunca construido) y falta el `CHECK` de base para el invariante 6 que
+esta spec decía que existía (nunca se agregó — el motivo obligatorio
+de `AJUSTE` solo está protegido a nivel de DTO/servicio, no de base).
