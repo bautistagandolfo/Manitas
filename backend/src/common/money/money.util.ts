@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 // Helpers de Decimal y redondeo comercial — BLUEPRINT §9.3 (AD-14) y §5.3
@@ -20,6 +21,19 @@ export function roundCurrency(value: DecimalInput): Prisma.Decimal {
     2,
     Prisma.Decimal.ROUND_HALF_UP,
   );
+}
+
+// Regla de negocio repetida sin variación real en variants.service.ts,
+// stock.controller.ts y catalog-import.service.ts (Fase 07, cierre del
+// módulo `products`/`variants`): todo importe de dinero de una sola
+// entrada (precio, costo, costoUnitario) tiene que ser > 0. Distinto del
+// chequeo de prices.service.ts (bulk-update), que identifica el SKU y
+// el valor resultante calculado — ese mensaje es más rico a propósito y
+// no se unifica acá.
+export function assertPositive(value: DecimalInput, field: string): void {
+  if (new Prisma.Decimal(value).lessThanOrEqualTo(0)) {
+    throw new BadRequestException(`${field} tiene que ser mayor a 0`);
+  }
 }
 
 // Regla 1 de §9.3: subtotal de una línea, redondeado.

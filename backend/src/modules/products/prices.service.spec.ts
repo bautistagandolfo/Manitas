@@ -118,13 +118,11 @@ describe('PricesService (T2.10, RN-9)', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('filtra por brandId/categoryId/variantIds cuando vienen en el filtro', async () => {
+    it('filtra por brandId/categoryId combinados con AND (sin variantIds), excluyendo inactivas', async () => {
       prisma.variant.findMany.mockResolvedValue([]);
 
       await service.preview(
-        updateDto({
-          filtro: { brandId: 5, categoryId: 9, variantIds: [1, 2] },
-        }),
+        updateDto({ filtro: { brandId: 5, categoryId: 9 } }),
       );
 
       expect(prisma.variant.findMany).toHaveBeenCalledWith(
@@ -136,8 +134,28 @@ describe('PricesService (T2.10, RN-9)', () => {
               brandId: 5,
               categoryId: 9,
             }) as unknown,
-            id: { in: [1, 2] },
           }) as unknown,
+        }),
+      );
+    });
+
+    // BLUEPRINT §6, edge case: selección manual explícita de ids se
+    // respeta tal cual, incluidas variantes inactivas — "es una decisión
+    // consciente de quien la hizo". brandId/categoryId se ignoran cuando
+    // hay variantIds: RN-9 los describe como modos alternativos ("por
+    // marca, categoría O selección manual"), no combinables.
+    it('con variantIds explícito, ignora brandId/categoryId y NO filtra por activo (edge case BLUEPRINT §6)', async () => {
+      prisma.variant.findMany.mockResolvedValue([]);
+
+      await service.preview(
+        updateDto({
+          filtro: { brandId: 5, categoryId: 9, variantIds: [1, 2] },
+        }),
+      );
+
+      expect(prisma.variant.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: { in: [1, 2] } },
         }),
       );
     });

@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  NotFoundException,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, NotFoundException, Post } from '@nestjs/common';
 import { Prisma, UserRole, Variant } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockService } from './stock.service';
@@ -13,6 +7,7 @@ import { CreateEntradaDto } from './dto/create-entrada.dto';
 import { Roles } from '../../common/auth/roles.decorator';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { RequestUser } from '../../common/auth/authenticated-request';
+import { assertPositive } from '../../common/money/money.util';
 
 // OWNER-only (RN-5, literal: "permitido solo a OWNER, con motivo
 // obligatorio" — BLUEPRINT §5.2). A diferencia de products/variants, acá
@@ -74,9 +69,7 @@ export class StockController {
     @CurrentUser() user: RequestUser,
   ): Promise<Variant> {
     const costoUnitario = new Prisma.Decimal(dto.costoUnitario);
-    if (costoUnitario.lessThanOrEqualTo(0)) {
-      throw new BadRequestException('costoUnitario tiene que ser mayor a 0');
-    }
+    assertPositive(costoUnitario, 'costoUnitario');
 
     return this.prisma.$transaction(async (tx) => {
       const variant = await tx.variant.findUnique({

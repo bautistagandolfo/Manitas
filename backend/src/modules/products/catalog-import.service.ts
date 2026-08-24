@@ -4,6 +4,8 @@ import { Prisma, PriceHistoryCampo, PriceHistoryOrigen } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockService } from '../stock/stock.service';
 import { generateSku } from './sku.util';
+import { violatedConstraint } from './prisma-error.util';
+import { assertPositive } from '../../common/money/money.util';
 import { ImportCatalogDto } from './dto/import-catalog.dto';
 
 // T2.13 / AMB-12 (RESUELTA 2026-08-23): plantilla propia de columnas —
@@ -107,9 +109,7 @@ export function parseDecimalField(
   } catch {
     throw new Error(`${campo} "${raw}" no es un número válido`);
   }
-  if (value.lessThanOrEqualTo(0)) {
-    throw new Error(`${campo} tiene que ser mayor a 0`);
-  }
+  assertPositive(value, campo);
   if (value.decimalPlaces() > 2) {
     throw new Error(`${campo} no puede tener más de 2 decimales`);
   }
@@ -131,15 +131,9 @@ export function parseStockField(raw: string | undefined): number {
 function translateRowError(error: unknown): string {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') {
-      const target = error.meta?.target;
-      const targetStr = Array.isArray(target)
-        ? target.join(',')
-        : typeof target === 'string'
-          ? target
-          : '';
-      if (targetStr.includes('sku'))
-        return 'Ya existe una variante con ese SKU';
-      if (targetStr.includes('barcode')) {
+      const target = violatedConstraint(error);
+      if (target.includes('sku')) return 'Ya existe una variante con ese SKU';
+      if (target.includes('barcode')) {
         return 'Ya existe una variante con ese código de barras';
       }
       return 'Ya existe una variante con esos datos (talle/color duplicado para el producto)';

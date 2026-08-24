@@ -79,26 +79,33 @@ export class PricesService {
     return this.computeResultado(variants, dto.porcentaje);
   }
 
+  // BLUEPRINT §6, edge case "Actualización masiva sobre variantes
+  // inactivas": se excluyen del filtro por defecto (no tiene sentido
+  // remarcar algo que no se vende), **salvo que el filtro sea por
+  // selección manual explícita de ids — ahí se respeta la selección tal
+  // cual**, es una decisión consciente de quien la hizo. Encontrado sin
+  // implementar en la Fase 07 (cierre del módulo): la versión anterior
+  // filtraba `activo: true` siempre, incluso con `variantIds` explícito.
   private async matchingVariants(
     reader: VariantReader,
     filtro: BulkPriceUpdateFiltroDto,
   ): Promise<MatchedVariant[]> {
+    if (filtro.variantIds !== undefined) {
+      return reader.variant.findMany({
+        where: { id: { in: filtro.variantIds } },
+        select: { id: true, sku: true, precioVenta: true },
+        orderBy: { sku: 'asc' },
+      });
+    }
+
     const productWhere: Prisma.ProductWhereInput = {
       activo: true,
       ...(filtro.brandId !== undefined && { brandId: filtro.brandId }),
       ...(filtro.categoryId !== undefined && { categoryId: filtro.categoryId }),
     };
 
-    const where: Prisma.VariantWhereInput = {
-      activo: true,
-      product: productWhere,
-      ...(filtro.variantIds !== undefined && {
-        id: { in: filtro.variantIds },
-      }),
-    };
-
     return reader.variant.findMany({
-      where,
+      where: { activo: true, product: productWhere },
       select: { id: true, sku: true, precioVenta: true },
       orderBy: { sku: 'asc' },
     });

@@ -282,6 +282,39 @@ describe('POST /prices/bulk-update/{preview,apply} (integration, T2.10, RN-9)', 
     expect(noAfectada.precioVenta.toString()).toBe('50');
   });
 
+  // BLUEPRINT §6, edge case: por defecto (marca/categoría, sin
+  // variantIds) las variantes inactivas se excluyen; con selección
+  // manual explícita de ids se respetan tal cual, incluidas inactivas.
+  it('excluye variantes inactivas del filtro por marca, pero las incluye si se seleccionan explícitamente por id', async () => {
+    const { variantId: activa } = await createTestVariant('50.00', brandId);
+    const { variantId: inactiva } = await createTestVariant('50.00', brandId);
+    await prisma.variant.update({
+      where: { id: inactiva },
+      data: { activo: false },
+    });
+
+    const porMarca = await owned(
+      request(app.getHttpServer()).post('/prices/bulk-update/preview'),
+    )
+      .send({ filtro: { brandId }, porcentaje: '10.00' })
+      .expect(201);
+    const idsPorMarca = (porMarca.body as BulkPriceUpdateItemBody[]).map(
+      (item) => item.variantId,
+    );
+    expect(idsPorMarca).toContain(activa);
+    expect(idsPorMarca).not.toContain(inactiva);
+
+    const porSeleccionManual = await owned(
+      request(app.getHttpServer()).post('/prices/bulk-update/preview'),
+    )
+      .send({ filtro: { variantIds: [inactiva] }, porcentaje: '10.00' })
+      .expect(201);
+    const idsManual = (
+      porSeleccionManual.body as BulkPriceUpdateItemBody[]
+    ).map((item) => item.variantId);
+    expect(idsManual).toContain(inactiva);
+  });
+
   it('si el porcentaje dejaría a alguna variante con precioVenta <= 0, da 400 y no aplica NADA (todo o nada)', async () => {
     const { variantId: sana } = await createTestVariant('100.00', brandId);
     const { variantId: critica } = await createTestVariant('5.00', brandId);

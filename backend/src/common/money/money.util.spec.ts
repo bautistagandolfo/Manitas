@@ -1,10 +1,39 @@
+import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   applyPercentage,
+  assertPositive,
   lineSubtotal,
   prorate,
   roundCurrency,
 } from './money.util';
+
+// Fase 07 (cierre del módulo products/variants): extraído acá porque
+// variants.service.ts, stock.controller.ts y catalog-import.service.ts
+// repetían exactamente la misma regla y el mismo mensaje.
+describe('assertPositive', () => {
+  it('no lanza con un valor mayor a 0', () => {
+    expect(() => assertPositive('10.00', 'precioVenta')).not.toThrow();
+    expect(() =>
+      assertPositive(new Prisma.Decimal('0.01'), 'costo'),
+    ).not.toThrow();
+  });
+
+  it('rechaza 0 con BadRequestException y el nombre del campo en el mensaje', () => {
+    expect(() => assertPositive('0', 'precioVenta')).toThrow(
+      BadRequestException,
+    );
+    expect(() => assertPositive('0', 'precioVenta')).toThrow(
+      'precioVenta tiene que ser mayor a 0',
+    );
+  });
+
+  it('rechaza negativos', () => {
+    expect(() => assertPositive('-5.00', 'costoUnitario')).toThrow(
+      'costoUnitario tiene que ser mayor a 0',
+    );
+  });
+});
 
 describe('roundCurrency', () => {
   it('redondea comercial (medio hacia arriba), no bancario', () => {

@@ -20,6 +20,8 @@ import { VariantSearchQueryDto } from './dto/variant-search-query.dto';
 import { PriceHistoryQueryDto } from './dto/price-history-query.dto';
 import { CreateVariantGridDto } from './dto/create-variant-grid.dto';
 import { generateSku } from './sku.util';
+import { violatedConstraint } from './prisma-error.util';
+import { assertPositive } from '../../common/money/money.util';
 import { PaginatedResult } from './products.service';
 
 // RN-3 (BLUEPRINT §5.2, literal): el costo solo lo ve OWNER. Se resuelve
@@ -96,15 +98,6 @@ function toSearchResult(
     size,
     color,
   };
-}
-
-function violatedConstraint(
-  error: Prisma.PrismaClientKnownRequestError,
-): string {
-  const target = error.meta?.target;
-  if (typeof target === 'string') return target;
-  if (Array.isArray(target)) return target.join(',');
-  return '';
 }
 
 @Injectable()
@@ -187,8 +180,8 @@ export class VariantsService {
 
     const precioVenta = new Prisma.Decimal(dto.precioVenta);
     const costoActual = new Prisma.Decimal(dto.costoActual);
-    this.assertPositive(precioVenta, 'precioVenta');
-    this.assertPositive(costoActual, 'costoActual');
+    assertPositive(precioVenta, 'precioVenta');
+    assertPositive(costoActual, 'costoActual');
 
     try {
       // AD-16 / RN-10: toda alta de variante deja su precio y costo
@@ -266,7 +259,7 @@ export class VariantsService {
     userId: number,
   ): Promise<Variant> {
     const nuevoPrecio = new Prisma.Decimal(dto.precioVenta);
-    this.assertPositive(nuevoPrecio, 'precioVenta');
+    assertPositive(nuevoPrecio, 'precioVenta');
 
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.variant.findUnique({ where: { id } });
@@ -369,8 +362,8 @@ export class VariantsService {
     const filas = dto.filas.map((fila) => {
       const precioVenta = new Prisma.Decimal(fila.precioVenta);
       const costo = new Prisma.Decimal(fila.costo);
-      this.assertPositive(precioVenta, 'precioVenta');
-      this.assertPositive(costo, 'costo');
+      assertPositive(precioVenta, 'precioVenta');
+      assertPositive(costo, 'costo');
       return { ...fila, precioVenta, costo };
     });
 
@@ -432,12 +425,6 @@ export class VariantsService {
       });
     } catch (error) {
       throw this.translateWriteError(error);
-    }
-  }
-
-  private assertPositive(value: Prisma.Decimal, field: string): void {
-    if (value.lessThanOrEqualTo(0)) {
-      throw new BadRequestException(`${field} tiene que ser mayor a 0`);
     }
   }
 
