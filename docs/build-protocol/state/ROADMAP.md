@@ -144,7 +144,7 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 | T3.2 | Movimientos de caja (servicio base, solo efectivo — AD-8) | T3.1 | VERDE |
 | T3.3 | Ingreso manual y retiro de efectivo, idempotente (BLUEPRINT §9.7 — es el ejemplo textual del doble click en un retiro) | T3.2, T0.14 | VERDE |
 | T3.4 | Cierre con arqueo: monto declarado, monto sistema, diferencia y nota obligatoria si supera `umbral_diferencia_caja` | T3.2, T0.13 | VERDE |
-| T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | PENDIENTE |
+| T3.5 | **Sesión olvidada abierta**: detección al entrar y cierre obligatorio | T3.4 | VERDE |
 | T3.6 | Test del invariante 2 (arqueo) | T3.4 | PENDIENTE |
 | T3.7 | Pantallas de apertura, movimientos y cierre | T3.5 | PENDIENTE |
 
@@ -170,6 +170,16 @@ Va **antes** de ventas: no se puede vender sin caja abierta.
 > **T0.13 en VERDE (2026-08-24).** `umbral_diferencia_caja` sembrado en
 > $500 (`SettingsService.getDecimal('umbral_diferencia_caja')`).
 > **T3.4 desbloqueada.**
+>
+> **T3.5, alcance real (2026-08-24):** el ticket dice "detección al
+> entrar y cierre obligatorio", pero la spec del módulo (RN-7) ya
+> explica que no hay ninguna lógica de "detección" del lado del
+> backend — alcanza con exponer `GET /cash-registers/sessions/open`
+> (nuevo en este ticket) con `fechaApertura` y `montoSistema`
+> recalculado en vivo. La comparación contra "hoy" en hora argentina y
+> el bloqueo real de la interfaz hasta cerrar ("obligatorio") son del
+> lado del frontend — no existen pantallas de `cash-registers` todavía
+> (son T3.7). Quedan explícitamente para T3.7, no resueltos acá.
 >
 > **Hallazgo técnico (fase 06 de este módulo): T4.4, T4.7 y T5.3 no
 > listaban `T3.2` como dependencia**, a pesar de que BLUEPRINT §5.3
