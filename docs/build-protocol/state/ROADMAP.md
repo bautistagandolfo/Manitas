@@ -99,7 +99,7 @@ Todos los módulos dependen de esto.
 | T2.10 | **Actualización masiva de precios** con vista previa (blueprint §5.2) | T2.9, **T0.12** | VERDE |
 | T2.11 | **Alta de variantes por grilla** (talles × colores, blueprint §12.2) | T2.3, **T0.12** | VERDE |
 | T2.12 | Pantallas de catálogo, stock e ingreso de mercadería | T2.5, T2.6, T2.7, T2.11, **T0.11** | VERDE |
-| T2.13 | **Importación de catálogo por CSV** (productos, variantes, stock inicial, costos), validación con reporte de errores línea por línea (`DECISIONES_PENDIENTES.md` C2) | T2.4, T2.9 | PENDIENTE |
+| T2.13 | **Importación de catálogo por CSV** (productos, variantes, stock inicial, costos), validación con reporte de errores línea por línea (`DECISIONES_PENDIENTES.md` C2) | T2.4, T2.9 | VERDE |
 
 **T2.4 es el ticket más delicado de esta etapa.** Blueprint §9.4 y AD-4.
 El costo solo lo ve `OWNER`.
@@ -126,8 +126,9 @@ los dos y pueden arrancar ya.**
 > razonamiento original, y esta nota para la decisión final.
 
 **T2.13 es nuevo (fase 06, `DECISIONES_PENDIENTES.md` C2 — "es un ticket
-nuevo de la Etapa 2, no un extra").** Su formato exacto de columnas queda
-sujeto a AMB-12.
+nuevo de la Etapa 2, no un extra").** Su formato exacto de columnas quedó
+sujeto a AMB-12 — **RESUELTA** (2026-08-23, plantilla propia): T2.13
+desbloqueado y ejecutado. **Etapa 2 completa (T2.1–T2.13, todos VERDE).**
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 

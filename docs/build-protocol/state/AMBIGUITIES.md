@@ -30,7 +30,7 @@ curso que haya generado ambigüedades propias).
 | AMB-9 | MEDIO | `sales` (impresión) | ¿Ticket impreso? | Diferir: no soportar impresora térmica en el MVP | ninguno (aditivo, no bloquea el arranque) | RESUELTA (diferida) | Sí |
 | AMB-10 | ⚠️ ALTO | `cash-registers` / `settings` | Umbral de diferencia de caja | Sin recomendación por defecto — necesita un número real | T0.13 (seed de `settings`), T3.4, Fase 06 de `cash-registers` | RESUELTA — **$500** (monto fijo, no %) | No había recomendación |
 | AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | RESUELTA — `OWNER`-only las tres | Sí |
-| AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | PENDIENTE | — |
+| AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | RESUELTA — plantilla propia | Sí |
 
 ---
 
@@ -426,3 +426,10 @@ en la grilla — el ahorro de tiempo que motiva el ticket se pierde en
 la práctica si el mapeo no se ajusta rápido después de conocer B4.
 
 **Bloquea a:** T2.13 únicamente. No bloquea T2.1–T2.12.
+
+**RESUELTA (2026-08-23):** el PO aprobó la recomendación — plantilla
+propia (nombre, marca, categoría, talle, color, SKU, barcode, precio,
+costo, stock inicial), sin esperar B4. Si B4 revela un formato
+existente más adelante, se ajusta el mapeo de columnas del importador
+como cambio acotado, no como reapertura del ticket. **T2.13
+desbloqueado.**
