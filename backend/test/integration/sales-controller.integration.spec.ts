@@ -54,7 +54,6 @@ function extractCookie(setCookieHeader: unknown): string {
 
 describe('sales-controller (integration, T4.11)', () => {
   let app: INestApplication<App>;
-  let ownerId: number;
   let sellerId: number;
   let ownerCookie: string;
   let sellerCookie: string;
@@ -156,7 +155,6 @@ describe('sales-controller (integration, T4.11)', () => {
         activo: true,
       },
     });
-    ownerId = owner.id;
     createdUserIds.push(owner.id);
 
     const seller = await prisma.user.create({
@@ -189,19 +187,6 @@ describe('sales-controller (integration, T4.11)', () => {
   });
 
   afterAll(async () => {
-    // El trigger `cash_movements_immutable_after_close` (T3.2) bloquea
-    // cualquier escritura sobre `cash_movements` de una sesión CERRADA —
-    // hay que reabrir cada sesión antes de poder borrar sus movimientos
-    // de prueba, mismo criterio que `cash-registers.integration.spec.ts`.
-    for (const id of new Set(createdSessionIds)) {
-      await prisma.cashRegisterSession
-        .update({
-          where: { id },
-          data: { estado: CashRegisterSessionEstado.ABIERTA },
-        })
-        .catch(() => undefined);
-    }
-
     if (createdSaleIds.length > 0) {
       await prisma.payment.deleteMany({
         where: { saleId: { in: createdSaleIds } },
@@ -214,29 +199,34 @@ describe('sales-controller (integration, T4.11)', () => {
       });
     }
 
-    if (createdSessionIds.length > 0) {
-      await prisma.cashMovement.deleteMany({
-        where: { sessionId: { in: [...new Set(createdSessionIds)] } },
+    // `sales.cash_register_session_id` es FK hacia la sesión — hay que
+    // borrar las ventas ANTES de poder borrar la sesión que referencian.
+    if (createdSaleIds.length > 0) {
+      await prisma.sale.deleteMany({ where: { id: { in: createdSaleIds } } });
+    }
+
+    // El trigger `cash_movements_immutable_after_close` (T3.2) bloquea
+    // cualquier escritura sobre `cash_movements` de una sesión CERRADA —
+    // hay que reabrir cada sesión antes de poder borrar sus movimientos
+    // de prueba. Una sesión por vez, de punta a punta (reabrir → borrar
+    // sus movimientos → borrar la sesión), nunca reabriendo todas en
+    // lote: el índice único parcial "una sola sesión ABIERTA" (invariante
+    // 9) rechazaría la segunda reapertura mientras la primera siga
+    // ABIERTA — mismo bug ya corregido en `sales.integration.spec.ts`
+    // (T4.1) y `sales-anulacion.integration.spec.ts` (T4.7).
+    for (const id of new Set(createdSessionIds)) {
+      await prisma.cashRegisterSession.update({
+        where: { id },
+        data: { estado: CashRegisterSessionEstado.ABIERTA },
       });
+      await prisma.cashMovement.deleteMany({ where: { sessionId: id } });
+      await prisma.cashRegisterSession.delete({ where: { id } });
     }
 
     if (createdVariantIds.length > 0) {
       await prisma.stockMovement.deleteMany({
         where: { variantId: { in: createdVariantIds } },
       });
-    }
-
-    if (createdSaleIds.length > 0) {
-      await prisma.sale.deleteMany({ where: { id: { in: createdSaleIds } } });
-    }
-
-    for (const id of new Set(createdSessionIds)) {
-      await prisma.cashRegisterSession
-        .delete({ where: { id } })
-        .catch(() => undefined);
-    }
-
-    if (createdVariantIds.length > 0) {
       await prisma.variant.deleteMany({
         where: { id: { in: createdVariantIds } },
       });
@@ -545,7 +535,9 @@ describe('sales-controller (integration, T4.11)', () => {
         .set('Idempotency-Key', idempotencyKey)
         .send({
           items: [{ variantId: variant.id, cantidad: 1 }],
-          discounts: [{ descripcion: 'Descuento forzado', porcentaje: '50.00' }],
+          discounts: [
+            { descripcion: 'Descuento forzado', porcentaje: '50.00' },
+          ],
           payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '500.00' }],
           esOwner: true,
         })
