@@ -34,7 +34,7 @@ curso que haya generado ambigüedades propias).
 | AMB-13 | ⚠️ ALTO | `cash-registers` | ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? | `OWNER`-only para ambas | T3.3, Fase 06 de `cash-registers` | RESUELTA — `OWNER`-only las dos | Sí |
 | AMB-14 | ⚠️ ALTO | `sales` | Mecanismo de autorización de `OWNER` para un descuento por encima del tope, en el momento de la venta | Campo de contraseña de `OWNER` en el formulario, verificado por el backend sin cambiar la sesión activa | T4.3, Fase 06 de `sales` | RESUELTA — contraseña de supervisor | Sí |
 | AMB-15 | MEDIO | `sales` / `products` | ¿Se puede vender una variante `activo: true` cuyo producto padre está `activo: false` (dado de baja)? | Bloquear en `crearVenta`, mismo criterio que RN-11 del buscador | ninguno nuevo (defensa en profundidad opcional) | PENDIENTE | — |
-| AMB-16 | ⚠️ ALTO | `returns` | ¿El crédito de una devolución (`CREDITO_DEVOLUCION`) se consume solo dentro del mismo flujo atómico de cambio, o queda disponible para usarse en una venta separada más adelante (nota de crédito)? | Solo atómico — coherente con AD-17 (sin cuenta corriente) y con el único flujo que el blueprint describe con precisión | T5.5, Fase 06 de `returns` | PENDIENTE | — |
+| AMB-16 | ⚠️ ALTO | `returns` | ¿El crédito de una devolución (`CREDITO_DEVOLUCION`) se consume solo dentro del mismo flujo atómico de cambio, o queda disponible para usarse en una venta separada más adelante (nota de crédito)? | Solo atómico — coherente con AD-17 (sin cuenta corriente) y con el único flujo que el blueprint describe con precisión | T5.5, Fase 06 de `returns` | RESUELTA — diferido (nota de crédito) | No (el PO pidió lo contrario de la recomendación) |
 
 ---
 
@@ -675,3 +675,45 @@ de consulta de saldo disponible, chequeo activo del invariante 14 en
 **Bloquea a:** T5.5 (`returns`, flujo de `CAMBIO`) — el resto de la
 Etapa 5 (T5.1–T5.4, T5.6, la parte de T5.1 que no depende de "cuánto
 crédito queda disponible") no depende de esta respuesta.
+
+**Resolución (2026-08-25):** RESUELTA — **diferido**, lo opuesto a la
+recomendación. El PO confirmó explícitamente: "debería permitir, sería
+como una nota de crédito" — el crédito de una devolución queda
+disponible para aplicarse a una venta posterior, no solo dentro del
+mismo momento del cambio.
+
+**Impacto real de esta decisión (superficie nueva, no un ajuste
+menor):**
+
+1. La validación del invariante 14 ("la suma de los pagos
+   `CREDITO_DEVOLUCION` que referencian una devolución nunca supera su
+   `total_devuelto`") deja de poder vivir solo en `returns.service.ts`
+   dentro del flujo atómico — tiene que vivir en
+   `SalesService.crearVenta` mismo, porque CUALQUIER `POST /sales`
+   futuro, sin relación con el `returns` que originó el crédito, puede
+   intentar gastarlo. `sales.service.ts` consulta `tx.return`/
+   `tx.payment` directamente (mismo patrón ya usado en `anularVenta`
+   contra `tx.return.findFirst`) — no importa una clase de
+   `ReturnsService` ni crea una dependencia circular de módulos.
+2. Antes de sumar el crédito ya consumido, `crearVenta` bloquea la fila
+   de la `Return` referenciada (`SELECT id FROM returns WHERE id =
+   ${returnId} FOR UPDATE`, mismo patrón BLUEPRINT §9.4) — sin eso, dos
+   ventas simultáneas podrían gastar el mismo crédito dos veces.
+3. Hace falta un endpoint nuevo de consulta —
+   `GET /returns/:numero/credito` (buscar por el número de la
+   DEVOLUCIÓN, no de la venta — es el "comprobante" que la clienta
+   presenta) — que devuelva cuánto crédito le queda disponible.
+4. Hace falta una forma de APLICAR ese crédito desde la pantalla de
+   cobro normal (`CobroPage.tsx`, ya cerrada en la Fase 12 de `sales`),
+   no solo desde la pantalla de cambio — una vendedora cobrando una
+   venta cualquiera necesita poder buscar el número de una devolución
+   vieja y aplicar su saldo como un medio de pago más.
+
+**Ticket nuevo agregado a `state/ROADMAP.md`: T5.8** — "Aplicar crédito
+de una devolución a una venta posterior (nota de crédito diferida)",
+separado de T5.5 a propósito (CLAUDE.md regla 10, un ticket por vez):
+T5.5 construye el mecanismo compartido (`returnId` + invariante 14 +
+lock, en `sales.service.ts`) más el flujo atómico de `returns.service.ts`;
+T5.8 reusa ese mismo mecanismo ya validado desde un punto de entrada
+distinto (la pantalla de cobro), sin tocar `sales.service.ts` de
+nuevo. **T5.5 desbloqueado.**

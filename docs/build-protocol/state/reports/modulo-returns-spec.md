@@ -49,10 +49,15 @@ Este módulo es dueño de:
 
 Este módulo **NO** es dueño de, y nunca escribe directamente en:
 
-- `sales`/`sale_items`/`sale_discounts`/`payments` (salvo la fila de
-  `payments` que crea `crearVenta` para la venta nueva de un cambio —
-  y esa escritura la sigue haciendo `sales`, no `returns`). `returns`
-  SÍ **lee** `sales`/`sale_items` directamente (mismo criterio que
+- `sales`/`sale_items`/`sale_discounts`/`payments` — ni siquiera la
+  fila de `payments` que consume el crédito de una devolución
+  (`CREDITO_DEVOLUCION` + `returnId`), sea dentro del flujo atómico de
+  cambio (RN-9) o en una venta completamente separada, más adelante
+  (T5.8, AMB-16 resuelta como diferido): esa escritura, y la
+  validación de que no se gasta de más (invariante 14), viven siempre
+  en `sales.service.ts` (sección 5) — `returns` nunca escribe ni
+  valida esto directamente. `returns` SÍ **lee**
+  `sales`/`sale_items`/`payments` directamente (mismo criterio que
   `SalesService.anularVenta` ya lee `returns`/`sale.payments`
   directamente sin necesitar que el otro módulo exponga un endpoint
   para eso).
@@ -179,14 +184,20 @@ transacción (§5.4, literal).**
 4. Actualizar `returns.sale_nueva_id` con el id de la venta creada en
    el paso 3.
 
-**RN-10. El crédito de una devolución se usa una sola vez (invariante
-14).** La suma de los `payments.monto` con `metodo = CREDITO_DEVOLUCION`
-que referencian una devolución (`payments.return_id`) nunca supera su
-`total_devuelto`. **Ver AMB-16 (sección 10)** — el alcance exacto de
-esta regla (¿se valida solo dentro del paso 3 de RN-9, atómico, o
-también contra un crédito de una devolución vieja usado en una venta
-completamente separada, más adelante?) depende de una decisión de
-producto que el blueprint no resuelve con precisión.
+**RN-10. El crédito de una devolución se usa una sola vez, y queda
+disponible para una venta futura (invariante 14, AMB-16 RESUELTA —
+diferido).** La suma de los `payments.monto` con
+`metodo = CREDITO_DEVOLUCION` que referencian una devolución
+(`payments.return_id`) nunca supera su `total_devuelto` — **sin
+importar si esos pagos ocurren en el mismo momento del cambio (RN-9)
+o en una venta completamente distinta, más adelante, sin relación con
+`returns.service.ts` en absoluto.** El PO confirmó explícitamente que
+el crédito es una nota de crédito real, no algo que solo exista dentro
+del flujo atómico — decisión que cambia dónde vive la validación: ver
+sección 5 (`SalesService.crearVenta` la valida ella misma, con su
+propio lock, no `returns.service.ts`) y la sección 4 (endpoint nuevo
+de consulta de saldo, y la extensión de la pantalla de cobro para
+aplicar un crédito viejo, T5.8).
 
 **RN-11. Una venta pagada con `CREDITO_DEVOLUCION` no se puede anular**
 (invariante 15) — **ya construido del lado de `sales`** (T4.7, paso 5
@@ -242,11 +253,26 @@ puede devolver de esta venta?"), no un listado genérico de ventas.
 |---|---|---|---|---|
 | `GET` | `/returns/sales/:numero` | cualquiera autenticado | — | Busca la venta por `numero` (lo que el mostrador conoce, no el `id` interno — mismo criterio que un ticket/comprobante). 404 si no existe. Devuelve `saleId`, `numero`, `fecha`, `estado`, `dentroDePlazo` (bool, calculado contra `dias_plazo_devolucion`), `items: [{ saleItemId, variantId, descripcionSnapshot, cantidadVendida, cantidadDisponible, netoLineaOriginal, netoLineaDisponible }]` (calculados leyendo `sale_items` + `return_items` agregados, sin locks — es una lectura, no compone con ninguna transacción de escritura), `payments: [{ metodo, monto }]` (la venta original, para que el frontend sugiera la proporción de RN-7). `SELLER`: sin `costoUnitario` en ningún lado (RN-10 de `sales`, mismo criterio). |
 | `POST` | `/returns` | cualquiera autenticado (RN-1, mismo criterio que `sales`: "es el trabajo del vendedor") | `{ saleId: number, tipo: 'DEVOLUCION' \| 'CAMBIO', items: [{ saleItemId, cantidad, reingresaStock }], returnPayments: [{ metodo, monto, referencia? }], creditoAplicado?: { monto }, ventaNueva?: CreateSaleDto }`, header `Idempotency-Key` | Idempotente (RN-9 de §9.7, mismo patrón `withIdempotency` que `sales`/`cash-registers`). `tipo = CAMBIO` exige `creditoAplicado` y `ventaNueva`; `tipo = DEVOLUCION` los rechaza si vienen (400, "no aplica"). `esOwner` resuelto siempre del JWT (nunca del body), igual que `sales`. Devuelve la `Return` creada (y, si es cambio, el `id`/`numero` de la venta nueva). |
+| `GET` | `/returns/:numero/credito` | cualquiera autenticado | — | **Nuevo, AMB-16 RESUELTA (diferido) — T5.8.** Busca la devolución por SU PROPIO `numero` (el "comprobante" que la clienta presenta más adelante, no el número de la venta original). 404 si no existe. Devuelve `{ returnId, numero, totalDevuelto, creditoConsumido, creditoDisponible, saleId }` — `creditoConsumido`/`creditoDisponible` calculados en vivo (`SUM(payments.monto) WHERE return_id = X AND metodo = CREDITO_DEVOLUCION`, sin columna de saldo cacheada — mismo criterio que `reconciliar()` de `sales`/`cash-registers`/`stock`: derivar de la fuente, no mantener una segunda verdad redundante). Es una lectura pura, sin lock (el lock real que protege de gastar de más ocurre recién en `POST /sales`, sección 5). |
+
+**Extensión necesaria de un módulo ya cerrado (`sales`, Fase 12),
+consecuencia directa de AMB-16 resuelta como diferido — T5.8:**
+`CreateSaleDto`/`SalePaymentDto` ganan un campo `returnId?: number`,
+válido únicamente junto con `metodo: CREDITO_DEVOLUCION` (400 si viene
+con cualquier otro método, 400 si `CREDITO_DEVOLUCION` viene sin
+`returnId`). `CobroPage.tsx` gana una quinta opción de medio de pago
+("Aplicar crédito de devolución"): busca por número de devolución
+(reusa `GET /returns/:numero/credito`), muestra el saldo disponible,
+precarga el importe con el menor entre "saldo pendiente de la venta" y
+"crédito disponible" — mismo criterio de UX que los atajos `1`-`4` ya
+construidos en T4.11. Ver sección 5 para el mecanismo de validación
+exacto que `sales.service.ts` gana con esto.
 
 **Explícitamente fuera de esta fase (mismo criterio que los gaps ya
-documentados de `sales`)**: `GET /returns`, `GET /returns/:id`. No hay
-ticket que los reserve en `ROADMAP.md` — quedan para cuando la pantalla
-de resultados/histórico los necesite.
+documentados de `sales`)**: `GET /returns`, `GET /returns/:id`
+(listado/detalle históricos). No hay ticket que los reserve en
+`ROADMAP.md` — quedan para cuando la pantalla de resultados/histórico
+los necesite.
 
 ## 5. Transacciones y concurrencia
 
@@ -306,23 +332,58 @@ con `sale_nueva_id` en `null` todavía). Después:
     parte NO cubierta por crédito).
 14. `salesService.crearVenta(tx, { ...ventaNueva, payments: [
     ...ventaNueva.payments, { metodo: CREDITO_DEVOLUCION, monto:
-    creditoAplicado.monto, returnId: return.id } ] })` — **cambio
-    necesario, mínimo y aditivo, en `sales.service.ts`**: hoy
-    `CrearVentaPaymentInput` no tiene campo `returnId` en absoluto (leí
-    el archivo completo — no es que falte validarlo, el campo no
-    existe), así que `paymentsData` nunca persiste
-    `payments.return_id`. Se agrega `returnId?: number` opcional al
-    tipo y se pasa tal cual a `tx.sale.create`'s `payments.create`
-    (`returnId: p.returnId ?? null`) — no cambia ningún comportamiento
-    para los ~200 tests existentes que nunca lo mandan. **`sales` NO
-    valida el invariante 14** (no tiene ni debería tener visibilidad de
-    `returns` — crearía una dependencia circular de módulos): la
-    validación de que el crédito aplicado no supera lo disponible la
-    hace `returns.service.ts`, ANTES del paso 14, dentro de la misma
-    transacción (ver AMB-16 para el alcance exacto de qué hay que
-    sumar ahí).
+    creditoAplicado.monto, returnId: return.id } ] })` — reusa el
+    mecanismo de `sales.service.ts` descrito abajo, con
+    `returnId = return.id` (la devolución recién creada EN ESTA MISMA
+    transacción, todavía sin ningún crédito consumido — el chequeo de
+    invariante 14 pasa trivialmente acá, pero corre igual, sin caso
+    especial: es el mismo código que protege el uso diferido).
 15. `tx.return.update({ where: { id: return.id }, data: { saleNuevaId:
     sale.id } })` (paso 4 de RN-9).
+
+**Mecanismo compartido en `SalesService.crearVenta` (AMB-16 RESUELTA
+como diferido — construido en T5.5, reusado por RN-9 arriba y por
+T5.8): cambio real, no un passthrough.**
+
+Antes: `CrearVentaPaymentInput` no tenía campo `returnId` en absoluto
+(leí el archivo completo en esta sesión — no es que faltara validarlo,
+el campo no existía), así que `payments.return_id` nunca se persistía.
+Con el crédito confirmado como diferido, la validación de que no se
+gasta de más (invariante 14) tiene que vivir DENTRO de `crearVenta`
+misma — no en `returns.service.ts` — porque cualquier `POST /sales`
+futuro, sin relación alguna con el `returns` que originó el crédito,
+puede intentar gastarlo (T5.8). Pasos nuevos dentro de `crearVenta`,
+insertados junto al resto de la validación de pagos (paso 8 de la spec
+de `sales`, "cada pago tiene que ser positivo"):
+
+1. `returnId?: number` opcional en `CrearVentaPaymentInput`. Válido
+   solo junto con `metodo: CREDITO_DEVOLUCION` (400 en cualquier otra
+   combinación — un pago en efectivo con `returnId` no tiene sentido,
+   y un `CREDITO_DEVOLUCION` sin `returnId` no tiene ninguna
+   devolución real detrás que lo respalde).
+2. Para cada payment con `returnId` presente: **lock de la fila de la
+   `Return` referenciada** — `SELECT id FROM returns WHERE id IN
+   (${ids}) ORDER BY id FOR UPDATE` (mismo patrón exacto de BLUEPRINT
+   §9.4, aplicado acá a devoluciones en vez de variantes/sesiones —
+   **sin este lock, dos ventas simultáneas que gastan el mismo crédito
+   podrían leer el mismo "consumido hasta ahora" y las dos pasar**,
+   violando el invariante 14 igual que dos ventas simultáneas de la
+   última unidad violarían el invariante 5 sin el lock de variante).
+3. Con el lock tomado: `tx.return.findUnique` (404 si no existe) +
+   `tx.payment.aggregate({ where: { returnId, metodo:
+   CREDITO_DEVOLUCION }, _sum: { monto: true } })` → si
+   `consumido_previo + monto_de_este_pago > return.totalDevuelto`,
+   400 ("El crédito de la devolución #N no alcanza — disponible: $X").
+4. `paymentsData` persiste `returnId: p.returnId ?? null` tal cual en
+   `tx.sale.create`'s `payments.create`.
+
+Sin impacto en ningún test existente de `sales` (campo opcional,
+default `null`, los pasos 1–3 solo corren cuando `returnId` está
+presente). `sales.service.ts` consulta `tx.return`/`tx.payment`
+directamente — **sin importar `ReturnsService` ni crear una
+dependencia circular de módulos**, mismo patrón que `anularVenta` ya
+usa contra `tx.return.findFirst` (Fase 04 de T4.7) sin que `sales`
+dependa de un módulo `returns` que en ese momento ni existía.
 
 **Números de devolución**: `numero` ya es
 `@unique @default(autoincrement())` en el schema (secuencia de
@@ -381,6 +442,27 @@ mecanismo que `sales.numero`.
   T4.10 de `sales` (`sessionStorage` + `Idempotency-Key` persistida) —
   responsabilidad de T5.7, no de este documento resolver el detalle de
   UI, solo dejar constancia de que el mecanismo ya existe y se reusa.
+- **Crédito diferido, gastado en una venta días después, sin relación
+  con `returns.service.ts`** (AMB-16 resuelta): camino soportado a
+  propósito — `POST /sales` con un pago `CREDITO_DEVOLUCION` +
+  `returnId` de una devolución vieja, en una sesión de caja distinta a
+  la que generó el crédito. El chequeo de invariante 14 corre igual
+  (sección 5).
+- **Crédito ya gastado completamente en una venta anterior, se intenta
+  usar de nuevo**: 400, "no alcanza — disponible: $0".
+- **Dos ventas simultáneas intentando gastar el mismo crédito
+  (concurrencia real, mismo criterio que T4.9/T5.6)**: una pasa, la
+  otra rechaza — nunca las dos, gracias al lock de la fila de `Return`
+  (sección 5).
+- **Crédito parcial**: una devolución de $1000 se gasta $600 en una
+  venta y $400 en otra, separada — cada `POST /sales` valida contra el
+  saldo restante en ese momento, no contra el `total_devuelto`
+  original.
+- **`GET /returns/:numero/credito` de una devolución que en realidad
+  fue el resultado de un `CAMBIO` (no de una `DEVOLUCION` simple)**:
+  responde igual (el crédito quedó completo o parcialmente consumido
+  por la propia venta nueva del cambio, mismo cálculo en vivo) — no hay
+  ninguna distinción especial por `tipo` en este endpoint.
 
 ## 7. Errores
 
@@ -394,7 +476,10 @@ mecanismo que `sales.numero`.
 | `SUM(return_payments) != total_devuelto` | 400 | "Los reintegros no cubren el total de la devolución" (mismo criterio textual que `sales`) |
 | `tipo = CAMBIO` sin `creditoAplicado`/`ventaNueva` | 400 | "Un cambio necesita la venta nueva y el crédito aplicado" |
 | `tipo = DEVOLUCION` con `creditoAplicado`/`ventaNueva` presentes | 400 | "Una devolución simple no lleva venta nueva" |
-| Crédito aplicado supera lo disponible de la devolución (invariante 14) | 400/409 | Ver AMB-16 — el mensaje exacto depende de esa resolución |
+| Crédito aplicado supera lo disponible de la devolución (invariante 14, `POST /sales`) | 400 | "El crédito de la devolución #N no alcanza — disponible: $X" |
+| Pago `CREDITO_DEVOLUCION` sin `returnId` (`POST /sales`) | 400 | "Un pago con crédito de devolución necesita indicar cuál" |
+| `returnId` en un pago que no es `CREDITO_DEVOLUCION` (`POST /sales`) | 400 | "El crédito de devolución solo aplica a ese método de pago" |
+| `GET /returns/:numero/credito` con número inexistente | 404 | "Devolución no encontrada" |
 
 ## 8. Permisos
 
@@ -402,6 +487,8 @@ mecanismo que `sales.numero`.
 |---|---|---|
 | Crear devolución/cambio dentro de plazo | ✅ | ✅ (RN-1, mismo criterio que crear venta) |
 | Crear devolución/cambio fuera de plazo | ✅ (se autoriza a sí mismo, trivialmente) | ❌ hasta que exista el mecanismo de autorización (construcción diferida, mismo criterio que AMB-14 de `sales`) |
+| Consultar cuánto crédito queda de una devolución (`GET /returns/:numero/credito`) | ✅ | ✅ (sin dato de costo/margen de por medio, nada que ocultar) |
+| Aplicar crédito de una devolución a una venta nueva (T5.8) | ✅ | ✅ (mismo criterio que crear venta — es cobrar, no autorizar nada) |
 | Ver devoluciones hechas por otro vendedor | ✅ | ✅ — sin restricción de "mis devoluciones" (blueprint no define ese límite, mismo criterio que RN-2 de `cash-registers` y sección 8 de `sales`) |
 | Ver `costoUnitario` en `GET /returns/sales/:numero` | ✅ | ❌ (RN-10 de `sales`, mismo criterio) |
 | Anular una devolución | — | — (no existe: "las devoluciones no se anulan", §5.4 literal) |
@@ -441,98 +528,80 @@ mecanismo que `sales.numero`.
 - **Testing de mutación (Stryker, obligatorio — BLUEPRINT §9.8 lista
   `returns` literal)**: umbral 80%, mismo criterio que `sales`/
   `cash-registers`/`stock`.
+- **Crédito diferido (AMB-16, T5.5 + T5.8) — en `sales.service.spec.ts`/
+  `sales.integration.spec.ts`, no en los archivos de `returns`**: pago
+  `CREDITO_DEVOLUCION` sin `returnId` → 400; con `returnId` de una
+  devolución inexistente → 404; que excede el disponible → 400,
+  mensaje con el saldo real; que coincide exacto con el disponible →
+  201, saldo queda en $0; gastado parcialmente en dos ventas
+  sucesivas, la segunda valida contra el saldo restante, no el
+  original; **concurrencia real (Postgres)**: dos ventas simultáneas
+  gastando el mismo crédito cerca del límite — una pasa, la otra
+  rechaza, nunca las dos (mismo patrón que T4.9/T5.6, repetido con
+  datos frescos por iteración).
 
 ## 10. Ambigüedades
 
-**AMB-16 (nueva) — ¿El crédito de una devolución se consume SOLO
-dentro del mismo flujo atómico de cambio, o puede quedar disponible
-para usarse en una venta separada, más adelante?**
+**AMB-16 — ¿El crédito de una devolución se consume SOLO dentro del
+mismo flujo atómico de cambio, o puede quedar disponible para usarse
+en una venta separada, más adelante? RESUELTA (2026-08-25) —
+diferido.**
 
-**Ubicación:** módulo `returns` (BLUEPRINT §5.4, invariante 14; schema
-`Payment.returnId`, nullable pero sin ninguna restricción de "solo
-dentro de la misma transacción que lo creó").
+**Descripción original:** el texto de §5.4 describe el `CAMBIO` como
+una secuencia de 4 pasos, toda en una transacción — no menciona en
+ningún lado la posibilidad de que el crédito quede "guardado" para
+después. Pero el modelo de datos (`Payment.returnId`, campo general,
+sin restricción de "solo dentro de la misma transacción") y el
+invariante 14 (redactado sin acotar "dentro del mismo request")
+dejaban la puerta abierta a un crédito diferido.
 
-**Descripción:** el texto de §5.4 describe el `CAMBIO` como una
-secuencia de 4 pasos, **toda en una transacción** — no menciona en
-ningún lado la posibilidad de que el crédito de una devolución quede
-"guardado" para aplicarse a una venta futura, en otro momento, con otra
-sesión de caja. Pero el modelo de datos (`Payment.returnId` es un campo
-general de la tabla `payments`, no algo exclusivo del flujo `CAMBIO`
-atómico) y el invariante 14 ("la suma de los pagos `CREDITO_DEVOLUCION`
-que la referencian nunca supera su `total_devuelto`") están redactados
-de forma genérica, sin acotar "dentro del mismo request" — lo que
-sugiere que el diseño de datos SÍ contempla la posibilidad de un
-crédito diferido (una especie de nota de crédito), aunque el flujo
-descrito en prosa solo cubre el caso atómico.
+**Resolución:** el PO confirmó explícitamente lo opuesto a la
+recomendación de esta sesión: **"debería permitir, sería como una nota
+de crédito"** — el crédito de una devolución queda disponible para
+aplicarse a una venta futura, sin relación con el momento ni la sesión
+de caja que lo generó.
 
-**Por qué no se resuelve solo con el código:** es una decisión de
-producto sobre qué tan flexible es la política de cambios de la
-tienda, no algo derivable del modelo de datos — que un campo NULL sea
-técnicamente reutilizable no significa que el negocio quiera esa
-funcionalidad en el MVP.
+**Consecuencia de diseño, ya incorporada al resto de este documento**
+(secciones 4, 5, 6, 7, 9, 11): la validación del invariante 14 no
+puede vivir solo en `returns.service.ts` — vive en
+`SalesService.crearVenta`, con su propio lock sobre la fila de
+`Return` (sección 5), porque cualquier `POST /sales` futuro puede
+intentar gastar un crédito viejo. Nuevo endpoint de consulta
+(`GET /returns/:numero/credito`) y nueva forma de aplicar el crédito
+desde la pantalla de cobro normal (T5.8, sección 11) — superficie real,
+no un ajuste menor de T5.5.
 
-**Impacto real de la respuesta:**
-- Si es **"solo atómico"**: el invariante 14 se cumple por
-  construcción (se crea y se consume en la misma transacción, nunca
-  existe un estado intermedio de "crédito disponible sin usar"
-  persistido) — no hace falta ningún chequeo activo aparte del que ya
-  describe RN-9. Más simple, y es lo único que el texto de §5.4
-  describe literalmente.
-- Si es **"diferido"**: hace falta (a) una forma de que quien vende
-  sepa cuánto crédito le queda disponible a una devolución vieja (una
-  extensión de `GET /returns/sales/:numero` o un endpoint nuevo), y
-  (b) un chequeo activo del invariante 14 en `sales.service.ts` (o en
-  un punto compartido) cada vez que se cree CUALQUIER payment
-  `CREDITO_DEVOLUCION` con `returnId`, no solo dentro del paso 3 de
-  RN-9 — superficie nueva real, no un ajuste menor.
-
-**Pregunta para el PO:** cuando alguien devuelve una prenda sin llevarse
-otra en el momento (una devolución simple, `tipo = DEVOLUCION`, sin
-cambio), ¿el sistema genera algún crédito a favor que se pueda usar en
-una compra posterior, o el reintegro de una devolución simple es
-siempre en efectivo/tarjeta, y el `CREDITO_DEVOLUCION` como método de
-pago **solo existe** dentro del flujo atómico de un cambio en el
-momento?
-
-**RECOMENDACIÓN:** solo atómico. Es lo único que el blueprint describe
-con precisión, es la lectura más simple del texto de §5.4 ("secuencia
-de 4 pasos, toda en una transacción"), evita construir una superficie
-nueva de "nota de crédito" que ninguna otra parte del documento
-menciona, y es coherente con AD-17 (sin cuenta corriente ni fiado —
-un crédito diferido es, en la práctica, una forma de cuenta corriente
-a favor de la clienta). Si el PO confirma que sí necesita crédito
-diferido, es una extensión real (nueva pantalla de "aplicar crédito",
-nuevo endpoint de consulta, chequeo de invariante 14 en `sales`) — no
-un ajuste de T5.5, sino candidato a ticket nuevo.
-
-**RIESGO DE LA RECOMENDACIÓN:** si en la práctica una clienta pide "un
-cambio, pero no tengo la plata ahora, ¿me lo guardan?", el sistema no
-tiene forma de registrarlo — tendría que resolverse a mano (una nota en
-papel), fuera del sistema, hasta que se construya la extensión.
-
-**Bloquea a:** T5.5 (el ticket que construye el flujo de `CAMBIO`) —
-el resto de la Etapa 5 (T5.1–T5.4, T5.6) no depende de esta respuesta,
-ya que son sobre la devolución simple, sin crédito de por medio.
+Sin ambigüedades PENDIENTES al cierre de esta fase.
 
 ## 11. Tickets
 
 Los 7 tickets de `state/ROADMAP.md` (T5.1–T5.7) siguen siendo
-correctos en su objetivo y dependencias — **un ajuste técnico, no de
-alcance**: T5.5 ("Cambio: devolución + venta nueva ligadas") incluye,
-como parte de su propia sesión (no un ticket aparte, mismo criterio que
-`sales` extendiendo `stock`/`cash-registers` sin que eso fuera un
-ticket separado), el cambio mínimo y aditivo en
-`sales.service.ts`/`sales.service.spec.ts` descrito en la sección 5
-(campo `returnId?` opcional en `CrearVentaPaymentInput`, persistido en
-`payments.create`). Sin tests existentes de `sales` que se rompan
-(campo opcional, default implícito `null`).
+correctos en su objetivo y dependencias. **Un ticket nuevo, T5.8**
+(agregado a `ROADMAP.md` como consecuencia directa de AMB-16 resuelta
+como diferido): "Aplicar crédito de una devolución a una venta
+posterior" — `GET /returns/:numero/credito` (nuevo endpoint, dueño
+`returns`) + la quinta opción de medio de pago en `CobroPage.tsx`
+(dueño `sales`, ya cerrado en su Fase 12 — extensión aditiva, mismo
+criterio que cualquier ticket que ya tocó un módulo ajeno de forma
+mínima y justificada). Depende de T5.5 (que construye el mecanismo
+compartido de `sales.service.ts` que T5.8 reusa) y T5.1 (que genera
+las primeras devoluciones reales con crédito para aplicar).
 
-**T5.1–T5.4 y T5.6** son "plata y stock" (Etapa 5, excepción literal de
-BLUEPRINT §9.8) — dos sesiones separadas cada uno (`04a-tests-first.md`
-+ `04-ticket-execution.md`), mismo criterio que Etapa 4. **T5.5**
-también, por tocar `payments`/crédito. **T5.7** (pantallas) es
-frontend — Fase 04a no aplica, mismo criterio que T4.10/T4.11.
+**Ajuste técnico dentro de T5.5** (no un ticket aparte, mismo criterio
+que `sales` extendiendo `stock`/`cash-registers` sin que eso fuera un
+ticket separado): el cambio en `sales.service.ts`/
+`sales.service.spec.ts` descrito en la sección 5 (`returnId?` opcional
+en `CrearVentaPaymentInput`, lock de `Return`, validación de invariante
+14, persistido en `payments.create`). Sin tests existentes de `sales`
+que se rompan (campo opcional, default implícito `null`).
 
-**T5.1 espera la resolución de AMB-16 solo en la parte de "cuánto
-crédito queda disponible"** — el resto de T5.1 (devolución simple, sin
-`CAMBIO`) no depende de esa respuesta y puede construirse en paralelo.
+**T5.1–T5.4, T5.6 y T5.8** son "plata y stock" (Etapa 5, excepción
+literal de BLUEPRINT §9.8) — dos sesiones separadas cada uno
+(`04a-tests-first.md` + `04-ticket-execution.md`), mismo criterio que
+Etapa 4. **T5.5** también, por tocar `payments`/crédito. **T5.7**
+(pantallas de devolución/cambio) es frontend — Fase 04a no aplica,
+mismo criterio que T4.10/T4.11.
+
+**Sin bloqueos pendientes** — los 8 tickets de la etapa pueden
+construirse siguiendo el orden de dependencias ya declarado
+(`ROADMAP.md`).

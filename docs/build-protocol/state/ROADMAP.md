@@ -378,26 +378,42 @@ completa en la sección 12.1 del blueprint.
 | T5.5 | Cambio: devolución + venta nueva ligadas | T5.3 | PENDIENTE |
 | T5.6 | Test del invariante 8 (no devolver más de lo vendido) | T5.1 | PENDIENTE |
 | T5.7 | Pantallas de devolución y cambio | T5.5 | PENDIENTE |
+| T5.8 | Aplicar crédito de una devolución a una venta posterior (nota de crédito diferida, AMB-16) | T5.5, T5.1 | PENDIENTE |
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
-> **Hallazgo técnico (Fase 06 de este módulo, sin cambio de objetivo ni
-> dependencias):** T5.5 (`CAMBIO`) reusa `SalesService.crearVenta` tal
-> cual para crear la venta nueva (no reimplementa ninguna regla de
-> venta) — pero `CrearVentaPaymentInput` hoy no tiene campo `returnId`
-> en absoluto, así que `payments.return_id` nunca se persiste. T5.5
-> incluye, dentro de su propia sesión (no un ticket aparte, mismo
-> criterio que `sales` extendiendo `stock`/`cash-registers` sin ticket
-> separado), un cambio mínimo y aditivo en `sales.service.ts`/
-> `sales.service.spec.ts`: `returnId?: number` opcional en
-> `CrearVentaPaymentInput`, persistido tal cual — sin romper ningún
-> test existente (campo opcional, default `null`). El chequeo de que
-> el crédito aplicado no supera lo disponible (invariante 14) vive en
-> `returns.service.ts`, nunca en `sales` (evita una dependencia
-> circular de módulos). Ver `state/reports/modulo-returns-spec.md`
-> sección 5, y AMB-16 (`state/AMBIGUITIES.md`) para el alcance exacto
-> de esa validación — **T5.5 queda BLOQUEADO hasta resolver AMB-16**;
-> T5.1–T5.4 y T5.6 no dependen de esa respuesta.
+> **Hallazgo técnico (Fase 06 de este módulo) + AMB-16 (RESUELTA
+> 2026-08-25 — el PO confirmó crédito diferido, no solo atómico):**
+> T5.5 (`CAMBIO`) reusa `SalesService.crearVenta` tal cual para crear
+> la venta nueva (no reimplementa ninguna regla de venta) — pero
+> `CrearVentaPaymentInput` hoy no tiene campo `returnId` en absoluto,
+> así que `payments.return_id` nunca se persiste. Con el crédito
+> confirmado como diferido, T5.5 construye, dentro de su propia sesión
+> (no un ticket aparte, mismo criterio que `sales` extendiendo
+> `stock`/`cash-registers` sin ticket separado), el mecanismo
+> COMPLETO en `sales.service.ts`/`sales.service.spec.ts`: `returnId?:
+> number` opcional en `CrearVentaPaymentInput`; lock de la fila de
+> `Return` referenciada (`SELECT ... FOR UPDATE`, mismo patrón
+> BLUEPRINT §9.4); validación activa de que el crédito consumido más
+> este pago no supera `total_devuelto` (invariante 14); persistencia
+> en `payments.create`. Sin romper ningún test existente (campo
+> opcional, default `null`, los pasos nuevos solo corren cuando
+> `returnId` está presente). **`sales` SÍ valida el invariante 14
+> ella misma** (consulta `tx.return`/`tx.payment` directamente, sin
+> importar `ReturnsService` — evita una dependencia circular de
+> módulos, mismo patrón que `anularVenta` ya usa contra
+> `tx.return.findFirst`). Ver `state/reports/modulo-returns-spec.md`
+> secciones 4/5 para el detalle completo.
+>
+> **T5.8 (ticket nuevo)** reusa ese mismo mecanismo desde un punto de
+> entrada distinto: `GET /returns/:numero/credito` (nuevo, dueño
+> `returns`) + una quinta opción de medio de pago en `CobroPage.tsx`
+> (dueño `sales`, ya cerrado en su Fase 12 — extensión aditiva) — sin
+> tocar `sales.service.ts` de nuevo, solo el frontend y el nuevo
+> endpoint de lectura.
+>
+> **Sin bloqueos pendientes** — los 8 tickets de la etapa pueden
+> arrancar siguiendo el orden de dependencias de la tabla de arriba.
 
 ---
 
