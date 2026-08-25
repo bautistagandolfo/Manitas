@@ -149,6 +149,7 @@ export class SalesService {
       where: { id: { in: variantIds } },
       select: {
         id: true,
+        activo: true,
         precioVenta: true,
         costoActual: true,
         stockActual: true,
@@ -158,6 +159,21 @@ export class SalesService {
       },
     });
     const variantById = new Map(variantRows.map((v) => [v.id, v]));
+
+    // Paso 5b (RN-2, spec §7: "variantId inexistente o inactivo" → 400):
+    // toda línea tiene que referenciar una variante real y activa — "no
+    // existe venta libre con precio a mano". Se valida ANTES del stock
+    // (paso 6): sin esto, una variante inexistente entraba igual al
+    // chequeo de stock (`variant?.stockActual ?? 0`) y salía como 409
+    // "Stock insuficiente: quedan 0 unidades" en vez del 400 que exige la
+    // tabla de errores de la spec — hallazgo real de la fase 07, sin test
+    // que lo cubriera hasta ahora.
+    for (const variantId of variantIds) {
+      const variant = variantById.get(variantId);
+      if (!variant || !variant.activo) {
+        throw new BadRequestException(`La variante ${variantId} no existe`);
+      }
+    }
 
     // Paso 6 (RN-3, AMB-4 RESUELTA): stock insuficiente bloquea, salvo
     // `permitir_venta_sin_stock`. Se lee siempre (aunque el stock alcance)
@@ -180,14 +196,12 @@ export class SalesService {
     // Paso 7 (AD-5): congelar precio y costo por línea, calcular subtotal.
     // `neto_linea`/`neto_unitario` no se calculan todavía acá — dependen del
     // `total` final (AD-18/RN-5, prorrateo), que recién se conoce después de
-    // resolver el descuento (paso 7b).
+    // resolver el descuento (paso 7b). El `!` es seguro: el paso 5b ya
+    // validó que TODO `variantId` de `input.items` existe y está activo
+    // (fase 07 — antes había acá un segundo chequeo de existencia,
+    // efectivamente inalcanzable, que quedaba como código muerto).
     const itemsBase = input.items.map((item) => {
-      const variant = variantById.get(item.variantId);
-      if (!variant) {
-        throw new BadRequestException(
-          `La variante ${item.variantId} no existe`,
-        );
-      }
+      const variant = variantById.get(item.variantId)!;
       const subtotalLinea = lineSubtotal(item.cantidad, variant.precioVenta);
       // T4.2 (BLUEPRINT §3.4, literal: "nombre + talle + color al momento
       // de vender"): talle y color se omiten si la variante no los tiene
@@ -250,7 +264,7 @@ export class SalesService {
     // Tope duro (invariante 4), siempre, para cualquier rol.
     if (descuentoTotal.isNegative() || descuentoTotal.greaterThan(subtotal)) {
       throw new BadRequestException(
-        'El descuento no puede superar el subtotal de la venta',
+        'El descuento no puede superar el subtotal',
       );
     }
 

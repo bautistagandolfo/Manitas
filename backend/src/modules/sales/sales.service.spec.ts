@@ -184,6 +184,7 @@ import { SalesService } from './sales.service';
 
 interface VariantRow {
   id: number;
+  activo: boolean;
   precioVenta: Prisma.Decimal;
   costoActual: Prisma.Decimal;
   stockActual: number;
@@ -200,9 +201,17 @@ interface VariantRow {
 // agregar estos campos al fixture no cambia el comportamiento que
 // verifican, solo evita que revienten con "Cannot read properties of
 // undefined" ahora que el servicio real los consulta.
+// Fase 07 (cierre de módulo): `activo` agregado al fixture — antes no
+// existía en `VariantRow` en absoluto, así que la nueva validación de
+// existencia/actividad (paso 5b de `crearVenta`, hallazgo real de esta
+// fase) hubiera roto los ~150 tests preexistentes que arman su propia
+// variante sin pasar `activo` (`undefined` evalúa `!activo` como
+// verdadero). Default `true`, mismo criterio que el resto del sistema
+// para una variante "normal" en un fixture.
 function buildVariantRow(overrides: Partial<VariantRow> = {}): VariantRow {
   return {
     id: 10,
+    activo: true,
     precioVenta: new Prisma.Decimal('100.00'),
     costoActual: new Prisma.Decimal('60.00'),
     stockActual: 10,
@@ -3214,5 +3223,96 @@ describe('SalesService.reconciliar — T4.8, invariante 3', () => {
     const { service } = buildServiceConPrisma([], []);
 
     expect(service.reconciliar.length).toBe(0);
+  });
+});
+
+// ─── Fase 07 (cierre de módulo) — RN-2, tabla de errores §7: "variantId
+// inexistente o inactivo" → 400 ─────────────────────────────────────────
+//
+// Hallazgo real de esta fase, no una reinterpretación: la validación de
+// existencia vivía solo dentro del `.map()` que arma `itemsBase` (paso 7
+// de `crearVenta`), DESPUÉS del chequeo de stock (paso 6). Ese chequeo de
+// stock usa `variant?.stockActual ?? 0` — para una variante que no existe
+// en absoluto, esa expresión da `0`, así que (con `permitir_venta_sin_stock`
+// en su default `false`, T0.13) el chequeo de stock disparaba PRIMERO,
+// devolviendo 409 "Stock insuficiente: quedan 0 unidades" en vez del 400
+// "La variante no existe" que exige la tabla de errores de la spec — el
+// paso 7 solo era alcanzable con `permitir_venta_sin_stock: true`. Sin
+// ningún test (unitario ni de integración) que lo cubriera hasta ahora.
+// Corregido agregando un paso 5b explícito, antes del chequeo de stock.
+describe('SalesService.crearVenta — Fase 07: variantId inexistente o inactivo (RN-2, spec §7)', () => {
+  it('variantId que no existe en absoluto: 400 "La variante ... no existe", sin llegar al chequeo de stock (nunca 409)', async () => {
+    const variant = buildVariantRow({ id: 10, stockActual: 5 });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 999999, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('10.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /999999 no existe/,
+    );
+
+    expect(tx.sale.create).not.toHaveBeenCalled();
+    expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+    expect(deps.cashRegisterService.registrarMovimiento).not.toHaveBeenCalled();
+  });
+
+  it('variante inactiva (activo: false): 400 "no existe", mismo criterio que una inexistente — RN-2 no distingue los dos casos', async () => {
+    const variant = buildVariantRow({ id: 10, activo: false, stockActual: 5 });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /variante 10 no existe/,
+    );
+
+    expect(tx.sale.create).not.toHaveBeenCalled();
+    expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+  });
+
+  it('una línea con variante inexistente y otra con variante real: rechaza igual, sin descontar stock de la variante real', async () => {
+    const variantReal = buildVariantRow({ id: 20, stockActual: 5 });
+    const tx = buildMockTx([variantReal]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [
+        { variantId: 20, cantidad: 1 },
+        { variantId: 999999, cantidad: 1 },
+      ],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('200.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /999999 no existe/,
+    );
+
+    expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
   });
 });

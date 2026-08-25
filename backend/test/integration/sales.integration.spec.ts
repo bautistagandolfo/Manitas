@@ -504,6 +504,78 @@ describe('sales (integration, T4.1)', () => {
       });
       expect(variantAfter.stockActual).toBe(10);
     });
+
+    // Fase 07 (cierre de módulo) — hallazgo real: la tabla de errores de
+    // la spec (§7) exige 400 "La variante no existe" para un `variantId`
+    // inexistente, pero el chequeo de stock (que corre ANTES, con
+    // `permitir_venta_sin_stock` en su default `false`) confundía una
+    // variante inexistente con "stock 0" y devolvía 409 en su lugar — sin
+    // ningún test que lo cubriera. Confirmado contra Postgres real, no
+    // solo contra el mock.
+    it('variantId inexistente: 400 "no existe", nunca 409 de stock — nada escrito (fase 07)', async () => {
+      const session = await openSession(ownerId);
+
+      await expect(
+        prisma.$transaction((tx) =>
+          salesService.crearVenta(tx, {
+            userId: ownerId,
+            esOwner: true,
+            idempotencyKey: randomUUID(),
+            items: [{ variantId: 999999999, cantidad: 1 }],
+            payments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('10.00'),
+              },
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/999999999 no existe/);
+
+      const sales = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(sales).toHaveLength(0);
+    });
+
+    it('variante inactiva: 400 "no existe" (RN-2 no distingue inexistente de inactiva), nada escrito (fase 07)', async () => {
+      const variant = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 10,
+      });
+      await prisma.variant.update({
+        where: { id: variant.id },
+        data: { activo: false },
+      });
+      const session = await openSession(ownerId);
+
+      await expect(
+        prisma.$transaction((tx) =>
+          salesService.crearVenta(tx, {
+            userId: ownerId,
+            esOwner: true,
+            idempotencyKey: randomUUID(),
+            items: [{ variantId: variant.id, cantidad: 1 }],
+            payments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('100.00'),
+              },
+            ],
+          }),
+        ),
+      ).rejects.toThrow(new RegExp(`${variant.id} no existe`));
+
+      const sales = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(sales).toHaveLength(0);
+
+      const variantAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variant.id },
+      });
+      expect(variantAfter.stockActual).toBe(10);
+    });
   });
 
   // T4.9 explícito en el ROADMAP. Repetido varias veces con una variante
