@@ -101,14 +101,28 @@ interface VariantRow {
   precioVenta: Prisma.Decimal;
   costoActual: Prisma.Decimal;
   stockActual: number;
+  product: { nombre: string };
+  size: { nombre: string } | null;
+  color: { nombre: string } | null;
 }
 
+// Fase 04 (T4.2, implementación): `product`/`size`/`color` agregados al
+// mock — T4.2 extendió el `select` de `tx.variant.findMany` para armar
+// `descripcion_snapshot` (BLUEPRINT §3.4). No es un debilitamiento de
+// ninguna aserción de T4.1: los tests de ese ticket nunca comprobaban el
+// contenido de `descripcionSnapshot` más allá de "no vacío", así que
+// agregar estos campos al fixture no cambia el comportamiento que
+// verifican, solo evita que revienten con "Cannot read properties of
+// undefined" ahora que el servicio real los consulta.
 function buildVariantRow(overrides: Partial<VariantRow> = {}): VariantRow {
   return {
     id: 10,
     precioVenta: new Prisma.Decimal('100.00'),
     costoActual: new Prisma.Decimal('60.00'),
     stockActual: 10,
+    product: { nombre: 'Producto de prueba' },
+    size: { nombre: 'M' },
+    color: { nombre: 'Negro' },
     ...overrides,
   };
 }

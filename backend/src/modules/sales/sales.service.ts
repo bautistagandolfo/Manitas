@@ -85,6 +85,10 @@ export class SalesService {
     await tx.$queryRaw`SELECT id FROM variants WHERE id IN (${Prisma.join(variantIds)}) ORDER BY id FOR UPDATE`;
 
     // Paso 5: recién ahora, con el lock tomado, se lee el estado real.
+    // `product`/`size`/`color` se traen para el congelado formal de
+    // `descripcion_snapshot` (T4.2, BLUEPRINT §3.4) — `size`/`color` son
+    // nullable (AD-15), así que el snapshot tiene que poder armarse igual
+    // sin ellos.
     const variantRows = await tx.variant.findMany({
       where: { id: { in: variantIds } },
       select: {
@@ -92,6 +96,9 @@ export class SalesService {
         precioVenta: true,
         costoActual: true,
         stockActual: true,
+        product: { select: { nombre: true } },
+        size: { select: { nombre: true } },
+        color: { select: { nombre: true } },
       },
     });
     const variantById = new Map(variantRows.map((v) => [v.id, v]));
@@ -126,12 +133,23 @@ export class SalesService {
         );
       }
       const subtotalLinea = lineSubtotal(item.cantidad, variant.precioVenta);
+      // T4.2 (BLUEPRINT §3.4, literal: "nombre + talle + color al momento
+      // de vender"): talle y color se omiten si la variante no los tiene
+      // (AD-15, ambos nullable) — nunca aparece "null"/"undefined" en el
+      // texto. Formato sin especificar por el blueprint ni por la spec del
+      // módulo (AMB señalada en la fase 04a de este ticket, no bloqueante);
+      // se elige uno legible y estable, no hay margen de negocio en juego.
+      const descripcionSnapshot = [
+        variant.product.nombre,
+        variant.size?.nombre,
+        variant.color?.nombre,
+      ]
+        .filter((parte): parte is string => Boolean(parte))
+        .join(' - ');
+
       return {
         variantId: item.variantId,
-        // El "congelado formal" (nombre + talle + color) es de T4.2 —
-        // acá alcanza con un valor no vacío y honesto, sin inventar datos
-        // que este ticket no tiene por qué consultar todavía.
-        descripcionSnapshot: `Variante #${item.variantId}`,
+        descripcionSnapshot,
         cantidad: item.cantidad,
         precioUnitario: variant.precioVenta,
         costoUnitario: variant.costoActual,
