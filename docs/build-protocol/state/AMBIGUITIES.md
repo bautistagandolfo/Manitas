@@ -32,7 +32,7 @@ curso que haya generado ambigüedades propias).
 | AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | RESUELTA — `OWNER`-only las tres | Sí |
 | AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | RESUELTA — plantilla propia | Sí |
 | AMB-13 | ⚠️ ALTO | `cash-registers` | ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? | `OWNER`-only para ambas | T3.3, Fase 06 de `cash-registers` | RESUELTA — `OWNER`-only las dos | Sí |
-| AMB-14 | ⚠️ ALTO | `sales` | Mecanismo de autorización de `OWNER` para un descuento por encima del tope, en el momento de la venta | Campo de contraseña de `OWNER` en el formulario, verificado por el backend sin cambiar la sesión activa | T4.3, Fase 06 de `sales` | PENDIENTE | — |
+| AMB-14 | ⚠️ ALTO | `sales` | Mecanismo de autorización de `OWNER` para un descuento por encima del tope, en el momento de la venta | Campo de contraseña de `OWNER` en el formulario, verificado por el backend sin cambiar la sesión activa | T4.3, Fase 06 de `sales` | RESUELTA — contraseña de supervisor | Sí |
 
 ---
 
@@ -544,3 +544,11 @@ limiting, ya que a diferencia de `/auth/login` hoy no tiene uno).
 
 **Bloquea a:** T4.3 y la parte de la Fase 06 de `sales` que depende de
 esta respuesta — el resto del módulo (T4.1, T4.2, T4.4–T4.11) no.
+
+**Resolución (2026-08-25):** RESUELTA. El PO aprobó la recomendación:
+contraseña de un `OWNER` en el propio formulario de descuento,
+verificada por el backend contra las credenciales reales (mismo
+mecanismo de hash que el login) sin emitir una cookie nueva ni cambiar
+la sesión activa de quien está cobrando. Nunca se acepta un
+`autorizado_por_user_id` crudo del body sin verificar nada. **T4.3
+desbloqueado.**

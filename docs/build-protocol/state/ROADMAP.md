@@ -227,6 +227,10 @@ completa en la sección 12.1 del blueprint.
 > sección 10. **T4.1, T4.2, T4.4–T4.11 no dependen de esta respuesta y
 > pueden avanzar ya.**
 >
+> **AMB-14 RESUELTA (2026-08-25):** el PO aprobó la recomendación —
+> contraseña de un `OWNER` en el propio formulario, verificada por el
+> backend sin emitir sesión nueva. **T4.3 desbloqueada.**
+>
 > **Hallazgo técnico (fase 06 de este módulo): `stock.service.ts`
 > (`products`/`stock`, ya VERDE) no expone lo que `sales` necesita
 > para descontar/revertir stock.** Su propia spec (fase 06 de
