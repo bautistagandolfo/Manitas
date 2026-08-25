@@ -231,6 +231,19 @@ completa en la sección 12.1 del blueprint.
 > contraseña de un `OWNER` en el propio formulario, verificada por el
 > backend sin emitir sesión nueva. **T4.3 desbloqueada.**
 >
+> **Alcance de T4.3 achicado a propósito (2026-08-25):** la clienta hoy
+> no tiene empleados — es la única usuaria, siempre `OWNER`, que se
+> autoriza a sí misma trivialmente. T4.3 construye el registro de
+> descuentos (N por venta, prorrateo real vía `prorate()`) y el tope
+> duro (`0 ≤ descuento_total ≤ subtotal`) siempre, más el tope del
+> vendedor evaluado solo si quien vende no es `OWNER` — pero **sin** el
+> mecanismo de autorización por contraseña: si un `SELLER` lo excede,
+> la venta se rechaza sin vía de autorización todavía (bloqueo simple,
+> no roto — nadie lo va a pisar hasta que exista un `SELLER` real). El
+> mecanismo de AMB-14 queda como agregado chico para cuando haga falta,
+> no como deuda técnica ni como bug. Ver `state/AMBIGUITIES.md` AMB-14,
+> nota "Construcción diferida".
+>
 > **Hallazgo técnico (fase 06 de este módulo): `stock.service.ts`
 > (`products`/`stock`, ya VERDE) no expone lo que `sales` necesita
 > para descontar/revertir stock.** Su propia spec (fase 06 de

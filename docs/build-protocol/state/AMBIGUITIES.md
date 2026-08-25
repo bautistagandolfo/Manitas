@@ -552,3 +552,15 @@ mecanismo de hash que el login) sin emitir una cookie nueva ni cambiar
 la sesión activa de quien está cobrando. Nunca se acepta un
 `autorizado_por_user_id` crudo del body sin verificar nada. **T4.3
 desbloqueado.**
+
+**Construcción diferida (2026-08-25):** la clienta hoy no tiene
+empleados — es la única usuaria, siempre `OWNER`. Como `OWNER` se
+autoriza a sí misma trivialmente (nunca necesita este mecanismo para
+sus propias ventas), el PO decidió construir T4.3 sin el paso de
+verificación por contraseña por ahora: el tope del vendedor
+(`max_descuento_vendedor_pct`) se sigue evaluando siempre, pero cuando
+lo excede quien vende **no** es `OWNER`, la venta se rechaza sin vía de
+autorización todavía (bloqueo simple, no un error). El mecanismo
+recomendado arriba sigue siendo la respuesta correcta — se construye
+como un agregado chico y acotado cuando exista un `SELLER` real que lo
+necesite, no antes.
