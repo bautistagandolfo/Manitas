@@ -1,4 +1,5 @@
 import { PrismaClient, Prisma, PaymentMetodo, UserRole } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import type { PrismaService } from '../../src/prisma/prisma.service';
 import { SalesService } from '../../src/modules/sales/sales.service';
 import { StockService } from '../../src/modules/stock/stock.service';
@@ -122,6 +123,7 @@ describe('sales — descripcion_snapshot y congelado de precio/costo (T4.2, inte
       salesService.crearVenta(tx, {
         userId: sellerId,
         esOwner: true,
+        idempotencyKey: randomUUID(),
         items: [{ variantId, cantidad: 1 }],
         payments: [
           { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal(monto) },

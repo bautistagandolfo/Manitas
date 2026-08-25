@@ -67,6 +67,12 @@ export interface CrearVentaInput {
   // nunca se confía en algo que mande el cliente. Obligatorio: no hay un
   // default seguro para "no sé qué rol es quien vende".
   esOwner: boolean;
+  // T4.5 (RN-9, BLUEPRINT §9.7/AD-10): se persiste tal cual en
+  // `sales.idempotency_key` (columna `@unique` desde la fase 01). Quien
+  // envuelve la llamada con `withIdempotency` (T0.14) es quien abre la
+  // transacción — el futuro `SalesController` (T4.10/T4.11) — nunca
+  // `crearVenta`, que no es dueño de su propio `tx`.
+  idempotencyKey: string;
 }
 
 @Injectable()
@@ -294,6 +300,7 @@ export class SalesService {
         descuentoTotal,
         ajusteRedondeo,
         total,
+        idempotencyKey: input.idempotencyKey,
         items: { create: itemsData },
         discounts: { create: discountsData },
         payments: { create: paymentsData },

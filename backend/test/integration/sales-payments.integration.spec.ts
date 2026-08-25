@@ -234,6 +234,7 @@ describe('sales — payments (integration, T4.4)', () => {
           salesService.crearVenta(tx, {
             userId: ownerId,
             esOwner: true,
+            idempotencyKey: randomUUID(),
             items: [{ variantId: variant.id, cantidad: 1 }],
             payments: [
               {
@@ -284,6 +285,7 @@ describe('sales — payments (integration, T4.4)', () => {
           salesService.crearVenta(tx, {
             userId: ownerId,
             esOwner: true,
+            idempotencyKey: randomUUID(),
             items: [{ variantId: variant.id, cantidad: 1 }],
             payments: [
               {
@@ -323,6 +325,7 @@ describe('sales — payments (integration, T4.4)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 1 }],
           payments: [
             {
@@ -392,6 +395,7 @@ describe('sales — payments (integration, T4.4)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 1 }],
           payments: [
             {
@@ -446,6 +450,7 @@ describe('sales — payments (integration, T4.4)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 1 }],
           payments: [
             {
@@ -495,6 +500,7 @@ describe('sales — payments (integration, T4.4)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 1 }],
           payments: [
             {
@@ -525,6 +531,7 @@ describe('sales — payments (integration, T4.4)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 1 }],
           payments: [
             {

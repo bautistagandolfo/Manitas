@@ -408,6 +408,7 @@ interface CrearVentaInputT43 {
   }>;
   discounts?: DiscountInputT43[];
   esOwner: boolean;
+  idempotencyKey: string;
 }
 
 // ─── T4.5 — idempotencia (RN-9, AD-10, BLUEPRINT §9.7) ───────────────────
@@ -457,6 +458,7 @@ describe('SalesService.crearVenta', () => {
       const result = await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 2 }],
         payments: [
           {
@@ -547,6 +549,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -575,6 +578,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -609,6 +613,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -641,6 +646,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [
           { variantId: 10, cantidad: 3 },
           { variantId: 10, cantidad: 4 },
@@ -672,6 +678,7 @@ describe('SalesService.crearVenta', () => {
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [
             { variantId: 10, cantidad: 3 },
             { variantId: 10, cantidad: 3 },
@@ -704,6 +711,7 @@ describe('SalesService.crearVenta', () => {
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 3 }],
           payments: [
             {
@@ -738,6 +746,7 @@ describe('SalesService.crearVenta', () => {
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 5 }],
           payments: [
             {
@@ -763,6 +772,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -793,6 +803,7 @@ describe('SalesService.crearVenta', () => {
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -824,6 +835,7 @@ describe('SalesService.crearVenta', () => {
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -859,6 +871,7 @@ describe('SalesService.crearVenta', () => {
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -883,6 +896,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -919,6 +933,7 @@ describe('SalesService.crearVenta', () => {
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [
           { variantId: 30, cantidad: 1 },
           { variantId: 10, cantidad: 1 },
@@ -989,6 +1004,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('0') },
@@ -1025,6 +1041,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('0') },
@@ -1059,6 +1076,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1087,6 +1105,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1121,6 +1140,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1156,6 +1176,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1190,6 +1211,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1233,6 +1255,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1269,6 +1292,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1319,6 +1343,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: true, // evita cualquier interacción con el tope del vendedor
+        idempotencyKey: 'idem-test-key',
         items: [
           { variantId: 10, cantidad: 1 },
           { variantId: 20, cantidad: 1 },
@@ -1373,6 +1398,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: true, // 15% > tope del 10% del vendedor
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1424,6 +1450,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 2 }],
         payments: [
           {
@@ -1487,6 +1514,7 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const input: CrearVentaInputT43 = {
         userId: 7,
         esOwner: false,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1549,6 +1577,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -1584,6 +1613,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
         service.crearVenta(asTx(tx), {
           userId: 7,
           esOwner: true,
+          idempotencyKey: 'idem-test-key',
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -1616,6 +1646,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1662,6 +1693,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1704,6 +1736,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1742,6 +1775,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -1769,6 +1803,7 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
       await service.crearVenta(asTx(tx), {
         userId: 7,
         esOwner: true,
+        idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {

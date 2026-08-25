@@ -261,6 +261,7 @@ describe('sales (integration, T4.1)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 2 }],
           payments: [
             {
@@ -326,6 +327,7 @@ describe('sales (integration, T4.1)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [{ variantId: variant.id, cantidad: 1 }],
           payments: [
             {
@@ -359,6 +361,7 @@ describe('sales (integration, T4.1)', () => {
         salesService.crearVenta(tx, {
           userId: ownerId,
           esOwner: true,
+          idempotencyKey: randomUUID(),
           items: [
             { variantId: variant.id, cantidad: 3 },
             { variantId: variant.id, cantidad: 4 },
@@ -404,6 +407,7 @@ describe('sales (integration, T4.1)', () => {
           salesService.crearVenta(tx, {
             userId: ownerId,
             esOwner: true,
+            idempotencyKey: randomUUID(),
             items: [{ variantId: variant.id, cantidad: 3 }],
             payments: [
               {
@@ -448,6 +452,7 @@ describe('sales (integration, T4.1)', () => {
           salesService.crearVenta(tx, {
             userId: ownerId,
             esOwner: true,
+            idempotencyKey: randomUUID(),
             items: [{ variantId: variant.id, cantidad: 1 }],
             payments: [
               {
@@ -482,6 +487,7 @@ describe('sales (integration, T4.1)', () => {
           salesService.crearVenta(tx, {
             userId: ownerId,
             esOwner: true,
+            idempotencyKey: randomUUID(),
             items: [{ variantId: variant.id, cantidad: 1 }],
             payments: [
               {
@@ -520,6 +526,7 @@ describe('sales (integration, T4.1)', () => {
             salesService.crearVenta(tx, {
               userId: ownerId,
               esOwner: true,
+              idempotencyKey: randomUUID(),
               items: [{ variantId: variant.id, cantidad: 1 }],
               payments: [
                 {
@@ -533,6 +540,7 @@ describe('sales (integration, T4.1)', () => {
             salesService.crearVenta(tx, {
               userId: sellerId,
               esOwner: false,
+              idempotencyKey: randomUUID(),
               items: [{ variantId: variant.id, cantidad: 1 }],
               payments: [
                 {
@@ -591,6 +599,7 @@ describe('sales (integration, T4.1)', () => {
             salesService.crearVenta(tx, {
               userId: ownerId,
               esOwner: true,
+              idempotencyKey: randomUUID(),
               items: [{ variantId: variant.id, cantidad: 1 }],
               payments: [
                 {

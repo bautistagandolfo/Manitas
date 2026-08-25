@@ -76,6 +76,7 @@ interface CrearVentaInputT43 {
   }>;
   discounts?: DiscountInputT43[];
   esOwner: boolean;
+  idempotencyKey: string;
 }
 
 describe('sales — descuentos (integration, T4.3)', () => {
@@ -275,6 +276,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: true,
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -321,6 +323,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: false,
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -361,6 +364,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: false,
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -415,6 +419,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: true, // el tope duro no depende del rol
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -468,6 +473,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: false,
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -506,6 +512,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: false,
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -542,6 +549,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: true,
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
@@ -579,6 +587,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: true, // evita cualquier interacción con el tope del vendedor
+        idempotencyKey: randomUUID(),
         items: [
           { variantId: v1.id, cantidad: 1 },
           { variantId: v2.id, cantidad: 1 },
@@ -642,6 +651,7 @@ describe('sales — descuentos (integration, T4.3)', () => {
       const input: CrearVentaInputT43 = {
         userId: ownerId,
         esOwner: true, // 15% > tope del 10% del vendedor
+        idempotencyKey: randomUUID(),
         items: [{ variantId: variant.id, cantidad: 1 }],
         payments: [
           {
