@@ -2966,3 +2966,253 @@ describe('SalesService.anularVenta — T4.7', () => {
     });
   });
 });
+
+// ─── Fase 04a (T4.8) — SalesService.reconciliar(), invariante 3 ──────────
+//
+// Fuente única: `docs/build-protocol/state/ROADMAP.md` T4.8; `BLUEPRINT.md`
+// §6 (encabezado de la sección de invariantes: "Cada una merece un test
+// automatizado, y las tres primeras además un chequeo de reconciliación
+// ejecutable" — invariante 3 es una de esas tres) e invariante 3
+// (`SUM(payments.monto) == sales.total`); `state/reports/
+// modulo-sales-spec.md` sección 3 (invariante 3, "se valida ANTES de
+// escribir... no se confía en un CHECK de base porque es una suma entre
+// dos tablas distintas") y sección 9 ("Test de invariantes dedicado
+// (T4.8)"). Mismo patrón EXACTO que `StockService.reconciliar()` (T2.8,
+// `stock.service.spec.ts`) y `CashRegisterService.reconciliar()` (T3.6,
+// `cash-register.service.spec.ts`), abiertos acá solo como referencia
+// CONCEPTUAL del método análogo — nunca la lógica de negocio de esos
+// módulos. No se abrió `sales.service.ts`.
+//
+// `reconciliar()` NO existe todavía en `SalesService` — a diferencia de
+// `crearVenta`/`anularVenta` (T4.1-T4.7, ya VERDE, con ~150 tests
+// preexistentes en el resto de este archivo que tienen que seguir
+// pasando sin verse afectados por este ticket). Llamar directo a
+// `service.reconciliar()` tipando `service` como `SalesService` real
+// rompería la compilación de TODO el archivo ("Property 'reconciliar'
+// does not exist on type 'SalesService'"), arrastrando también los tests
+// ya VERDE de T4.1-T4.7 — a diferencia de un archivo de integración nuevo
+// sin tests preexistentes que proteger (donde sí se aceptó ese rojo de
+// compilación total, ver `sales-anulacion.integration.spec.ts` para T4.7).
+// Para evitarlo, acá se usa el mismo truco ya usado en
+// `cash-register.service.spec.ts` (T3.6, describe 'reconciliar'): un tipo
+// `SalesServiceWithReconciliar` separado (declara la firma que
+// `reconciliar()` DEBERÍA tener, según el contrato de esta fase) y una
+// función constructora casteada a ese tipo, de forma que TypeScript
+// compila (el tipo declarado sí tiene el método) pero en tiempo de
+// ejecución `reconciliar` no existe todavía en el prototipo real de
+// `SalesService`, y la llamada lanza `TypeError: ...reconciliar is not a
+// function` — el rojo correcto para esta fase, sin tocar ni un solo test
+// de T4.1-T4.7.
+describe('SalesService.reconciliar — T4.8, invariante 3', () => {
+  interface SalesReconciliationMismatch {
+    saleId: number;
+    totalGuardado: Prisma.Decimal;
+    sumaPagos: Prisma.Decimal;
+  }
+
+  interface SalesServiceWithReconciliar {
+    reconciliar(): Promise<SalesReconciliationMismatch[]>;
+  }
+
+  interface SaleRowRecon {
+    id: number;
+    total: Prisma.Decimal;
+  }
+
+  interface PaymentFixtureRecon {
+    saleId: number;
+    monto: Prisma.Decimal.Value;
+  }
+
+  function sumPagos(
+    payments: PaymentFixtureRecon[],
+    saleId: number,
+  ): Prisma.Decimal {
+    return payments
+      .filter((p) => p.saleId === saleId)
+      .reduce((acc, p) => acc.plus(p.monto), new Prisma.Decimal('0.00'));
+  }
+
+  interface ReconciliarMockTx {
+    sale: {
+      findMany: jest.Mock<Promise<SaleRowRecon[]>, [unknown]>;
+    };
+    payment: {
+      groupBy: jest.Mock<
+        Promise<Array<{ saleId: number; _sum: { monto: Prisma.Decimal } }>>,
+        [unknown]
+      >;
+    };
+  }
+
+  // No hay filtro por `estado` en `sale.findMany` a propósito (RN-8: una
+  // venta ANULADA no toca `payments`/`total` — el invariante 3 tiene que
+  // seguir cumpliéndose igual para ella, mismo criterio que T2.8 con
+  // variantes inactivas). El mock de abajo no aplica ningún filtro nunca,
+  // así que una implementación que agregue un `where` sin querer queda
+  // expuesta por el test de forma exacta más abajo.
+  function buildReconciliarTx(
+    sales: SaleRowRecon[],
+    payments: PaymentFixtureRecon[],
+  ): ReconciliarMockTx {
+    const saleIdsConPagos = [...new Set(payments.map((p) => p.saleId))];
+    return {
+      sale: {
+        findMany: jest
+          .fn<Promise<SaleRowRecon[]>, [unknown]>()
+          .mockResolvedValue(sales),
+      },
+      payment: {
+        groupBy: jest
+          .fn<
+            Promise<Array<{ saleId: number; _sum: { monto: Prisma.Decimal } }>>,
+            [unknown]
+          >()
+          .mockImplementation(() =>
+            Promise.resolve(
+              saleIdsConPagos.map((saleId) => ({
+                saleId,
+                _sum: { monto: sumPagos(payments, saleId) },
+              })),
+            ),
+          ),
+      },
+    };
+  }
+
+  type TransactionMock = jest.Mock<
+    Promise<unknown>,
+    [
+      (t: Prisma.TransactionClient) => unknown,
+      { isolationLevel?: Prisma.TransactionIsolationLevel }?,
+    ]
+  >;
+
+  function buildServiceConPrisma(
+    sales: SaleRowRecon[],
+    payments: PaymentFixtureRecon[],
+  ): {
+    service: SalesServiceWithReconciliar;
+    tx: ReconciliarMockTx;
+    transactionMock: TransactionMock;
+  } {
+    const tx = buildReconciliarTx(sales, payments);
+    const transactionMock: TransactionMock = jest
+      .fn<
+        Promise<unknown>,
+        [
+          (t: Prisma.TransactionClient) => unknown,
+          { isolationLevel?: Prisma.TransactionIsolationLevel }?,
+        ]
+      >()
+      .mockImplementation((callback) =>
+        Promise.resolve(callback(tx as unknown as Prisma.TransactionClient)),
+      );
+    const prisma = {
+      $transaction: transactionMock,
+    } as unknown as PrismaService;
+    const ServiceConstructor = SalesService as unknown as new (
+      p: PrismaService,
+      s: StockService,
+      c: CashRegisterService,
+      st: SettingsService,
+    ) => SalesServiceWithReconciliar;
+    const service = new ServiceConstructor(
+      prisma,
+      {} as StockService,
+      {} as CashRegisterService,
+      {} as SettingsService,
+    );
+    return { service, tx, transactionMock };
+  }
+
+  it('sin ventas: devuelve la lista vacía', async () => {
+    const { service } = buildServiceConPrisma([], []);
+
+    await expect(service.reconciliar()).resolves.toEqual([]);
+  });
+
+  it('Fase 08 (QA adversarial): consulta sale.findMany y payment.groupBy con la forma exacta esperada (sin filtrar por estado), en REPEATABLE READ', async () => {
+    const { service, tx, transactionMock } = buildServiceConPrisma([], []);
+
+    await service.reconciliar();
+
+    expect(tx.sale.findMany).toHaveBeenCalledWith({
+      select: { id: true, total: true },
+    });
+    expect(tx.payment.groupBy).toHaveBeenCalledWith({
+      by: ['saleId'],
+      _sum: { monto: true },
+    });
+    expect(transactionMock).toHaveBeenCalledWith(
+      expect.any(Function) as unknown,
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  });
+
+  it('varias ventas donde total coincide con SUM(payments.monto) — incluidos pagos mixtos de una misma venta: lista vacía', async () => {
+    const sales: SaleRowRecon[] = [
+      { id: 1, total: new Prisma.Decimal('200.00') },
+      { id: 2, total: new Prisma.Decimal('500.50') },
+    ];
+    const payments: PaymentFixtureRecon[] = [
+      { saleId: 1, monto: new Prisma.Decimal('200.00') },
+      { saleId: 2, monto: new Prisma.Decimal('300.50') },
+      { saleId: 2, monto: new Prisma.Decimal('200.00') },
+    ];
+    const { service } = buildServiceConPrisma(sales, payments);
+
+    await expect(service.reconciliar()).resolves.toEqual([]);
+  });
+
+  it('una venta sin ningún payment reconcilia contra 0, no contra null/undefined', async () => {
+    const sales: SaleRowRecon[] = [
+      { id: 3, total: new Prisma.Decimal('0.00') },
+    ];
+    const { service } = buildServiceConPrisma(sales, []);
+
+    await expect(service.reconciliar()).resolves.toEqual([]);
+  });
+
+  it('una venta con total que no coincide con SUM(payments.monto): aparece en la lista con ambos valores', async () => {
+    const sales: SaleRowRecon[] = [
+      { id: 4, total: new Prisma.Decimal('100.00') },
+    ];
+    const payments: PaymentFixtureRecon[] = [
+      { saleId: 4, monto: new Prisma.Decimal('60.00') },
+    ];
+    const { service } = buildServiceConPrisma(sales, payments);
+
+    const result = await service.reconciliar();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].saleId).toBe(4);
+    expect(new Prisma.Decimal(result[0].totalGuardado).toString()).toBe('100');
+    expect(new Prisma.Decimal(result[0].sumaPagos).toString()).toBe('60');
+  });
+
+  it('reporta solo las ventas desajustadas, no todo el universo de ventas', async () => {
+    const sales: SaleRowRecon[] = [
+      { id: 5, total: new Prisma.Decimal('50.00') },
+      { id: 6, total: new Prisma.Decimal('99.00') },
+    ];
+    const payments: PaymentFixtureRecon[] = [
+      { saleId: 5, monto: new Prisma.Decimal('50.00') },
+      { saleId: 6, monto: new Prisma.Decimal('3.00') },
+    ];
+    const { service } = buildServiceConPrisma(sales, payments);
+
+    const result = await service.reconciliar();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].saleId).toBe(6);
+    expect(new Prisma.Decimal(result[0].totalGuardado).toString()).toBe('99');
+    expect(new Prisma.Decimal(result[0].sumaPagos).toString()).toBe('3');
+  });
+
+  it('reconciliar() abre su propia transacción REPEATABLE READ: no recibe tx como parámetro, a diferencia de crearVenta/anularVenta', () => {
+    const { service } = buildServiceConPrisma([], []);
+
+    expect(service.reconciliar.length).toBe(0);
+  });
+});
