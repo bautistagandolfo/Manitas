@@ -54,6 +54,18 @@ export interface DescontarPorVentaInput {
   permitirStockNegativo: boolean;
 }
 
+// T4.7 (`sales`) — método reservado desde la fase 06 de `sales`
+// (`modulo-sales-spec.md`, sección 4.2) para revertir el descuento de
+// stock de una venta anulada. Sin lock propio, mismo criterio que
+// `registrarEntrada`: revertir siempre suma, nunca necesita validar
+// contra un umbral, Postgres serializa el `UPDATE` por sí solo.
+export interface RevertirPorAnulacionInput {
+  variantId: number;
+  cantidad: number;
+  saleId: number;
+  userId: number;
+}
+
 export interface StockReconciliationMismatch {
   variantId: number;
   stockActual: number;
@@ -213,6 +225,32 @@ export class StockService {
     await tx.variant.update({
       where: { id: input.variantId },
       data: { stockActual: { decrement: input.cantidad } },
+    });
+  }
+
+  // T4.7 (`sales`) — reversión de stock por anulación de venta (BLUEPRINT
+  // AD-19, RN-8 de `modulo-sales-spec.md`). `sales.service.ts` llama a
+  // este método una vez por línea de la venta anulada, sin agregar
+  // cantidades por variante (a diferencia de `descontarPorVenta`, acá no
+  // hay validación de umbral que agregar).
+  async revertirPorAnulacion(
+    tx: Prisma.TransactionClient,
+    input: RevertirPorAnulacionInput,
+  ): Promise<void> {
+    await tx.stockMovement.create({
+      data: {
+        variantId: input.variantId,
+        delta: input.cantidad,
+        tipo: StockMovementTipo.ANULACION,
+        referenciaTipo: StockMovementReferenciaTipo.SALE,
+        referenciaId: input.saleId,
+        userId: input.userId,
+      },
+    });
+
+    await tx.variant.update({
+      where: { id: input.variantId },
+      data: { stockActual: { increment: input.cantidad } },
     });
   }
 

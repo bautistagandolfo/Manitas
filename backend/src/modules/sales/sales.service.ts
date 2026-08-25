@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   CashMovementReferenciaTipo,
@@ -10,6 +12,7 @@ import {
   Prisma,
   Sale,
   SaleDiscountTipo,
+  SaleEstado,
 } from '@prisma/client';
 import { StockService } from '../stock/stock.service';
 import { CashRegisterService } from '../cash-registers/cash-register.service';
@@ -73,6 +76,18 @@ export interface CrearVentaInput {
   // solo — opcional, default 0 (mantiene el comportamiento de T4.1-T4.5
   // para quien no lo manda).
   ajusteRedondeo?: Prisma.Decimal.Value;
+}
+
+// T4.7 (RN-8, AD-19): mismo patrón que `esOwner` en `crearVenta` — lo
+// resuelve el futuro controller a partir de `user.rol` (JWT verificado).
+// RN-8 exige "Solo OWNER"; sin `SalesController` todavía (no hay
+// `RolesGuard` que lo bloquee en la capa HTTP), el servicio mismo lo
+// verifica y rechaza (CLAUDE.md regla 7: la autorización se verifica
+// siempre en el servidor).
+export interface AnularVentaInput {
+  saleId: number;
+  userId: number;
+  esOwner: boolean;
 }
 
 @Injectable()
@@ -364,5 +379,104 @@ export class SalesService {
     }
 
     return sale;
+  }
+
+  // T4.7 (RN-8, AD-19, invariantes 13/15) — anulación de venta: no borra ni
+  // edita `sale_items`/`payments`/`stock_movements`/`cash_movements`
+  // originales, crea movimientos nuevos de tipo `ANULACION` y marca
+  // `sales.estado = ANULADA`.
+  async anularVenta(
+    tx: Prisma.TransactionClient,
+    input: AnularVentaInput,
+  ): Promise<Sale> {
+    // Paso 1 (RN-8, "Solo OWNER") — sin leer nada de la base todavía.
+    if (!input.esOwner) {
+      throw new ForbiddenException('Solo un OWNER puede anular una venta');
+    }
+
+    // Paso 2 (BLUEPRINT §9.4): lock de la fila de venta antes de leer
+    // nada — evita que dos anulaciones concurrentes de la MISMA venta
+    // reviertan stock/caja dos veces.
+    await tx.$queryRaw`SELECT id FROM sales WHERE id = ${input.saleId} FOR UPDATE`;
+
+    // Paso 3: con el lock tomado, lee la venta completa.
+    const sale = await tx.sale.findUnique({
+      where: { id: input.saleId },
+      include: { items: true, payments: true },
+    });
+    if (!sale) {
+      throw new NotFoundException('Venta no encontrada');
+    }
+    if (sale.estado === SaleEstado.ANULADA) {
+      throw new ConflictException('Esta venta ya está anulada');
+    }
+
+    // Paso 4 (AD-19, invariante 13): sin devoluciones registradas.
+    const devolucionExistente = await tx.return.findFirst({
+      where: { saleId: sale.id },
+    });
+    if (devolucionExistente) {
+      throw new ConflictException(
+        'Esta venta tiene devoluciones registradas, no se puede anular',
+      );
+    }
+
+    // Paso 5 (invariante 15): un pago con crédito de devolución se
+    // corrige con una devolución de la venta nueva, no con una anulación.
+    const tieneCreditoDevolucion = sale.payments.some(
+      (p) => p.metodo === PaymentMetodo.CREDITO_DEVOLUCION,
+    );
+    if (tieneCreditoDevolucion) {
+      throw new ConflictException(
+        'No se puede anular una venta pagada con crédito de devolución; corresponde una devolución sobre la venta nueva',
+      );
+    }
+
+    // Paso 6: solo dentro de la misma sesión de caja actual (RN-8) — la
+    // lectura de "hay sesión abierta" ya rechaza con 409 si no hay
+    // ninguna.
+    const sesion = await this.cashRegisterService.getSesionAbiertaOrThrow(tx);
+    if (sale.cashRegisterSessionId !== sesion.id) {
+      throw new ConflictException(
+        'Solo se puede anular dentro del mismo turno de caja',
+      );
+    }
+
+    // Paso 7: revierte stock, una llamada por línea (nunca agregada por
+    // variante — acá no hay validación de umbral que agregar, a
+    // diferencia de RN-7 de `crearVenta`).
+    for (const item of sale.items) {
+      await this.stockService.revertirPorAnulacion(tx, {
+        variantId: item.variantId,
+        cantidad: item.cantidad,
+        saleId: sale.id,
+        userId: input.userId,
+      });
+    }
+
+    // Paso 8 (invariante 7): el movimiento de caja de la anulación es
+    // solo por lo que se cobró en EFECTIVO — anular una venta 100%
+    // tarjeta no saca nada del cajón, porque nunca entró.
+    const sumaEfectivo = sale.payments
+      .filter((p) => p.metodo === PaymentMetodo.EFECTIVO)
+      .reduce((acc, p) => acc.plus(p.monto), new Prisma.Decimal(0));
+
+    if (sumaEfectivo.greaterThan(0)) {
+      await this.cashRegisterService.registrarMovimiento(tx, {
+        sessionId: sale.cashRegisterSessionId,
+        tipo: CashMovementTipo.ANULACION,
+        monto: sumaEfectivo,
+        referenciaTipo: CashMovementReferenciaTipo.SALE,
+        referenciaId: sale.id,
+        descripcion: `Anulación venta #${sale.numero}`,
+        userId: input.userId,
+      });
+    }
+
+    // Paso 9: marca la venta como ANULADA.
+    return tx.sale.update({
+      where: { id: sale.id },
+      data: { estado: SaleEstado.ANULADA },
+    });
   }
 }
