@@ -1478,3 +1478,285 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
     });
   });
 });
+
+// ─── Fase 04a (T4.4) — agregado sobre lo de arriba, sesión aparte ─────────
+//
+// T4.4 ("Pagos: N por venta, validación suma = total, impacto en caja solo
+// si es efectivo") ya está MAYORMENTE construido — fue parte del trabajo
+// necesario de T4.1 (no se puede validar/cerrar una venta sin resolver los
+// pagos desde el principio, BLUEPRINT §5.3 paso 5, invariantes 3 y 7). Los
+// tests de abajo NO reconstruyen ese flujo desde cero — verifican a fondo
+// lo que la especificación exige de `payments`, incluyendo el hallazgo de
+// CLAUDE.md: un pago con `monto <= 0` combinado con otro que hace que la
+// SUMA total siga dando exactamente `sales.total` (invariante 3) pasa el
+// único chequeo agregado que existe (la suma), y en la implementación real
+// no hay ningún chequeo POR PAGO de `monto > 0` antes de escribir — recién
+// explota contra el `CHECK (monto > 0)` crudo de la tabla `payments`
+// (confirmado empíricamente en la sesión de integración contra Postgres
+// real, no acá: acá el mock no tiene ese CHECK, así que lo que este test
+// mockeado verifica es la ausencia de una validación de APLICACIÓN previa
+// — si el servicio real no la tiene, `tx.sale.create` se llama igual y la
+// promesa RESUELVE en vez de rechazar, lo que hace fallar este test por la
+// razón correcta).
+//
+// Fuente: `BLUEPRINT.md` §5.3 (paso 5), §3.4 (modelo `payments`), AD-3,
+// AD-8, invariantes 3 y 7; `state/reports/modulo-sales-spec.md` (RN-1 paso
+// 5, sección 3 invariantes 3/7, sección 6 "cantidad en cero o negativa"
+// como precedente directo de criterio: "más validación de DTO para un 400
+// limpio en vez del CHECK crudo, mismo criterio que el resto del sistema"
+// — hoy `payments.monto` no tiene ese equivalente); `schema.prisma` (enum
+// `PaymentMetodo`, campo `referencia`); migración init
+// (`payments_monto_check CHECK (monto > 0)`, dato de schema).
+describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7, AD-3, AD-8)', () => {
+  describe('hallazgo (CLAUDE.md) — pago con monto <= 0 que igual suma el total correcto', () => {
+    it('un pago de monto $0 + un pago que cubre el total exacto: no debe pasar como venta válida, se espera un rechazo de validación limpio antes de escribir nada', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await expect(
+        service.crearVenta(asTx(tx), {
+          userId: 7,
+          esOwner: true,
+          items: [{ variantId: 10, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('0.00'),
+            },
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      ).rejects.toThrow(/monto.*(positivo|mayor a 0|inv[aá]lido)/i);
+
+      expect(tx.sale.create).not.toHaveBeenCalled();
+      expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('un pago con monto NEGATIVO + un pago que compensa la suma al total exacto: mismo rechazo esperado', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await expect(
+        service.crearVenta(asTx(tx), {
+          userId: 7,
+          esOwner: true,
+          items: [{ variantId: 10, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('-50.00'),
+            },
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('150.00'),
+            },
+          ],
+        }),
+      ).rejects.toThrow(/monto.*(positivo|mayor a 0|inv[aá]lido)/i);
+
+      expect(tx.sale.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('N pagos reales de métodos distintos — todos los métodos del enum aparecen en algún test (AD-3, invariante 7)', () => {
+    it('4 pagos, uno de cada método (EFECTIVO, TARJETA_DEBITO, TARJETA_CREDITO, TRANSFERENCIA): la caja se mueve solo por la parte en EFECTIVO', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('1000.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearVenta(asTx(tx), {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('250.00'),
+          },
+          {
+            metodo: PaymentMetodo.TARJETA_DEBITO,
+            monto: new Prisma.Decimal('250.00'),
+          },
+          {
+            metodo: PaymentMetodo.TARJETA_CREDITO,
+            monto: new Prisma.Decimal('250.00'),
+          },
+          {
+            metodo: PaymentMetodo.TRANSFERENCIA,
+            monto: new Prisma.Decimal('250.00'),
+          },
+        ],
+      });
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(call.data.payments.create).toHaveLength(4);
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('1000');
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
+      expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe('250');
+    });
+
+    it('N pagos con MÁS de un EFECTIVO mezclados con otros métodos (2 efectivo + crédito + transferencia): un solo movimiento de caja con la suma de los dos efectivo', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('500.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearVenta(asTx(tx), {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
+          {
+            metodo: PaymentMetodo.TARJETA_CREDITO,
+            monto: new Prisma.Decimal('150.00'),
+          },
+          {
+            metodo: PaymentMetodo.TRANSFERENCIA,
+            monto: new Prisma.Decimal('150.00'),
+          },
+        ],
+      });
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
+      expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe('200');
+    });
+
+    it('ningún pago en EFECTIVO, N pagos de otros métodos (débito + crédito + transferencia): no llama a registrarMovimiento', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('900.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearVenta(asTx(tx), {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.TARJETA_DEBITO,
+            monto: new Prisma.Decimal('300.00'),
+          },
+          {
+            metodo: PaymentMetodo.TARJETA_CREDITO,
+            monto: new Prisma.Decimal('300.00'),
+          },
+          {
+            metodo: PaymentMetodo.TRANSFERENCIA,
+            monto: new Prisma.Decimal('300.00'),
+          },
+        ],
+      });
+
+      expect(deps.stockService.descontarPorVenta).toHaveBeenCalledTimes(1);
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('campo referencia (BLUEPRINT §3.4: "últimos dígitos, nº de operación") — forma exacta del payload armado para tx.sale.create', () => {
+    it('se pasa tal cual a payments.create cuando se manda', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('300.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearVenta(asTx(tx), {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.TARJETA_DEBITO,
+            monto: new Prisma.Decimal('300.00'),
+            referencia: '4242',
+          },
+        ],
+      });
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(call.data.payments.create[0].referencia).toBe('4242');
+    });
+
+    it('sin referencia: queda null en el payload armado, nunca undefined ni string vacío', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('150.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearVenta(asTx(tx), {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('150.00'),
+          },
+        ],
+      });
+
+      const call = tx.sale.create.mock.calls[0][0];
+      const referencia = call.data.payments.create[0].referencia;
+      expect(referencia).toBeNull();
+      expect(referencia).not.toBe('');
+      expect(referencia).not.toBeUndefined();
+    });
+  });
+});
