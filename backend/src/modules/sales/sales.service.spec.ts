@@ -434,6 +434,46 @@ interface CrearVentaInputT45 extends CrearVentaInputT43 {
   idempotencyKey: string;
 }
 
+// ─── Fase 04a (T4.6) — ajuste de redondeo (RN-6, AD-14, invariante 4) ────
+//
+// Fuente única: `ROADMAP.md` T4.6 y la nota en prosa "Hallazgos técnicos
+// menores (fase 06)" bajo la tabla de Etapa 4 ("`total >= 0` no se sigue
+// automáticamente de las otras reglas del invariante 4... asignado a
+// T4.6"); `BLUEPRINT.md` §9.3 (reglas de redondeo, AD-14), AD-14 (sección
+// 2), invariante 4 (sección 6); `state/reports/modulo-sales-spec.md` RN-6
+// (líneas 117-119), el ejemplo numérico de la sección 3 (`subtotal=$0.50,
+// descuento_total=$0.50, ajuste_redondeo=-$0.90 → total=-$0.90`) y la
+// tabla de errores (sección 7, "El ajuste de redondeo deja el total en
+// negativo"); `backend/prisma/schema.prisma` modelo `Sale`, campo
+// `ajusteRedondeo` (`Decimal(12,2)`, `@default(0)`, ya existe desde la
+// fase 01). NO se abrió `sales.service.ts`.
+//
+// Contrato ampliado de `crearVenta(tx, input)` para T4.6 (decisión de esta
+// sesión): `input += { ajusteRedondeo?: Prisma.Decimal.Value }`, opcional
+// — default `0` si no se manda, para que las ~70 llamadas preexistentes de
+// T4.1-T4.5 (que nunca lo mandan) sigan funcionando exactamente igual, con
+// `ajusteRedondeo = 0` implícito. Mismo patrón de tipo ampliado por
+// variable (nunca objeto literal inline) que `CrearVentaInputT43`/`T45`,
+// para que la propiedad nueva no dispare "excess property" de TypeScript
+// contra el tipo real (todavía angosto) del parámetro.
+//
+// Reglas a probar (RN-6, invariante 4):
+//   1. `|ajuste_redondeo| < 1` — un valor `>= 1` o `<= -1` se rechaza con
+//      400, ANTES de escribir nada.
+//   2. `total = subtotal - descuento_total + ajuste_redondeo`, verificado
+//      sobre `tx.sale.create` con ajuste positivo, negativo y cero.
+//   3. `total` resultante negativo se rechaza explícitamente (invariante
+//      4), con el mensaje exacto de la spec ("El ajuste de redondeo deja
+//      el total en negativo"), ANTES de escribir nada — esto convierte el
+//      `it.todo` que T4.1 había dejado reservado más arriba, ahora
+//      alcanzable porque `ajusteRedondeo` deja de estar fijo en 0.
+//   4. El prorrateo (`prorate()`, ya usado desde T4.2/T4.3) sigue usando
+//      el `total` FINAL (con el ajuste ya aplicado) para `netoLinea` de
+//      cada línea — no el subtotal ni el total sin ajustar.
+interface CrearVentaInputT46 extends CrearVentaInputT45 {
+  ajusteRedondeo?: Prisma.Decimal.Value;
+}
+
 function buildService(deps: Deps): SalesService {
   return new SalesService(
     {} as PrismaService,
@@ -971,21 +1011,59 @@ describe('SalesService.crearVenta', () => {
   // con `total >= 0` de forma explícita e independiente de las otras
   // cláusulas (hallazgo real de la spec, sección 3: la combinación de
   // `0 <= descuento_total <= subtotal` y `|ajuste_redondeo| < 1` NO
-  // garantiza `total >= 0` por sí sola). En T4.1, sin embargo,
-  // `descuento_total` y `ajuste_redondeo` están fijos en 0 (T4.3/T4.6 no
-  // construidos todavía) — con ambos en 0, `total = subtotal`, y
-  // `subtotal` es la suma de `cantidad * precioUnitario` con
-  // `cantidad > 0` (constraint de base ya existente) y `precioUnitario`
-  // siempre positivo (regla ya garantizada por `variants`, T2.3) — el
-  // escenario del hallazgo (`subtotal=$0.50, descuento=$0.50,
-  // ajuste=-$0.90 → total=-$0.90`) literalmente no es alcanzable con los
-  // inputs que T4.1 acepta. Documentado como pendiente de T4.6 (que es
-  // donde `ajusteRedondeo` deja de estar fijo en 0) en vez de forzar un
-  // test que no reflejaría ningún camino real de este ticket.
+  // garantiza `total >= 0` por sí sola). En T4.1, `descuento_total` y
+  // `ajuste_redondeo` estaban fijos en 0, así que el escenario del
+  // hallazgo (`subtotal=$0.50, descuento=$0.50, ajuste=-$0.90 →
+  // total=-$0.90`) no era alcanzable con los inputs que ese ticket
+  // aceptaba — quedó como `it.todo` reservado explícitamente para T4.6,
+  // que es donde `ajusteRedondeo` deja de estar fijo en 0. Convertido acá
+  // en un test real, con exactamente los mismos números del hallazgo (no
+  // se cambia la intención original del caso).
   describe('invariante 4 — total >= 0', () => {
-    it.todo(
-      'total resultante negativo se rechaza — no alcanzable en T4.1 (descuento_total y ajuste_redondeo están fijos en 0); queda pendiente de T4.6, que es donde ajuste_redondeo deja de ser fijo',
-    );
+    it('total resultante negativo se rechaza (T4.6: ajusteRedondeo deja de estar fijo en 0) — mismos números del hallazgo de la spec: subtotal=$0.50, descuento_total=$0.50, ajuste_redondeo=-$0.90 → total=-$0.90, sin escribir nada', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('0.50'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      // El total (-$0.90) es intrínsecamente impagable con un monto
+      // positivo real, así que el pago no puede "coincidir" con él bajo
+      // ningún criterio — se manda un monto positivo arbitrario ($1.00),
+      // deliberadamente distinto de cualquier total posible, para que el
+      // rechazo solo pueda venir de la validación de `total >= 0` (que
+      // tiene que ocurrir ANTES de comparar contra los pagos, mismo
+      // criterio que el resto de las validaciones tempranas del archivo).
+      // Un pago de $0 dispararía en cambio la validación, ya existente,
+      // de "el monto de cada pago tiene que ser mayor a 0" — un rechazo
+      // real pero por una razón distinta a la que este test verifica.
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1.00') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento total', monto: new Prisma.Decimal('0.50') },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('-0.90'),
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /ajuste de redondeo deja el total en negativo/i,
+      );
+
+      expect(tx.sale.create).not.toHaveBeenCalled();
+      expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -1908,5 +1986,429 @@ describe('SalesService.crearVenta — T4.5 idempotencia (RN-9, AD-10, §9.7)', (
     const callB = tx.sale.create.mock.calls[1][0];
     expect(callA.data.idempotencyKey).toBe(inputA.idempotencyKey);
     expect(callB.data.idempotencyKey).toBe(inputB.idempotencyKey);
+  });
+});
+
+// ─── Fase 04a (T4.6) — ajuste de redondeo (RN-6, AD-14, invariante 4) ─────
+//
+// Ver el bloque de comentario junto a `CrearVentaInputT46` (arriba, cerca
+// de `buildService`) para la fuente completa y el contrato ampliado
+// decidido en esta sesión. Resumen: `input += { ajusteRedondeo?:
+// Prisma.Decimal.Value }`, default `0` si se omite.
+describe('SalesService.crearVenta — T4.6 ajuste de redondeo (RN-6, AD-14, invariante 4)', () => {
+  // Los dos tests de este describe (`ausente` y `= 0 explícito`) verifican
+  // compatibilidad hacia atrás, no funcionalidad nueva — hoy, sin
+  // implementación de T4.6, `ajusteRedondeo` ya se comporta como si fuera
+  // 0 (el servicio ni siquiera lo lee), así que YA pasan antes de
+  // implementar. Mismo criterio que el describe 'regresión — esOwner
+  // ahora es obligatorio...' de la sección T4.3 más arriba (línea ~1503):
+  // un test de compatibilidad legítimo no tiene por qué estar en rojo,
+  // porque su punto es justamente que el comportamiento viejo no cambie —
+  // tienen que seguir pasando también DESPUÉS de implementar T4.6, como
+  // guardas de regresión (ej.: que la implementación real no trate un
+  // `Decimal('0')` explícito distinto de un valor ausente).
+  describe('valor por defecto — compatibilidad con T4.1-T4.5', () => {
+    it('ajusteRedondeo ausente del input: persiste ajusteRedondeo = 0 en tx.sale.create, total == subtotal - descuentoTotal sin cambios', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      // Se pasa como CrearVentaInputT45 a propósito (mismo tipo que las
+      // llamadas preexistentes de T4.1-T4.5): confirma que el campo nuevo
+      // es opcional y que omitirlo no rompe nada de lo ya construido.
+      const input: CrearVentaInputT45 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.ajusteRedondeo).toString()).toBe(
+        '0',
+      );
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('100');
+    });
+  });
+
+  describe('límite |ajuste_redondeo| < 1 (RN-6)', () => {
+    it('ajusteRedondeo = 0.99 (justo dentro del límite): acepta', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.99'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('0.99'),
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).resolves.toBeDefined();
+      expect(tx.sale.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('ajusteRedondeo = -0.99 (justo dentro del límite, negativo): acepta', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('99.01'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('-0.99'),
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).resolves.toBeDefined();
+      expect(tx.sale.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('ajusteRedondeo = 1.00 (llega al límite, ya no es menor a 1): rechaza, sin escribir nada', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('101.00'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('1.00'),
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /ajuste.*redondeo/i,
+      );
+      expect(tx.sale.create).not.toHaveBeenCalled();
+      expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('ajusteRedondeo = -1.00 (llega al límite negativo): rechaza, sin escribir nada', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('99.00'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('-1.00'),
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /ajuste.*redondeo/i,
+      );
+      expect(tx.sale.create).not.toHaveBeenCalled();
+    });
+
+    it('ajusteRedondeo = 5.00 (muy por encima del límite): rechaza igual', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('105.00'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('5.00'),
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /ajuste.*redondeo/i,
+      );
+      expect(tx.sale.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('total = subtotal - descuento_total + ajuste_redondeo (invariante 4)', () => {
+    it('ajusteRedondeo positivo, sin descuento: total = subtotal + ajusteRedondeo', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.30'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('0.30'),
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.subtotal).toString()).toBe('100');
+      expect(new Prisma.Decimal(call.data.ajusteRedondeo).toString()).toBe(
+        '0.3',
+      );
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('100.3');
+    });
+
+    it('ajusteRedondeo negativo, sin descuento: total = subtotal + ajusteRedondeo (resta)', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('99.85'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('-0.15'),
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('99.85');
+    });
+
+    it('ajusteRedondeo = 0 explícito: equivalente a omitirlo, total == subtotal', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('0'),
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('100');
+    });
+
+    // Ejemplo textual de AD-14 (BLUEPRINT.md, motivo de la regla): "un 15%
+    // sobre $2.999 da $449,85 y el total $2.549,15. Si se cobran $2.549 sin
+    // un ajuste explícito, la suma de pagos deja de igualar al total y el
+    // sistema rechaza una venta perfectamente normal." Este test arma
+    // exactamente ese escenario con `ajusteRedondeo = -0.15` (lo que hace
+    // falta para que el total post-descuento de $2.549,15 baje a los
+    // $2.549 que se cobran en el mostrador) y confirma que
+    // `subtotal - descuento_total + ajuste_redondeo` da el total correcto,
+    // aceptando pagos por esa cifra redondeada.
+    it('caso motivador de AD-14: 15% de descuento sobre $2.999 + ajusteRedondeo = -$0.15 para cobrar $2.549 exactos', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('2999.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('2549.00'),
+          },
+        ],
+        discounts: [
+          {
+            descripcion: 'Descuento 15%',
+            porcentaje: new Prisma.Decimal('15'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('-0.15'),
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.subtotal).toString()).toBe('2999');
+      expect(new Prisma.Decimal(call.data.descuentoTotal).toString()).toBe(
+        '449.85',
+      );
+      expect(new Prisma.Decimal(call.data.ajusteRedondeo).toString()).toBe(
+        '-0.15',
+      );
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('2549');
+    });
+  });
+
+  describe('prorrateo usa el total FINAL, con el ajuste ya aplicado (AD-18, RN-5)', () => {
+    it('3 líneas, descuento + ajusteRedondeo combinados: netoLinea usa prorate(subtotalesDeLinea, total_final), no el subtotal ni el total sin ajustar', async () => {
+      // subtotal = 10.00 + 10.00 + 10.01 = 30.01; descuentoTotal = 3.01;
+      // ajusteRedondeo = +0.50 → total = 30.01 - 3.01 + 0.50 = 27.50. Si el
+      // prorrateo usara el subtotal (30.01) o el total pre-ajuste (27.00,
+      // el mismo caso que el test obligatorio #2 sin el ajuste) en vez del
+      // total final (27.50), SUM(neto_linea) no daría 27.50 exacto.
+      const v1 = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('10.00'),
+      });
+      const v2 = buildVariantRow({
+        id: 20,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('10.00'),
+      });
+      const v3 = buildVariantRow({
+        id: 30,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('10.01'),
+      });
+      const tx = buildMockTx([v1, v2, v3]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT46 = {
+        userId: 7,
+        esOwner: true,
+        idempotencyKey: 'idem-test-key',
+        items: [
+          { variantId: 10, cantidad: 1 },
+          { variantId: 20, cantidad: 1 },
+          { variantId: 30, cantidad: 1 },
+        ],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('27.50'),
+          },
+        ],
+        discounts: [
+          {
+            descripcion: 'Descuento variado',
+            monto: new Prisma.Decimal('3.01'),
+          },
+        ],
+        ajusteRedondeo: new Prisma.Decimal('0.50'),
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('27.5');
+
+      const netos = call.data.items.create.map((item) =>
+        new Prisma.Decimal(item.netoLinea).toFixed(2),
+      );
+      const expectedNetos = prorate(['10.00', '10.00', '10.01'], '27.50').map(
+        (n) => n.toFixed(2),
+      );
+      expect(netos).toEqual(expectedNetos);
+
+      const sumNetos = call.data.items.create.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.netoLinea)),
+        new Prisma.Decimal(0),
+      );
+      expect(sumNetos.toFixed(2)).toBe('27.50');
+    });
   });
 });
