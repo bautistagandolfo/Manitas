@@ -205,7 +205,7 @@ El módulo más crítico del sistema.
 | T4.2 | Congelado de precio y costo en la línea (AD-5) + `descripcion_snapshot` | T4.1 | VERDE |
 | T4.3 | Descuentos: N por venta, límite del vendedor (`max_descuento_vendedor_pct`) y autorización de OWNER | T4.1, T0.13 | VERDE (autorización por contraseña diferida, ver nota) |
 | T4.4 | Pagos: N por venta, validación suma = total, impacto en caja solo si es efectivo | T4.1, **T3.2** | VERDE |
-| T4.5 | Aplicar el interceptor de idempotencia (T0.14) a la venta | T4.1, T0.14 | PENDIENTE |
+| T4.5 | Aplicar el interceptor de idempotencia (T0.14) a la venta | T4.1, T0.14 | VERDE (alcance recortado por falta de controller, ver nota) |
 | T4.6 | **Ajuste de redondeo** + tests de las reglas de redondeo (§9.3) | T4.4, T0.12 | PENDIENTE |
 | T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4, **T3.2** | PENDIENTE |
 | T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | PENDIENTE |
@@ -243,6 +243,28 @@ completa en la sección 12.1 del blueprint.
 > mecanismo de AMB-14 queda como agregado chico para cuando haga falta,
 > no como deuda técnica ni como bug. Ver `state/AMBIGUITIES.md` AMB-14,
 > nota "Construcción diferida".
+>
+> **Alcance de T4.5 recortado por una limitación estructural real
+> (2026-08-25):** `sales` todavía no tiene `SalesController` ni módulo
+> Nest (T4.1–T4.4 construyeron únicamente `SalesService`, a propósito —
+> los controllers son T4.10/T4.11), así que no existe ninguna ruta HTTP
+> donde aplicar `IdempotencyInterceptor`/`@IdempotencyKey()` (T0.14) de
+> verdad todavía. T4.5 construye lo que sí depende únicamente de
+> `crearVenta`: acepta `idempotencyKey: string` obligatorio y lo
+> persiste tal cual en `sales.idempotency_key` (`@unique` desde la fase
+> 01) — `crearVenta` **no** se envuelve a sí mismo con `withIdempotency`
+> (no es dueño de su propio `tx`, esa responsabilidad es de quien abre
+> la transacción). El mecanismo de punta a punta (índice único +
+> `withIdempotency`, ya VERDE desde T0.14) se prueba empíricamente
+> contra Postgres real en
+> `test/integration/sales-idempotency.integration.spec.ts`, armando
+> manualmente `prisma.$transaction(tx => crearVenta(tx, input))`
+> envuelto en `withIdempotency` — exactamente lo que hará el futuro
+> `SalesController`. Aplicar el `IdempotencyInterceptor`/decorator real
+> a una ruta HTTP queda para cuando ese controller se construya
+> (T4.10/T4.11), mismo criterio que AMB-14 en T4.3: agregado chico y
+> acotado cuando exista el punto real donde conectarlo, no deuda
+> técnica.
 >
 > **Hallazgo técnico (fase 06 de este módulo): `stock.service.ts`
 > (`products`/`stock`, ya VERDE) no expone lo que `sales` necesita
