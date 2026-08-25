@@ -211,7 +211,7 @@ El módulo más crítico del sistema.
 | T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | VERDE |
 | T4.9 | Test de concurrencia: dos ventas simultáneas de la última unidad | T4.1 | VERDE |
 | T4.10 | **Pantalla de venta con teclado y lector** (blueprint §12.1) | T4.5, T4.6 | VERDE |
-| T4.11 | Pantalla de cobro: medios de pago, saldo pendiente, vuelto | T4.10 | PENDIENTE |
+| T4.11 | Pantalla de cobro: medios de pago, saldo pendiente, vuelto | T4.10 | VERDE |
 
 **T4.10 es el ticket más importante del sistema en experiencia de uso.**
 El flujo completo tiene que poder hacerse sin tocar el mouse. Especificación
@@ -244,6 +244,33 @@ completa en la sección 12.1 del blueprint.
 > cobrar"). Vale la pena tenerlo presente para cualquier modal futuro de
 > este proyecto que necesite abrirse por un cambio de estado en vez de
 > por montaje condicional.
+>
+> **Alcance real de T4.11 (2026-08-25):** cierra lo que T4.10 dejó
+> explícitamente pendiente — construye el primer `SalesController`/
+> `SalesModule` (backend) y la pantalla de cobro (frontend) que lo
+> consume. **Un solo endpoint por decisión de alcance: `POST /sales`.**
+> `GET /sales`, `GET /sales/:id` y `POST /sales/:id/anular` siguen en la
+> tabla de rutas de `modulo-sales-spec.md` sección 4.1, pero ningún
+> ticket del roadmap los reserva todavía (no hay ticket de historial ni
+> de anulación en la UI en la Etapa 4) y la pantalla de cobro no los
+> necesita — la respuesta de `POST /sales` ya alcanza para confirmar el
+> cobro. Quedan para cuando exista ese ticket futuro, mismo criterio que
+> el recorte de T4.5.
+>
+> Idempotencia (RN-9, T0.14) wireada por primera vez para `sales`: mismo
+> patrón que `POST /cash-registers/movements/ingreso` (T3.3) —
+> `IdempotencyInterceptor` + `@IdempotencyKey()` + `withIdempotency`,
+> reusando tal cual la clave que `SalePage` (T4.10) ya generaba y
+> persistía sin consumir.
+>
+> **Hallazgo de fase 04a, corregido antes de implementar:** el `afterAll`
+> del archivo de tests nuevo (`sales-controller.integration.spec.ts`)
+> reabría todas las sesiones de caja de prueba en lote antes de borrarlas
+> — mismo bug de "una sola sesión ABIERTA a la vez" ya corregido en
+> `sales.integration.spec.ts` (T4.1) y `sales-anulacion.integration.spec.ts`
+> (T4.7), reintroducido acá porque cada sesión aislada nueva parte de cero
+> y no hereda el conocimiento de sesiones anteriores — reescrito para
+> procesar una sesión por vez, de punta a punta.
 
 > **T4.3 bloqueada por AMB-14 (fase 06 de este módulo, nueva):** el
 > blueprint confirma el tope de descuento del vendedor (10%, AMB-3)
