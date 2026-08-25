@@ -90,6 +90,17 @@ export interface AnularVentaInput {
   esOwner: boolean;
 }
 
+// T4.8 (BLUEPRINT §6, invariante 3): las "tres primeras" invariantes
+// (1 stock, 2 caja, 3 ventas) exigen, además del test automatizado,
+// "un chequeo de reconciliación ejecutable" — mismo patrón que
+// `StockService.reconciliar()` (T2.8) y `CashRegisterService.reconciliar()`
+// (T3.6).
+export interface SalesReconciliationMismatch {
+  saleId: number;
+  totalGuardado: Prisma.Decimal;
+  sumaPagos: Prisma.Decimal;
+}
+
 @Injectable()
 export class SalesService {
   constructor(
@@ -478,5 +489,40 @@ export class SalesService {
       where: { id: sale.id },
       data: { estado: SaleEstado.ANULADA },
     });
+  }
+
+  // T4.8 — invariante 3 (BLUEPRINT §6.3): SUM(payments.monto) ==
+  // sales.total para cada venta. Sin filtro por `estado`: una venta
+  // ANULADA no toca `payments`/`total` (RN-8), así que el invariante
+  // tiene que seguir cumpliéndose igual para ella (mismo criterio que
+  // `stock.service.reconciliar()` con variantes inactivas, RN-7).
+  //
+  // Única excepción al contrato de "el servicio nunca abre su propia
+  // transacción": es de solo lectura, no compone con la transacción de
+  // nadie más. REPEATABLE READ, mismo motivo que `stock.service.reconciliar()`
+  // (T2.8) y `cash-register.service.reconciliar()` (T3.6): sin eso, una
+  // escritura real entre las dos lecturas podría reportar un desajuste
+  // que en realidad nunca existió.
+  async reconciliar(): Promise<SalesReconciliationMismatch[]> {
+    const [sales, sums] = await this.prisma.$transaction(
+      (tx) =>
+        Promise.all([
+          tx.sale.findMany({ select: { id: true, total: true } }),
+          tx.payment.groupBy({ by: ['saleId'], _sum: { monto: true } }),
+        ]),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    const sumaPorVenta = new Map(
+      sums.map((s) => [s.saleId, s._sum.monto ?? new Prisma.Decimal(0)]),
+    );
+
+    return sales
+      .map((sale) => ({
+        saleId: sale.id,
+        totalGuardado: sale.total,
+        sumaPagos: sumaPorVenta.get(sale.id) ?? new Prisma.Decimal(0),
+      }))
+      .filter((m) => !m.totalGuardado.equals(m.sumaPagos));
   }
 }

@@ -72,7 +72,7 @@ interface SalesServiceWithReconciliar {
 }
 
 function asReconciliable(service: SalesService): SalesServiceWithReconciliar {
-  return service as unknown as SalesServiceWithReconciliar;
+  return service;
 }
 
 describe('sales — invariantes (integration, T4.8)', () => {
