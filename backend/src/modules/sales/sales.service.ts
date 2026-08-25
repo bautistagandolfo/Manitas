@@ -18,6 +18,7 @@ import { SETTINGS_KEYS } from '../../common/settings/settings-keys';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   applyPercentage,
+  assertPositive,
   lineSubtotal,
   prorate,
   roundCurrency,
@@ -255,8 +256,19 @@ export class SalesService {
       netoUnitario: roundCurrency(netos[index].dividedBy(item.cantidad)),
     }));
 
-    // Paso 8 (invariante 3): la suma de pagos tiene que ser EXACTAMENTE el
-    // total, antes de escribir nada.
+    // Paso 8 (invariante 3 + `payments_monto_check` de la base, §7): cada
+    // pago tiene que ser positivo, validado ANTES de sumar — sin esto, un
+    // pago de $0 (o negativo) combinado con otro que igual complete el
+    // total pasaría el chequeo de la suma sin problema, y recién explotaría
+    // contra el `CHECK` crudo de la base con un error interno feo en vez de
+    // un 400 de validación limpio (mismo criterio que `cantidad > 0` en
+    // `sale_items`, ya señalado en la spec del módulo, sección 6).
+    for (const p of input.payments) {
+      assertPositive(p.monto, 'El monto de cada pago');
+    }
+
+    // La suma de pagos tiene que ser EXACTAMENTE el total, antes de
+    // escribir nada.
     const sumaPagos = input.payments.reduce(
       (acc, p) => acc.plus(new Prisma.Decimal(p.monto)),
       new Prisma.Decimal(0),
