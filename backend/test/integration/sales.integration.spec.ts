@@ -576,6 +576,49 @@ describe('sales (integration, T4.1)', () => {
       });
       expect(variantAfter.stockActual).toBe(10);
     });
+
+    // Fase 08 (QA adversarial) — hallazgo real, mismo patrón que ya se
+    // encontró y corrigió en `cash-registers` (también en su Fase 08): sin
+    // el chequeo de precisión, un `monto` de pago que desborda
+    // `Decimal(12,2)` (máximo 9999999999.99) llega crudo a Postgres, que
+    // lo rechaza con "numeric field overflow" (código 22003) — un error
+    // interno no traducible por el `GlobalExceptionFilter`, 500 genérico
+    // en vez de un 400 de validación. Confirmado contra Postgres real, no
+    // solo contra el mock.
+    it('pago con monto astronómico (desborda Decimal(12,2)): 400 "demasiado grande", nunca 500, nada escrito', async () => {
+      const variant = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 10,
+      });
+      const session = await openSession(ownerId);
+
+      await expect(
+        prisma.$transaction((tx) =>
+          salesService.crearVenta(tx, {
+            userId: ownerId,
+            esOwner: true,
+            idempotencyKey: randomUUID(),
+            items: [{ variantId: variant.id, cantidad: 1 }],
+            payments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('99999999999999.00'),
+              },
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/demasiado grande/);
+
+      const sales = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(sales).toHaveLength(0);
+
+      const variantAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variant.id },
+      });
+      expect(variantAfter.stockActual).toBe(10);
+    });
   });
 
   // T4.9 explícito en el ROADMAP. Repetido varias veces con una variante

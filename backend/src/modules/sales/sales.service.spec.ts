@@ -3316,3 +3316,458 @@ describe('SalesService.crearVenta — Fase 07: variantId inexistente o inactivo 
     expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
   });
 });
+
+// Fase 08 (QA adversarial) — hallazgo real: ninguna de las columnas de
+// plata de `sales` (`Decimal(12,2)`, salvo `sale_discounts.porcentaje`
+// que es `Decimal(5,2)`) tenía un chequeo de magnitud antes de esta fase.
+// Mismo patrón ya encontrado y corregido en `cash-register.service.ts`
+// (también en su propia Fase 08): sin el chequeo, un valor que desborda
+// la precisión de la columna llega crudo a Postgres, que lo rechaza con
+// "numeric field overflow" — un error interno no traducible, 500 genérico
+// en vez de un 400 de validación.
+describe('SalesService.crearVenta — Fase 08: desborde de precisión decimal', () => {
+  it('un pago con monto astronómico: 400 "... es demasiado grande", nunca llega a Prisma', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.EFECTIVO,
+          monto: new Prisma.Decimal('99999999999999.00'),
+        },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /monto de cada pago.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('una cantidad enorme desborda el subtotal de línea aunque precioVenta sea válido: 400, sin llegar a Prisma', async () => {
+    // precioVenta = 100.00, cantidad = 200_000_000 → subtotal_linea =
+    // 20.000.000.000,00 > 9.999.999.999,99 (máximo de Decimal(12,2)) —
+    // ningún campo de entrada por separado está "fuera de rango", el
+    // desborde solo aparece al multiplicarlos.
+    const variant = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('100.00'),
+      stockActual: 200_000_000,
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 200_000_000 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /subtotal de la línea.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('un descuento con porcentaje astronómico (Decimal(5,2), máximo 999.99): 400 antes de calcular el monto', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      discounts: [
+        {
+          descripcion: 'descuento absurdo',
+          porcentaje: new Prisma.Decimal('50000.00'),
+        },
+      ],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /porcentaje del descuento.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('un descuento con monto directo astronómico: 400, aunque el tope duro también lo hubiera rechazado — la precisión se valida primero', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      discounts: [
+        {
+          descripcion: 'descuento absurdo',
+          monto: new Prisma.Decimal('99999999999999.00'),
+        },
+      ],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /monto del descuento.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  // Estos dos casos son distintos de los cuatro de arriba: ahí cada campo
+  // de ENTRADA por separado ya superaba el máximo. Acá cada campo de
+  // entrada es, individualmente, válido — el desborde solo aparece al
+  // SUMAR varios valores ya validados uno por uno (`descuentoTotal`,
+  // `total`). Sin el chequeo sobre el agregado (no solo sobre cada parte),
+  // estos dos casos seguirían llegando crudos a Postgres.
+  it('dos líneas, cada una dentro del máximo individual, pero cuya SUMA (subtotal de la venta) lo supera: 400 sobre el subtotal de la venta', async () => {
+    const variantA = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('6000000000.00'),
+      stockActual: 1,
+    });
+    const variantB = buildVariantRow({
+      id: 20,
+      precioVenta: new Prisma.Decimal('6000000000.00'),
+      stockActual: 1,
+    });
+    const tx = buildMockTx([variantA, variantB]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [
+        { variantId: 10, cantidad: 1 },
+        { variantId: 20, cantidad: 1 },
+      ],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /subtotal de la venta.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('dos descuentos, cada uno dentro del máximo individual, pero cuya SUMA lo supera: 400 sobre el descuento total', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      discounts: [
+        { descripcion: 'd1', monto: new Prisma.Decimal('6000000000.00') },
+        { descripcion: 'd2', monto: new Prisma.Decimal('6000000000.00') },
+      ],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /descuento total.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('subtotal ya en el máximo + ajuste de redondeo positivo (< $1, válido por RN-6): el total resultante supera el máximo, 400', async () => {
+    // precioVenta en el máximo exacto de Decimal(12,2) (9999999999.99): el
+    // chequeo de subtotal de línea (§ paso 7) lo deja pasar por ser <=, no
+    // <, el máximo. Un `ajusteRedondeo` de +0.99 (válido, |x| < 1 por
+    // RN-6) empuja el `total` por encima del máximo.
+    const variant = buildVariantRow({
+      id: 10,
+      precioVenta: new Prisma.Decimal('9999999999.99'),
+      stockActual: 1,
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      ajusteRedondeo: new Prisma.Decimal('0.99'),
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /total de la venta.*demasiado grande/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+});
+
+// Fase 08 (QA adversarial) — gaps de cobertura reales encontrados con
+// Stryker, distintos de los desbordes de precisión de arriba: ramas de
+// negocio que ya existían en el código pero que ningún test (unitario ni
+// de integración) ejercitaba, y la forma exacta de las queries a Prisma
+// (sin aserción exacta, un `where`/`select` roto no rompe ningún test
+// unitario — mismo patrón ya encontrado y corregido en la Fase 08 de
+// `cash-registers`).
+describe('SalesService — Fase 08: gaps de cobertura (mutation testing)', () => {
+  it('crearVenta: descuento sin porcentaje NI monto — 400, identifica el descuento por descripción (cobertura cero hasta esta fase)', async () => {
+    const variant = buildVariantRow({ id: 10 });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      discounts: [{ descripcion: 'descuento incompleto' }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /descuento incompleto.*monto o un porcentaje/,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('crearVenta: descripcionSnapshot con size null — omite el talle sin dejar separador huérfano ni "null"/"undefined" (AD-15)', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      product: { nombre: 'Remera' },
+      size: null,
+      color: { nombre: 'Azul' },
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await service.crearVenta(asTx(tx), input);
+    const call = tx.sale.create.mock.calls[0][0];
+    expect(call.data.items.create[0].descripcionSnapshot).toBe('Remera - Azul');
+  });
+
+  it('crearVenta: descripcionSnapshot con size Y color null — es exactamente el nombre del producto, sin separadores colgando', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      product: { nombre: 'Remera' },
+      size: null,
+      color: null,
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await service.crearVenta(asTx(tx), input);
+    const call = tx.sale.create.mock.calls[0][0];
+    expect(call.data.items.create[0].descripcionSnapshot).toBe('Remera');
+  });
+
+  it('crearVenta: tx.variant.findMany se llama con el where/select exactos — un select roto (p. ej. sin `activo`) no rompe ningún test unitario, solo el real contra Postgres', async () => {
+    const variantA = buildVariantRow({ id: 10 });
+    const variantB = buildVariantRow({ id: 20 });
+    const tx = buildMockTx([variantA, variantB]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      // A propósito en orden inverso al id: el servicio ordena
+      // `variantIds` antes de armar la query (BLUEPRINT §9.4).
+      items: [
+        { variantId: 20, cantidad: 1 },
+        { variantId: 10, cantidad: 1 },
+      ],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('200.00') },
+      ],
+    };
+
+    await service.crearVenta(asTx(tx), input);
+
+    expect(tx.variant.findMany).toHaveBeenCalledWith({
+      where: { id: { in: [10, 20] } },
+      select: {
+        id: true,
+        activo: true,
+        precioVenta: true,
+        costoActual: true,
+        stockActual: true,
+        product: { select: { nombre: true } },
+        size: { select: { nombre: true } },
+        color: { select: { nombre: true } },
+      },
+    });
+  });
+
+  it('crearVenta: el cash_movement de la venta se registra con la descripción exacta "Venta #<numero>"', async () => {
+    const variant = buildVariantRow({ id: 10 });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT46 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    const sale = await service.crearVenta(asTx(tx), input);
+
+    expect(deps.cashRegisterService.registrarMovimiento).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ descripcion: `Venta #${sale.numero}` }),
+    );
+  });
+
+  it('anularVenta: un pago CREDITO_DEVOLUCION MEZCLADO con otro método también rechaza (invariante 15 no distingue "el único pago" de "uno de varios")', async () => {
+    const saleRow = buildSaleRowT47({
+      payments: [
+        {
+          id: 1,
+          metodo: PaymentMetodo.EFECTIVO,
+          monto: new Prisma.Decimal('50.00'),
+        },
+        {
+          id: 2,
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('150.00'),
+        },
+      ],
+    });
+    const tx = buildMockTx([], { saleRow });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: AnularVentaInputT47 = {
+      saleId: saleRow.id,
+      userId: 7,
+      esOwner: true,
+    };
+
+    await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+      /cr[eé]dito|devoluci[oó]n/i,
+    );
+
+    expect(tx.sale.update).not.toHaveBeenCalled();
+    expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+  });
+
+  it('anularVenta: tx.sale.findUnique y tx.return.findFirst se llaman con el where/include exactos', async () => {
+    const saleRow = buildSaleRowT47();
+    const tx = buildMockTx([], { saleRow });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: AnularVentaInputT47 = {
+      saleId: saleRow.id,
+      userId: 7,
+      esOwner: true,
+    };
+
+    await service.anularVenta(asTx(tx), input);
+
+    expect(tx.sale.findUnique).toHaveBeenCalledWith({
+      where: { id: saleRow.id },
+      include: { items: true, payments: true },
+    });
+    expect(tx.return.findFirst).toHaveBeenCalledWith({
+      where: { saleId: saleRow.id },
+    });
+  });
+
+  it('anularVenta: el cash_movement de la anulación se registra con la descripción exacta "Anulación venta #<numero>"', async () => {
+    const saleRow = buildSaleRowT47();
+    const tx = buildMockTx([], { saleRow });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: AnularVentaInputT47 = {
+      saleId: saleRow.id,
+      userId: 7,
+      esOwner: true,
+    };
+
+    await service.anularVenta(asTx(tx), input);
+
+    expect(deps.cashRegisterService.registrarMovimiento).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        descripcion: `Anulación venta #${saleRow.numero}`,
+      }),
+    );
+  });
+});

@@ -34,6 +34,35 @@ import {
 //
 // Sin anulación (T4.7) todavía.
 
+// Fase 08 (QA adversarial) — hallazgo real, mismo patrón ya encontrado y
+// corregido en `cash-register.service.ts` (también Fase 08): las columnas
+// de plata de este módulo son `Decimal(12, 2)` (`sale_items.subtotal`,
+// `neto_linea`, `neto_unitario`; `sales.subtotal`/`descuento_total`/
+// `total`; `sale_discounts.monto`; `payments.monto`) — máximo absoluto
+// representable 9999999999.99 — salvo `sale_discounts.porcentaje`, que es
+// `Decimal(5, 2)` (máximo 999.99). Ningún DTO valida la MAGNITUD de un
+// decimal (`@IsDecimal` valida formato, no rango), y acá además el riesgo
+// no es solo un valor de entrada gigante: un `subtotal` de línea puede
+// desbordar por una `cantidad` enorme multiplicada por un `precioVenta`
+// perfectamente válido, sin que ningún campo de entrada por separado se
+// vea fuera de rango. Sin este chequeo, cualquiera de estos casos llega
+// crudo a Postgres, que lo rechaza con "numeric field overflow" (código
+// 22003) — un `PrismaClientUnknownRequestError` sin `.code` traducible,
+// que el `GlobalExceptionFilter` no puede distinguir de cualquier otro
+// fallo interno y responde 500 genérico en vez de un 400 de validación.
+const MAX_MONTO_ABSOLUTO = new Prisma.Decimal('9999999999.99');
+const MAX_PORCENTAJE_ABSOLUTO = new Prisma.Decimal('999.99');
+
+function assertDentroDePrecision(
+  value: Prisma.Decimal.Value,
+  field: string,
+  max: Prisma.Decimal = MAX_MONTO_ABSOLUTO,
+): void {
+  if (new Prisma.Decimal(value).abs().greaterThan(max)) {
+    throw new BadRequestException(`${field} es demasiado grande`);
+  }
+}
+
 export interface CrearVentaItemInput {
   variantId: number;
   cantidad: number;
@@ -184,10 +213,16 @@ export class SalesService {
 
     if (!permitirVentaSinStock) {
       for (const [variantId, cantidad] of cantidadPorVariante) {
-        const variant = variantById.get(variantId);
-        if (!variant || variant.stockActual < cantidad) {
+        // El `!` es seguro por el mismo motivo que en el paso 7 (más abajo):
+        // el paso 5b ya validó que TODO `variantId` de `cantidadPorVariante`
+        // (que itera sobre las mismas keys que `variantIds`) existe y está
+        // activo — el `!variant ||`/`?? 0` que había acá antes de la Fase 08
+        // quedaba efectivamente inalcanzable, mismo tipo de código muerto ya
+        // limpiado en el paso 7 durante la Fase 07.
+        const variant = variantById.get(variantId)!;
+        if (variant.stockActual < cantidad) {
           throw new ConflictException(
-            `Stock insuficiente: quedan ${variant?.stockActual ?? 0} unidades`,
+            `Stock insuficiente: quedan ${variant.stockActual} unidades`,
           );
         }
       }
@@ -203,6 +238,9 @@ export class SalesService {
     const itemsBase = input.items.map((item) => {
       const variant = variantById.get(item.variantId)!;
       const subtotalLinea = lineSubtotal(item.cantidad, variant.precioVenta);
+      // Fase 08: una `cantidad` enorme puede desbordar `Decimal(12,2)` sin
+      // que `precioVenta` por sí solo esté fuera de rango.
+      assertDentroDePrecision(subtotalLinea, 'El subtotal de la línea');
       // T4.2 (BLUEPRINT §3.4, literal: "nombre + talle + color al momento
       // de vender"): talle y color se omiten si la variante no los tiene
       // (AD-15, ambos nullable) — nunca aparece "null"/"undefined" en el
@@ -231,6 +269,7 @@ export class SalesService {
       (acc, i) => acc.plus(i.subtotal),
       new Prisma.Decimal(0),
     );
+    assertDentroDePrecision(subtotal, 'El subtotal de la venta');
 
     // Paso 7b (T4.3, RN-4): descuentos — `monto` de uno cargado como
     // porcentaje se resuelve acá con `applyPercentage`, nunca se confía en
@@ -241,15 +280,27 @@ export class SalesService {
           `El descuento "${d.descripcion}" necesita un monto o un porcentaje`,
         );
       }
+      if (d.porcentaje !== undefined) {
+        assertDentroDePrecision(
+          d.porcentaje,
+          `El porcentaje del descuento "${d.descripcion}"`,
+          MAX_PORCENTAJE_ABSOLUTO,
+        );
+      }
+      const monto =
+        d.porcentaje !== undefined
+          ? applyPercentage(subtotal, d.porcentaje)
+          : new Prisma.Decimal(d.monto!);
+      assertDentroDePrecision(
+        monto,
+        `El monto del descuento "${d.descripcion}"`,
+      );
       return {
         tipo: SaleDiscountTipo.MANUAL,
         descripcion: d.descripcion,
         porcentaje:
           d.porcentaje !== undefined ? new Prisma.Decimal(d.porcentaje) : null,
-        monto:
-          d.porcentaje !== undefined
-            ? applyPercentage(subtotal, d.porcentaje)
-            : new Prisma.Decimal(d.monto!),
+        monto,
         // AMB-14 diferida (ver `state/AMBIGUITIES.md`): el mecanismo de
         // autorización por contraseña de OWNER no se construye en este
         // ticket — nunca se autoriza nada explícitamente todavía.
@@ -260,6 +311,7 @@ export class SalesService {
       (acc, d) => acc.plus(d.monto),
       new Prisma.Decimal(0),
     );
+    assertDentroDePrecision(descuentoTotal, 'El descuento total');
 
     // Tope duro (invariante 4), siempre, para cualquier rol.
     if (descuentoTotal.isNegative() || descuentoTotal.greaterThan(subtotal)) {
@@ -308,6 +360,7 @@ export class SalesService {
         'El ajuste de redondeo deja el total en negativo',
       );
     }
+    assertDentroDePrecision(total, 'El total de la venta');
 
     // Paso 7c (AD-18/RN-5): prorratea el total real a cada línea — con
     // descuento 0 (camino de T4.1/T4.2), `prorate` devuelve exactamente
@@ -332,6 +385,7 @@ export class SalesService {
     // `sale_items`, ya señalado en la spec del módulo, sección 6).
     for (const p of input.payments) {
       assertPositive(p.monto, 'El monto de cada pago');
+      assertDentroDePrecision(p.monto, 'El monto de cada pago');
     }
 
     // La suma de pagos tiene que ser EXACTAMENTE el total, antes de

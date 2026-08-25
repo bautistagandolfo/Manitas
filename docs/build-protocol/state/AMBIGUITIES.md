@@ -33,6 +33,7 @@ curso que haya generado ambigüedades propias).
 | AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | RESUELTA — plantilla propia | Sí |
 | AMB-13 | ⚠️ ALTO | `cash-registers` | ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? | `OWNER`-only para ambas | T3.3, Fase 06 de `cash-registers` | RESUELTA — `OWNER`-only las dos | Sí |
 | AMB-14 | ⚠️ ALTO | `sales` | Mecanismo de autorización de `OWNER` para un descuento por encima del tope, en el momento de la venta | Campo de contraseña de `OWNER` en el formulario, verificado por el backend sin cambiar la sesión activa | T4.3, Fase 06 de `sales` | RESUELTA — contraseña de supervisor | Sí |
+| AMB-15 | MEDIO | `sales` / `products` | ¿Se puede vender una variante `activo: true` cuyo producto padre está `activo: false` (dado de baja)? | Bloquear en `crearVenta`, mismo criterio que RN-11 del buscador | ninguno nuevo (defensa en profundidad opcional) | PENDIENTE | — |
 
 ---
 
@@ -564,3 +565,61 @@ autorización todavía (bloqueo simple, no un error). El mecanismo
 recomendado arriba sigue siendo la respuesta correcta — se construye
 como un agregado chico y acotado cuando exista un `SELLER` real que lo
 necesite, no antes.
+
+---
+
+## AMB-15 — ¿Vender una variante activa de un producto dado de baja?
+
+**Ubicación:** módulos `sales` / `products` (`sales.service.ts` paso 5b,
+`variants.service.ts` RN-11).
+
+**Descripción:** `variants.service.ts` (buscador de catálogo, Etapa 2)
+filtra explícitamente `activo: true, product: { activo: true }` — su
+propio comentario dice literalmente "una variante dada de baja, o **cuyo
+producto está dado de baja**, no debería resucitar acá aunque la otra
+mitad siga activa" (RN-11). `product.activo` y `variant.activo` son
+campos independientes en el schema: dar de baja un producto **no**
+desactiva en cascada sus variantes.
+
+`sales.service.ts` (paso 5b, agregado en la Fase 07 de este módulo) sí
+valida `variant.activo`, pero nunca trae ni chequea `variant.product.activo`
+— el `select` de `tx.variant.findMany` ni siquiera pide ese campo. Un
+usuario autenticado que arme el request a mano (no a través del buscador
+del catálogo, que sí filtra esto) puede vender la variante de un producto
+ya descatalogado, mientras siga con `activo: true` — que es el estado por
+defecto al dar de baja solo el producto.
+
+**Por qué no se resuelve solo con el código:** la spec del módulo `sales`
+(`modulo-sales-spec.md` §7, RN-2) define el error para `variantId`
+inexistente **o inactivo**, pero nunca menciona el estado del producto
+padre — no hay ninguna fuente (BLUEPRINT, spec de `sales`) que diga si
+"dar de baja un producto" implica "ya no se puede vender ninguna de sus
+variantes" o si son dos conceptos deliberadamente independientes (por
+ejemplo, si "dar de baja el producto" solo significa "no aparece más en
+el buscador para cargar catálogo nuevo", sin afectar el stock que ya
+existe y todavía hay que poder liquidar).
+
+**Pregunta para el PO:** cuando un producto está `activo: false`, ¿sus
+variantes siguen siendo vendibles (por ejemplo, para liquidar el stock
+remanente de algo que se dejó de reponer), o una venta a esa variante
+debería rechazarse igual que si la variante misma estuviera inactiva?
+
+**RECOMENDACIÓN:** bloquear, mismo criterio que RN-11 del buscador —
+`product.activo: false` debería rechazar la venta con el mismo 400 "La
+variante no existe" que ya usa el paso 5b. Es más consistente con la
+intención de "dar de baja" (si no se puede ni buscar en el catálogo,
+tampoco debería poder vendérselo por otra vía) y evita que alguien con
+acceso a la API, sin pasar por la pantalla de venta, venda algo que el
+resto del sistema ya trata como descatalogado.
+
+**RIESGO DE LA RECOMENDACIÓN:** si en la práctica la dueña usa "dar de
+baja el producto" para dejar de recibir más mercadería de algo sin
+querer bloquear la venta del stock que ya tiene en el local, bloquear
+la venta le impediría liquidar ese remanente sin tener que reactivar el
+producto primero (y volverlo a desactivar después).
+
+**Bloquea a:** nada de lo ya construido — es un hallazgo de esta Fase
+08, no bloquea ningún ticket del `ROADMAP.md`. Si se aprueba la
+recomendación, es un cambio acotado a `sales.service.ts` paso 5b
+(agregar `product: { select: { activo: true } }` al `select` existente
+y extender la condición ya escrita ahí).
