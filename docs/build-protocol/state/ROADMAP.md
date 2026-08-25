@@ -210,12 +210,40 @@ El módulo más crítico del sistema.
 | T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4, **T3.2** | VERDE |
 | T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | VERDE |
 | T4.9 | Test de concurrencia: dos ventas simultáneas de la última unidad | T4.1 | VERDE |
-| T4.10 | **Pantalla de venta con teclado y lector** (blueprint §12.1) | T4.5, T4.6 | PENDIENTE |
+| T4.10 | **Pantalla de venta con teclado y lector** (blueprint §12.1) | T4.5, T4.6 | VERDE |
 | T4.11 | Pantalla de cobro: medios de pago, saldo pendiente, vuelto | T4.10 | PENDIENTE |
 
 **T4.10 es el ticket más importante del sistema en experiencia de uso.**
 El flujo completo tiene que poder hacerse sin tocar el mouse. Especificación
 completa en la sección 12.1 del blueprint.
+
+> **Alcance real de T4.10 (2026-08-25):** §12.1 describe "venta" y "cobro"
+> como un único flujo continuo, pero el `ROADMAP.md` los separa en dos
+> tickets — T4.10 construye únicamente el armado del carrito (buscador,
+> agregar/incrementar líneas, descuento F4, cancelar Esc), sin enviar
+> nada al backend todavía: no existe `SalesController` (T4.1-T4.9 solo
+> construyeron `SalesService`), así que no hay ruta HTTP donde confirmar
+> una venta. `F2` ("ir a cobrar") muestra un aviso honesto de que la
+> pantalla de cobro es T4.11, con el borrador (y su clave de
+> idempotencia, generada al entrar a la pantalla) ya listos en
+> `sessionStorage` para cuando exista. Mismo criterio que AMB-14 (T4.3) y
+> el recorte de T4.5: se construye lo que depende solo de este ticket, se
+> deja marcado explícitamente lo que falta, sin inventar mecánica de
+> T4.11.
+>
+> **Bug real encontrado y corregido en este ticket, ajeno al código de
+> `sales`:** el `Modal` de Mantine (v9.5.1) no reacciona al prop
+> `opened` cuando el componente queda SIEMPRE montado y ese prop
+> transiciona de `false` a `true` — confirmado empíricamente en el
+> navegador real (con logs de estado de React, no solo inspección de
+> código): el estado de React cambiaba correctamente, pero Mantine nunca
+> montaba el contenido del modal. El modal de descuento (F4), montado
+> recién cuando hace falta (`{flag && <Modal opened>...}`), sí
+> funcionaba — ese patrón es el que se aplicó también a los otros dos
+> modales de esta pantalla (confirmar cancelación, aviso de "ir a
+> cobrar"). Vale la pena tenerlo presente para cualquier modal futuro de
+> este proyecto que necesite abrirse por un cambio de estado en vez de
+> por montaje condicional.
 
 > **T4.3 bloqueada por AMB-14 (fase 06 de este módulo, nueva):** el
 > blueprint confirma el tope de descuento del vendedor (10%, AMB-3)
