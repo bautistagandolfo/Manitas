@@ -207,7 +207,7 @@ El módulo más crítico del sistema.
 | T4.4 | Pagos: N por venta, validación suma = total, impacto en caja solo si es efectivo | T4.1, **T3.2** | VERDE |
 | T4.5 | Aplicar el interceptor de idempotencia (T0.14) a la venta | T4.1, T0.14 | VERDE (alcance recortado por falta de controller, ver nota) |
 | T4.6 | **Ajuste de redondeo** + tests de las reglas de redondeo (§9.3) | T4.4, T0.12 | VERDE |
-| T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4, **T3.2** | PENDIENTE |
+| T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4, **T3.2** | VERDE |
 | T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | PENDIENTE |
 | T4.9 | Test de concurrencia: dos ventas simultáneas de la última unidad | T4.1 | PENDIENTE |
 | T4.10 | **Pantalla de venta con teclado y lector** (blueprint §12.1) | T4.5, T4.6 | PENDIENTE |
