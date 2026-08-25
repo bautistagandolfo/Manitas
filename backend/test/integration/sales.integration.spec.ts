@@ -10,6 +10,7 @@ import {
   StockMovementReferenciaTipo,
   CashRegisterSessionEstado,
   UserRole,
+  type Sale,
 } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'node:crypto';
@@ -186,43 +187,52 @@ describe('sales (integration, T4.1)', () => {
   });
 
   afterAll(async () => {
-    // Reabrir cualquier sesión que haya quedado CERRADA antes de borrar sus
-    // movimientos: el trigger `cash_movements_immutable_after_close`
-    // bloquea cualquier escritura (incluido el DELETE de limpieza) sobre
-    // `cash_movements` de una sesión CERRADA — mismo criterio que
-    // `cash-registers.integration.spec.ts`.
+    // Una sesión por vez, de punta a punta, antes de pasar a la siguiente:
+    // el índice único parcial de sesión ABIERTA (RN-1 de `cash-registers`)
+    // no tolera dos sesiones ABIERTA al mismo tiempo, así que reabrir todas
+    // en lote antes de borrar (como hacía la primera versión de este
+    // archivo) choca contra esa misma constraint. Reabrir es necesario
+    // porque el trigger `cash_movements_immutable_after_close` bloquea
+    // cualquier escritura —incluido el DELETE de limpieza— sobre
+    // `cash_movements` de una sesión CERRADA. Las ventas de esa sesión
+    // (`sales.cash_register_session_id`, `ON DELETE RESTRICT`) también
+    // tienen que borrarse antes de poder borrar la sesión misma — se
+    // buscan por `cashRegisterSessionId` en vez de filtrar
+    // `createdSaleIds` a mano, para no tener que mantener un mapeo
+    // venta→sesión aparte.
     for (const id of new Set(createdSessionIds)) {
       await prisma.cashRegisterSession.update({
         where: { id },
         data: { estado: CashRegisterSessionEstado.ABIERTA },
       });
+
+      const salesInSession = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: id },
+        select: { id: true },
+      });
+      const saleIdsInSession = salesInSession.map((s) => s.id);
+
+      if (saleIdsInSession.length > 0) {
+        await prisma.payment.deleteMany({
+          where: { saleId: { in: saleIdsInSession } },
+        });
+        await prisma.saleItem.deleteMany({
+          where: { saleId: { in: saleIdsInSession } },
+        });
+      }
+      await prisma.cashMovement.deleteMany({ where: { sessionId: id } });
+      if (saleIdsInSession.length > 0) {
+        await prisma.sale.deleteMany({
+          where: { id: { in: saleIdsInSession } },
+        });
+      }
+      await prisma.cashRegisterSession.delete({ where: { id } });
     }
 
-    if (createdSaleIds.length > 0) {
-      await prisma.payment.deleteMany({
-        where: { saleId: { in: createdSaleIds } },
-      });
-      await prisma.saleItem.deleteMany({
-        where: { saleId: { in: createdSaleIds } },
-      });
-    }
-    if (createdSessionIds.length > 0) {
-      await prisma.cashMovement.deleteMany({
-        where: { sessionId: { in: [...new Set(createdSessionIds)] } },
-      });
-    }
     if (createdVariantIds.length > 0) {
       await prisma.stockMovement.deleteMany({
         where: { variantId: { in: createdVariantIds } },
       });
-    }
-    if (createdSaleIds.length > 0) {
-      await prisma.sale.deleteMany({ where: { id: { in: createdSaleIds } } });
-    }
-    for (const id of new Set(createdSessionIds)) {
-      await prisma.cashRegisterSession.delete({ where: { id } });
-    }
-    if (createdVariantIds.length > 0) {
       await prisma.variant.deleteMany({
         where: { id: { in: createdVariantIds } },
       });
@@ -528,8 +538,7 @@ describe('sales (integration, T4.1)', () => {
 
         const results = [a, b];
         const fulfilled = results.filter(
-          (r): r is PromiseFulfilledResult<{ id: number }> =>
-            r.status === 'fulfilled',
+          (r): r is PromiseFulfilledResult<Sale> => r.status === 'fulfilled',
         );
         const rejected = results.filter(
           (r): r is PromiseRejectedResult => r.status === 'rejected',

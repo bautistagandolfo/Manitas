@@ -185,7 +185,10 @@ interface MockTx {
   sale: {
     create: jest.Mock<Promise<CreatedSale>, [SaleCreateCall]>;
   };
-  $queryRaw: jest.Mock;
+  $queryRaw: jest.Mock<
+    Promise<unknown[]>,
+    [TemplateStringsArray, ...unknown[]]
+  >;
 }
 
 function buildMockTx(variantRows: VariantRow[]): MockTx {
@@ -202,7 +205,9 @@ function buildMockTx(variantRows: VariantRow[]): MockTx {
           Promise.resolve(buildCreatedSaleFromCall(call)),
         ),
     },
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $queryRaw: jest
+      .fn<Promise<unknown[]>, [TemplateStringsArray, ...unknown[]]>()
+      .mockResolvedValue([]),
   };
 }
 
@@ -211,25 +216,39 @@ function asTx(tx: MockTx): Prisma.TransactionClient {
 }
 
 interface Deps {
-  stockService: { descontarPorVenta: jest.Mock };
-  cashRegisterService: {
-    getSesionAbiertaOrThrow: jest.Mock;
-    registrarMovimiento: jest.Mock;
+  stockService: {
+    descontarPorVenta: jest.Mock<Promise<void>, [unknown, unknown]>;
   };
-  settingsService: { getBool: jest.Mock };
+  cashRegisterService: {
+    getSesionAbiertaOrThrow: jest.Mock<Promise<SessionRow>, [unknown]>;
+    registrarMovimiento: jest.Mock<
+      Promise<{ id: number }>,
+      [unknown, { monto: Prisma.Decimal.Value }]
+    >;
+  };
+  settingsService: { getBool: jest.Mock<Promise<boolean>, [string]> };
 }
 
 function buildDeps(overrides: Partial<Deps> = {}): Deps {
   return {
     stockService: {
-      descontarPorVenta: jest.fn().mockResolvedValue(undefined),
+      descontarPorVenta: jest
+        .fn<Promise<void>, [unknown, unknown]>()
+        .mockResolvedValue(undefined),
     },
     cashRegisterService: {
-      getSesionAbiertaOrThrow: jest.fn().mockResolvedValue(buildSessionRow()),
-      registrarMovimiento: jest.fn().mockResolvedValue({ id: 999 }),
+      getSesionAbiertaOrThrow: jest
+        .fn<Promise<SessionRow>, [unknown]>()
+        .mockResolvedValue(buildSessionRow()),
+      registrarMovimiento: jest
+        .fn<
+          Promise<{ id: number }>,
+          [unknown, { monto: Prisma.Decimal.Value }]
+        >()
+        .mockResolvedValue({ id: 999 }),
     },
     settingsService: {
-      getBool: jest.fn().mockResolvedValue(false),
+      getBool: jest.fn<Promise<boolean>, [string]>().mockResolvedValue(false),
     },
     ...overrides,
   };
@@ -332,8 +351,8 @@ describe('SalesService.crearVenta', () => {
           userId: 7,
         }),
       );
-      const movimientoCall = deps.cashRegisterService.registrarMovimiento.mock
-        .calls[0][1] as { monto: Prisma.Decimal.Value };
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
       expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe(
         expectedSubtotal.toString(),
       );
@@ -390,8 +409,8 @@ describe('SalesService.crearVenta', () => {
       expect(
         deps.cashRegisterService.registrarMovimiento,
       ).toHaveBeenCalledTimes(1);
-      const movimientoCall = deps.cashRegisterService.registrarMovimiento.mock
-        .calls[0][1] as { monto: Prisma.Decimal.Value };
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
       expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe('120');
     });
 
@@ -423,8 +442,8 @@ describe('SalesService.crearVenta', () => {
       expect(
         deps.cashRegisterService.registrarMovimiento,
       ).toHaveBeenCalledTimes(1);
-      const movimientoCall = deps.cashRegisterService.registrarMovimiento.mock
-        .calls[0][1] as { monto: Prisma.Decimal.Value };
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
       expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe('300');
     });
   });
@@ -520,7 +539,11 @@ describe('SalesService.crearVenta', () => {
       const variant = buildVariantRow({ id: 10, stockActual: 1 });
       const tx = buildMockTx([variant]);
       const deps = buildDeps({
-        settingsService: { getBool: jest.fn().mockResolvedValue(true) },
+        settingsService: {
+          getBool: jest
+            .fn<Promise<boolean>, [string]>()
+            .mockResolvedValue(true),
+        },
       });
       const service = buildService(deps);
 
@@ -631,9 +654,12 @@ describe('SalesService.crearVenta', () => {
       const deps = buildDeps({
         cashRegisterService: {
           getSesionAbiertaOrThrow: jest
-            .fn()
+            .fn<Promise<SessionRow>, [unknown]>()
             .mockRejectedValue(new Error('No hay una sesión de caja abierta')),
-          registrarMovimiento: jest.fn(),
+          registrarMovimiento: jest.fn<
+            Promise<{ id: number }>,
+            [unknown, { monto: Prisma.Decimal.Value }]
+          >(),
         },
       });
       const service = buildService(deps);
@@ -681,7 +707,7 @@ describe('SalesService.crearVenta', () => {
         sqlText(call).includes('cash_register_sessions'),
       );
       expect(sessionLockCall).toBeDefined();
-      expect(sqlText(sessionLockCall)).toContain('for update');
+      expect(sqlText(sessionLockCall!)).toContain('for update');
       expect(sessionLockCall![1]).toBe(1);
     });
   });

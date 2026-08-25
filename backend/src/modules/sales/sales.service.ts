@@ -1,0 +1,222 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
+import {
+  CashMovementReferenciaTipo,
+  CashMovementTipo,
+  PaymentMetodo,
+  Prisma,
+  Sale,
+} from '@prisma/client';
+import { StockService } from '../stock/stock.service';
+import { CashRegisterService } from '../cash-registers/cash-register.service';
+import { SettingsService } from '../../common/settings/settings.service';
+import { SETTINGS_KEYS } from '../../common/settings/settings-keys';
+import { PrismaService } from '../../prisma/prisma.service';
+import { lineSubtotal, roundCurrency } from '../../common/money/money.util';
+
+// T4.1 — servicio de venta transaccional (BLUEPRINT §5.3, RN-1 a RN-9 de
+// `modulo-sales-spec.md`). Recibe siempre el `tx` de una transacción ya
+// abierta por quien llama (mismo contrato que `stock.service.ts`/
+// `cash-register.service.ts`) — nunca abre la suya propia.
+//
+// Alcance de este ticket, sin `discounts` (T4.3) ni `ajusteRedondeo`
+// explícito (T4.6): con ambos fijos en 0, `neto_linea = subtotal_linea`
+// coincide exactamente con lo que el prorrateo general (AD-18) daría en
+// este caso — no se reimplementa acá, queda para cuando haya descuento o
+// ajuste real. Sin idempotencia (T4.5) ni anulación (T4.7) todavía.
+
+export interface CrearVentaItemInput {
+  variantId: number;
+  cantidad: number;
+}
+
+export interface CrearVentaPaymentInput {
+  metodo: PaymentMetodo;
+  monto: Prisma.Decimal.Value;
+  referencia?: string;
+}
+
+export interface CrearVentaInput {
+  userId: number;
+  items: CrearVentaItemInput[];
+  payments: CrearVentaPaymentInput[];
+}
+
+@Injectable()
+export class SalesService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly stockService: StockService,
+    private readonly cashRegisterService: CashRegisterService,
+    private readonly settingsService: SettingsService,
+  ) {}
+
+  async crearVenta(
+    tx: Prisma.TransactionClient,
+    input: CrearVentaInput,
+  ): Promise<Sale> {
+    // Paso 1 (RN-1): sesión de caja abierta — lectura fail-fast.
+    const sesion = await this.cashRegisterService.getSesionAbiertaOrThrow(tx);
+
+    // Paso 2 (hallazgo real, spec sección 5): el lock de la fila de sesión
+    // se toma SIEMPRE, no solo cuando hay pago en efectivo — el único otro
+    // punto que lo tomaría (`registrarMovimiento`, paso 11) no se ejecuta
+    // en una venta 100% tarjeta, lo que dejaría una ventana de concurrencia
+    // real para ese caso si no se tomara acá.
+    await tx.$queryRaw`SELECT id FROM cash_register_sessions WHERE id = ${sesion.id} FOR UPDATE`;
+
+    // Paso 3 (RN-7): agregar la cantidad pedida por variante — dos líneas
+    // de la misma variante se validan juntas, no cada una por separado.
+    const cantidadPorVariante = new Map<number, number>();
+    for (const item of input.items) {
+      cantidadPorVariante.set(
+        item.variantId,
+        (cantidadPorVariante.get(item.variantId) ?? 0) + item.cantidad,
+      );
+    }
+    const variantIds = [...cantidadPorVariante.keys()].sort((a, b) => a - b);
+
+    // Paso 4 (BLUEPRINT §9.4, literal): un solo lock de todas las
+    // variantes involucradas, ordenado por id — evita el deadlock de dos
+    // ventas concurrentes que comparten variantes en distinto orden.
+    await tx.$queryRaw`SELECT id FROM variants WHERE id IN (${Prisma.join(variantIds)}) ORDER BY id FOR UPDATE`;
+
+    // Paso 5: recién ahora, con el lock tomado, se lee el estado real.
+    const variantRows = await tx.variant.findMany({
+      where: { id: { in: variantIds } },
+      select: {
+        id: true,
+        precioVenta: true,
+        costoActual: true,
+        stockActual: true,
+      },
+    });
+    const variantById = new Map(variantRows.map((v) => [v.id, v]));
+
+    // Paso 6 (RN-3, AMB-4 RESUELTA): stock insuficiente bloquea, salvo
+    // `permitir_venta_sin_stock`. Se lee siempre (aunque el stock alcance)
+    // porque `descontarPorVenta` también la necesita más abajo.
+    const permitirVentaSinStock = await this.settingsService.getBool(
+      SETTINGS_KEYS.PERMITIR_VENTA_SIN_STOCK,
+    );
+
+    if (!permitirVentaSinStock) {
+      for (const [variantId, cantidad] of cantidadPorVariante) {
+        const variant = variantById.get(variantId);
+        if (!variant || variant.stockActual < cantidad) {
+          throw new ConflictException(
+            `Stock insuficiente: quedan ${variant?.stockActual ?? 0} unidades`,
+          );
+        }
+      }
+    }
+
+    // Paso 7 (AD-5, AD-18 trivial sin descuento/ajuste): congelar precio y
+    // costo por línea, calcular subtotal. `neto_linea`/`neto_unitario`
+    // coinciden con `subtotal_linea` porque `descuento_total` y
+    // `ajuste_redondeo` están fijos en 0 en este ticket.
+    const itemsData = input.items.map((item) => {
+      const variant = variantById.get(item.variantId);
+      if (!variant) {
+        throw new BadRequestException(
+          `La variante ${item.variantId} no existe`,
+        );
+      }
+      const subtotalLinea = lineSubtotal(item.cantidad, variant.precioVenta);
+      return {
+        variantId: item.variantId,
+        // El "congelado formal" (nombre + talle + color) es de T4.2 —
+        // acá alcanza con un valor no vacío y honesto, sin inventar datos
+        // que este ticket no tiene por qué consultar todavía.
+        descripcionSnapshot: `Variante #${item.variantId}`,
+        cantidad: item.cantidad,
+        precioUnitario: variant.precioVenta,
+        costoUnitario: variant.costoActual,
+        subtotal: subtotalLinea,
+        netoLinea: subtotalLinea,
+        netoUnitario: roundCurrency(subtotalLinea.dividedBy(item.cantidad)),
+      };
+    });
+
+    const subtotal = itemsData.reduce(
+      (acc, i) => acc.plus(i.subtotal),
+      new Prisma.Decimal(0),
+    );
+    const descuentoTotal = new Prisma.Decimal(0);
+    const ajusteRedondeo = new Prisma.Decimal(0);
+    const total = subtotal.minus(descuentoTotal).plus(ajusteRedondeo);
+
+    // Paso 8 (invariante 3): la suma de pagos tiene que ser EXACTAMENTE el
+    // total, antes de escribir nada.
+    const sumaPagos = input.payments.reduce(
+      (acc, p) => acc.plus(new Prisma.Decimal(p.monto)),
+      new Prisma.Decimal(0),
+    );
+    if (!sumaPagos.equals(total)) {
+      throw new BadRequestException('Los pagos no cubren el total de la venta');
+    }
+
+    const paymentsData = input.payments.map((p) => ({
+      metodo: p.metodo,
+      monto: new Prisma.Decimal(p.monto),
+      referencia: p.referencia ?? null,
+    }));
+
+    // Paso 9: crear la venta con líneas y pagos en una sola escritura
+    // nested — no hay ningún cálculo intermedio entre "crear sale+items" y
+    // "registrar payments" en este ticket sin descuentos.
+    const sale = await tx.sale.create({
+      data: {
+        fecha: new Date(),
+        userId: input.userId,
+        cashRegisterSessionId: sesion.id,
+        subtotal,
+        descuentoTotal,
+        ajusteRedondeo,
+        total,
+        items: { create: itemsData },
+        payments: { create: paymentsData },
+      },
+    });
+
+    // Paso 10 (BLUEPRINT §5.3 paso 6, literal: "un stock_movements... por
+    // línea"): un `descontarPorVenta` por cada línea de la venta, no uno
+    // por variante agregada — la agregación del paso 3/6 es solo para la
+    // validación previa.
+    for (const item of input.items) {
+      await this.stockService.descontarPorVenta(tx, {
+        variantId: item.variantId,
+        cantidad: item.cantidad,
+        saleId: sale.id,
+        userId: input.userId,
+        permitirStockNegativo: permitirVentaSinStock,
+      });
+    }
+
+    // Paso 11 (invariante 7, AD-8): solo la parte cobrada en EFECTIVO
+    // mueve la caja, sumada en un único movimiento (no uno por pago).
+    const sumaEfectivo = input.payments
+      .filter((p) => p.metodo === PaymentMetodo.EFECTIVO)
+      .reduce(
+        (acc, p) => acc.plus(new Prisma.Decimal(p.monto)),
+        new Prisma.Decimal(0),
+      );
+
+    if (sumaEfectivo.greaterThan(0)) {
+      await this.cashRegisterService.registrarMovimiento(tx, {
+        sessionId: sesion.id,
+        tipo: CashMovementTipo.VENTA,
+        monto: sumaEfectivo,
+        referenciaTipo: CashMovementReferenciaTipo.SALE,
+        referenciaId: sale.id,
+        descripcion: `Venta #${sale.numero}`,
+        userId: input.userId,
+      });
+    }
+
+    return sale;
+  }
+}

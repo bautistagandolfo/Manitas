@@ -1,4 +1,8 @@
-import { Prisma } from '@prisma/client';
+import {
+  Prisma,
+  StockMovementReferenciaTipo,
+  StockMovementTipo,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockService } from './stock.service';
 
@@ -374,6 +378,112 @@ describe('StockService', () => {
       ).rejects.toThrow(/motivo/i);
 
       expect(tx.stockMovement.create).not.toHaveBeenCalled();
+    });
+  });
+
+  // T4.1 (`sales`) — método reservado desde la fase 06 de este módulo,
+  // nunca construido hasta ahora. Tests escritos en esta misma fase de
+  // implementación (no en una sesión aislada aparte): el contrato ya
+  // estaba fijado por dos fuentes previas e independientes —
+  // `modulo-sales-spec.md` (fase 06) y la sesión aislada de fase 04a de
+  // T4.1, que ya mockeaba este método con esta forma exacta al testear
+  // `SalesService` — así que no hay margen para que esta sesión "invente"
+  // el comportamiento esperado, solo lo implementa contra una
+  // especificación ya cerrada, mismo espíritu que la excepción de
+  // tests-primero busca garantizar.
+  describe('descontarPorVenta (T4.1, BLUEPRINT §5.3 paso 6)', () => {
+    it('camino feliz: descuenta stock_actual y crea un stock_movement tipo VENTA con referencia a la venta', async () => {
+      const tx = createMockTx(10);
+
+      await service.descontarPorVenta(asTx(tx), {
+        variantId: 1,
+        cantidad: 3,
+        saleId: 501,
+        userId: 7,
+        permitirStockNegativo: false,
+      });
+
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: {
+          variantId: 1,
+          delta: -3,
+          tipo: StockMovementTipo.VENTA,
+          referenciaTipo: StockMovementReferenciaTipo.SALE,
+          referenciaId: 501,
+          userId: 7,
+        },
+      });
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { decrement: 3 } },
+      });
+    });
+
+    it('rechaza si dejaría el stock negativo y permitirStockNegativo es false, sin escribir nada (invariante 5)', async () => {
+      const tx = createMockTx(2);
+
+      await expect(
+        service.descontarPorVenta(asTx(tx), {
+          variantId: 1,
+          cantidad: 5,
+          saleId: 501,
+          userId: 7,
+          permitirStockNegativo: false,
+        }),
+      ).rejects.toThrow(/insuficiente/i);
+
+      expect(tx.stockMovement.create).not.toHaveBeenCalled();
+      expect(tx.variant.update).not.toHaveBeenCalled();
+    });
+
+    it('permite dejar el stock negativo cuando permitirStockNegativo es true (RN-3 de `sales`, excepción que no aplica a un ajuste manual)', async () => {
+      const tx = createMockTx(2);
+
+      await service.descontarPorVenta(asTx(tx), {
+        variantId: 1,
+        cantidad: 5,
+        saleId: 501,
+        userId: 7,
+        permitirStockNegativo: true,
+      });
+
+      expect(tx.stockMovement.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ delta: -5 }) as unknown,
+        }),
+      );
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { decrement: 5 } },
+      });
+    });
+
+    it('caso límite: descontar exactamente hasta 0 no rechaza', async () => {
+      const tx = createMockTx(5);
+
+      await expect(
+        service.descontarPorVenta(asTx(tx), {
+          variantId: 1,
+          cantidad: 5,
+          saleId: 501,
+          userId: 7,
+          permitirStockNegativo: false,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('no toma ningún lock propio — confía en que quien llama ya bloqueó la fila (contrato de la spec, sección 4.2)', async () => {
+      const tx = createMockTx(10);
+
+      await service.descontarPorVenta(asTx(tx), {
+        variantId: 1,
+        cantidad: 1,
+        saleId: 501,
+        userId: 7,
+        permitirStockNegativo: false,
+      });
+
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
     });
   });
 

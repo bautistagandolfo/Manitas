@@ -7,6 +7,7 @@ import {
   Prisma,
   PriceHistoryCampo,
   PriceHistoryOrigen,
+  StockMovementReferenciaTipo,
   StockMovementTipo,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,6 +31,27 @@ export interface RegistrarAjusteInput {
   delta: number;
   motivo: string;
   userId: number;
+}
+
+// T4.1 (`sales`) — método reservado desde la fase 06 de este mismo módulo
+// (`modulo-products-variants-spec.md`, sección 4.2: "Expuesto para
+// sales/returns, no se llama desde este módulo") pero nunca construido
+// hasta ahora. `sales.service.ts` es quien toma el lock de las variantes
+// involucradas (ordenado por id, BLUEPRINT §9.4) UNA sola vez para toda la
+// venta, antes de llamar a este método por línea — por eso no hay ningún
+// `SELECT ... FOR UPDATE` acá adentro, a diferencia de
+// `registrarAjuste`, que sí lo toma porque se invoca de forma aislada.
+export interface DescontarPorVentaInput {
+  variantId: number;
+  cantidad: number;
+  saleId: number;
+  userId: number;
+  // `sales.service.ts` decide este valor leyendo `permitir_venta_sin_stock`
+  // de `SettingsService` — este método nunca lee configuración por su
+  // cuenta, solo lo aplica mecánicamente (mismo principio que RN-9 de
+  // `cash-registers`: quien tiene el contexto de negocio decide, el
+  // servicio de más abajo confía en lo que le pasan).
+  permitirStockNegativo: boolean;
 }
 
 export interface StockReconciliationMismatch {
@@ -150,6 +172,47 @@ export class StockService {
     await tx.variant.update({
       where: { id: input.variantId },
       data: { stockActual: { increment: input.delta } },
+    });
+  }
+
+  // T4.1 — descuento de stock por línea de venta (BLUEPRINT §5.3 paso 6,
+  // literal: "un stock_movements con delta negativo por línea"). Sin lock
+  // propio (ver el comentario de `DescontarPorVentaInput`) — el `tx` ya
+  // llega con la fila de la variante bloqueada por `sales.service.ts`, así
+  // que esta lectura ve el valor consistente sin necesitar tomarlo de
+  // nuevo. Mismo criterio de validación que `registrarAjuste` con delta
+  // negativo (invariante 5), salvo que acá la excepción de
+  // `permitir_venta_sin_stock` sí puede aplicar — es responsabilidad de
+  // `sales`, no de un ajuste manual (RN-5 de la spec de `products`).
+  async descontarPorVenta(
+    tx: Prisma.TransactionClient,
+    input: DescontarPorVentaInput,
+  ): Promise<void> {
+    const current = await tx.variant.findUniqueOrThrow({
+      where: { id: input.variantId },
+    });
+    const resultante = current.stockActual - input.cantidad;
+
+    if (resultante < 0 && !input.permitirStockNegativo) {
+      throw new ConflictException(
+        `Stock insuficiente: quedan ${current.stockActual} unidades`,
+      );
+    }
+
+    await tx.stockMovement.create({
+      data: {
+        variantId: input.variantId,
+        delta: -input.cantidad,
+        tipo: StockMovementTipo.VENTA,
+        referenciaTipo: StockMovementReferenciaTipo.SALE,
+        referenciaId: input.saleId,
+        userId: input.userId,
+      },
+    });
+
+    await tx.variant.update({
+      where: { id: input.variantId },
+      data: { stockActual: { decrement: input.cantidad } },
     });
   }
 
