@@ -150,10 +150,14 @@ export function computeDiscountTotalCents(
 
 // Nunca negativo en la vista previa — el rechazo real de un ajuste/
 // descuento que dejaría el total en negativo lo hace `crearVenta`
-// (invariante 4, T4.3/T4.6) al confirmar.
+// (invariante 4, T4.3/T4.6) al confirmar. `ajusteCents` es opcional
+// (T4.6/AD-14: "lo carga quien cobra", la pantalla de cobro — T4.10 no
+// lo pedía) — default 0, mismo criterio de compatibilidad hacia atrás
+// que el resto de los parámetros opcionales de este archivo.
 export function computeTotalCents(
   baseCents: number,
   discountCents: number,
+  ajusteCents = 0,
 ): number {
-  return Math.max(0, baseCents - discountCents);
+  return Math.max(0, baseCents - discountCents + ajusteCents);
 }

@@ -247,4 +247,18 @@ describe('computeTotalCents', () => {
   it('nunca queda negativo en la vista previa, aunque el descuento supere el subtotal', () => {
     expect(computeTotalCents(1000, 5000)).toBe(0);
   });
+
+  it('sin ajusteRedondeo (T4.10), es equivalente a no pasarlo (default 0)', () => {
+    expect(computeTotalCents(10000, 1500, 0)).toBe(
+      computeTotalCents(10000, 1500),
+    );
+  });
+
+  it('ajusteRedondeo positivo (T4.11, AD-14) suma al total', () => {
+    expect(computeTotalCents(10000, 1500, 50)).toBe(8550);
+  });
+
+  it('ajusteRedondeo negativo resta del total', () => {
+    expect(computeTotalCents(10000, 1500, -50)).toBe(8450);
+  });
 });

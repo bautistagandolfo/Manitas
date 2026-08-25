@@ -3,7 +3,6 @@ import type { KeyboardEvent } from 'react';
 import {
   ActionIcon,
   Alert,
-  Badge,
   Button,
   Card,
   Center,
@@ -18,6 +17,7 @@ import {
   Title,
 } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
+import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../lib/http-client';
 import { formatCurrency } from '../../lib/format';
 import { useIdempotencyKey } from '../../lib/idempotency';
@@ -36,22 +36,25 @@ import {
   type CartLine,
   type DraftDiscount,
 } from './cart';
-import { clearDraft, loadDraft, saveDraft } from './draft-storage';
+import {
+  clearDraft,
+  loadDraft,
+  saveDraft,
+  DRAFT_STORAGE_KEY,
+  IDEMPOTENCY_STORAGE_KEY,
+} from './draft-storage';
 import { DiscountModal } from './components/DiscountModal';
 
-const DRAFT_STORAGE_KEY = 'venta:draft';
-const IDEMPOTENCY_STORAGE_KEY = 'venta:idempotency-key';
 const SEARCH_PAGE_SIZE = 8;
 
 // T4.10 (BLUEPRINT §12.1) — pantalla de armado del carrito, diseñada para
 // teclado y lector de código de barras: el foco vive SIEMPRE en el
-// buscador, y una venta completa se arma sin tocar el mouse. La
-// confirmación/cobro (medios de pago, importe, vuelto) es T4.11 — todavía
-// no existe ningún `SalesController` en el backend, así que esta pantalla
-// nunca envía nada: solo arma un borrador (persistido en `sessionStorage`
-// junto con su clave de idempotencia, caso "refresco accidental" de
-// §12.1) que T4.11 va a leer y confirmar.
+// buscador, y una venta completa se arma sin tocar el mouse. `F2` navega
+// a `/venta/cobro` (T4.11, `CobroPage`), que lee este mismo borrador
+// (`sessionStorage`, mismas claves vía `draft-storage.ts`) y su clave de
+// idempotencia para confirmar la venta contra `POST /sales`.
 export function SalePage() {
+  const navigate = useNavigate();
   // Inicializador perezoso (no `useRef`+`.current` leído durante el
   // render, que la regla `react-hooks/refs` prohíbe): `loadDraft` solo
   // corre una vez, en el primer render.
@@ -77,15 +80,16 @@ export function SalePage() {
 
   const [discountModalOpen, setDiscountModalOpen] = useState(false);
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
-  const [cobroInfoOpen, setCobroInfoOpen] = useState(false);
 
   // Generada al entrar a la pantalla, no al confirmar (AD-10/§9.7) —
   // sobrevive a un F5 en `sessionStorage`, igual que el resto del
-  // borrador. T4.11 es quien la va a mandar en el header
+  // borrador. `CobroPage` (T4.11) es quien la manda en el header
   // `Idempotency-Key` al confirmar la venta; acá solo se garantiza que ya
-  // existe y que no cambia mientras el borrador siga vivo.
-  const { key: idempotencyKey, rotate: rotateIdempotencyKey } =
-    useIdempotencyKey(IDEMPOTENCY_STORAGE_KEY);
+  // existe y que no cambia mientras el borrador siga vivo, y se rota si
+  // la venta se cancela.
+  const { rotate: rotateIdempotencyKey } = useIdempotencyKey(
+    IDEMPOTENCY_STORAGE_KEY,
+  );
 
   const inputRef = useRef<HTMLInputElement>(null);
   const focusSearch = useCallback(() => {
@@ -233,7 +237,7 @@ export function SalePage() {
 
     if (event.key === 'F2') {
       event.preventDefault();
-      if (lines.length > 0) setCobroInfoOpen(true);
+      if (lines.length > 0) void navigate('/venta/cobro');
       return;
     }
     if (event.key === 'F4') {
@@ -493,7 +497,7 @@ export function SalePage() {
         </Group>
         <Button
           disabled={lines.length === 0}
-          onClick={() => setCobroInfoOpen(true)}
+          onClick={() => void navigate('/venta/cobro')}
         >
           <Kbd mr={6}>F2</Kbd> Ir a cobrar
         </Button>
@@ -548,42 +552,6 @@ export function SalePage() {
               </Button>
               <Button color="red" onClick={handleCancelSale}>
                 Cancelar venta
-              </Button>
-            </Group>
-          </Stack>
-        </Modal>
-      )}
-
-      {cobroInfoOpen && (
-        <Modal
-          opened
-          onClose={() => {
-            setCobroInfoOpen(false);
-            focusSearch();
-          }}
-          title="Ir a cobrar"
-        >
-          <Stack>
-            <Text>
-              La pantalla de cobro (medios de pago, saldo pendiente, vuelto)
-              todavía no está construida — es el siguiente ticket (T4.11).
-            </Text>
-            <Text size="sm" c="dimmed" component="div">
-              El borrador de esta venta ({lines.length}{' '}
-              {lines.length === 1 ? 'línea' : 'líneas'}, total estimado{' '}
-              {formatCurrency(centsToAmountString(totalCents))}) ya está
-              guardado en este navegador junto con su clave de idempotencia (
-              <Badge variant="light">{idempotencyKey.slice(0, 8)}…</Badge>), así
-              que no se pierde aunque se recargue la página.
-            </Text>
-            <Group justify="flex-end">
-              <Button
-                onClick={() => {
-                  setCobroInfoOpen(false);
-                  focusSearch();
-                }}
-              >
-                Entendido
               </Button>
             </Group>
           </Stack>

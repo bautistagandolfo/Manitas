@@ -6,6 +6,12 @@
 // testean con Vitest sin DOM.
 import type { CartLine, DraftDiscount } from './cart';
 
+// Claves compartidas entre `SalePage` (T4.10, arma el borrador) y
+// `CobroPage` (T4.11, lo lee y confirma) — un solo lugar para no
+// desincronizar el nombre de la clave entre las dos pantallas.
+export const DRAFT_STORAGE_KEY = 'venta:draft';
+export const IDEMPOTENCY_STORAGE_KEY = 'venta:idempotency-key';
+
 export interface KeyValueStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;

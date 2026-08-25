@@ -10,6 +10,7 @@ import { VariantGridPage } from './features/catalog/VariantGridPage';
 import { NewVariantPage } from './features/catalog/NewVariantPage';
 import { CashRegisterPage } from './features/cash-registers/CashRegisterPage';
 import { SalePage } from './features/sales/SalePage';
+import { CobroPage } from './features/sales/CobroPage';
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -21,6 +22,7 @@ export const router = createBrowserRouter([
         children: [
           { path: '/', element: <Navigate to="/catalogo" replace /> },
           { path: '/venta', element: <SalePage /> },
+          { path: '/venta/cobro', element: <CobroPage /> },
           { path: '/caja', element: <CashRegisterPage /> },
           { path: '/catalogo', element: <CatalogPage /> },
           { path: '/catalogo/productos/nuevo', element: <NewProductPage /> },
