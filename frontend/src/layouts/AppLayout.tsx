@@ -27,6 +27,9 @@ export function AppLayout() {
         <Group h="100%" px="md" justify="space-between">
           <Group gap="lg">
             <Title order={4}>Manitas</Title>
+            <Button component={Link} to="/venta" variant="subtle">
+              Venta
+            </Button>
             <Button component={Link} to="/caja" variant="subtle">
               Caja
             </Button>
