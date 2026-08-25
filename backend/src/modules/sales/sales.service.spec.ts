@@ -301,12 +301,72 @@ function buildCreatedSaleFromCall(
   };
 }
 
+// ─── T4.7 — anulación de venta: forma de la fila que `anularVenta` lee ────
+//
+// Definida acá (no en `sales.service.ts`, que no se abrió) porque es lo que
+// esta sesión decide que el servicio DEBERÍA leer para poder aplicar RN-8:
+// la venta completa con sus líneas (para saber qué revertir en stock) y sus
+// pagos (para saber cuánto revertir en caja y detectar CREDITO_DEVOLUCION).
+interface SaleItemRowT47 {
+  id: number;
+  variantId: number;
+  cantidad: number;
+}
+
+interface PaymentRowT47 {
+  id: number;
+  metodo: PaymentMetodo;
+  monto: Prisma.Decimal;
+}
+
+interface SaleRowT47 {
+  id: number;
+  numero: number;
+  estado: 'COMPLETADA' | 'ANULADA';
+  cashRegisterSessionId: number;
+  userId: number;
+  items: SaleItemRowT47[];
+  payments: PaymentRowT47[];
+}
+
+function buildSaleRowT47(overrides: Partial<SaleRowT47> = {}): SaleRowT47 {
+  return {
+    id: 501,
+    numero: 501,
+    estado: 'COMPLETADA',
+    cashRegisterSessionId: 1,
+    userId: 7,
+    items: [{ id: 1, variantId: 10, cantidad: 2 }],
+    payments: [
+      {
+        id: 1,
+        metodo: PaymentMetodo.EFECTIVO,
+        monto: new Prisma.Decimal('200.00'),
+      },
+    ],
+    ...overrides,
+  };
+}
+
 interface MockTx {
   variant: {
     findMany: jest.Mock<Promise<VariantRow[]>, [unknown]>;
   };
   sale: {
     create: jest.Mock<Promise<CreatedSale>, [SaleCreateCall]>;
+    // T4.7 — lectura de la venta con sus relaciones (`items`, `payments`),
+    // hecha DESPUÉS del lock de la fila (paso 3 del contrato del ticket).
+    // Devuelve `null` cuando la venta no existe (paso 2, NotFoundException).
+    findUnique: jest.Mock<Promise<SaleRowT47 | null>, [unknown]>;
+    // T4.7 — paso 9: marca `estado: 'ANULADA'` y devuelve la venta
+    // actualizada.
+    update: jest.Mock<Promise<SaleRowT47>, [unknown]>;
+  };
+  // T4.7 — paso 4 (AD-19, invariante 13): existencia de una devolución
+  // contra esta venta. `findFirst` porque solo importa si existe alguna,
+  // no cuántas ni cuáles.
+  return: {
+    findFirst: jest.Mock<Promise<{ id: number } | null>, [unknown]>;
   };
   $queryRaw: jest.Mock<
     Promise<unknown[]>,
@@ -314,7 +374,18 @@ interface MockTx {
   >;
 }
 
-function buildMockTx(variantRows: VariantRow[]): MockTx {
+// T4.7 — `saleFixture` es un parámetro nuevo, opcional, con default vacío:
+// ninguna de las ~70 llamadas preexistentes de T4.1-T4.6 lo pasa, así que
+// siguen construyendo el mismo `tx` que ya usaban (agregado de
+// infraestructura del mock, no un cambio de comportamiento existente).
+// `saleRow: null` (default) simula "la venta no existe" para
+// `sale.findUnique` — cada test de `anularVenta` que necesita una venta
+// real pasa su propio `buildSaleRowT47(...)`. `returnExists: false`
+// (default) simula "sin devoluciones registradas".
+function buildMockTx(
+  variantRows: VariantRow[],
+  saleFixture: { saleRow?: SaleRowT47 | null; returnExists?: boolean } = {},
+): MockTx {
   return {
     variant: {
       findMany: jest
@@ -327,6 +398,20 @@ function buildMockTx(variantRows: VariantRow[]): MockTx {
         .mockImplementation((call) =>
           Promise.resolve(buildCreatedSaleFromCall(call)),
         ),
+      findUnique: jest
+        .fn<Promise<SaleRowT47 | null>, [unknown]>()
+        .mockResolvedValue(saleFixture.saleRow ?? null),
+      update: jest.fn<Promise<SaleRowT47>, [unknown]>().mockImplementation(() =>
+        Promise.resolve({
+          ...(saleFixture.saleRow ?? buildSaleRowT47()),
+          estado: 'ANULADA',
+        }),
+      ),
+    },
+    return: {
+      findFirst: jest
+        .fn<Promise<{ id: number } | null>, [unknown]>()
+        .mockResolvedValue(saleFixture.returnExists ? { id: 9001 } : null),
     },
     $queryRaw: jest
       .fn<Promise<unknown[]>, [TemplateStringsArray, ...unknown[]]>()
@@ -341,6 +426,10 @@ function asTx(tx: MockTx): Prisma.TransactionClient {
 interface Deps {
   stockService: {
     descontarPorVenta: jest.Mock<Promise<void>, [unknown, unknown]>;
+    // T4.7 — reversión de stock por anulación (contrato de la spec,
+    // sección 4.2: `revertirPorAnulacion(tx, { variantId, cantidad,
+    // saleId, userId })`, incremento atómico, sin lock propio).
+    revertirPorAnulacion: jest.Mock<Promise<void>, [unknown, unknown]>;
   };
   cashRegisterService: {
     getSesionAbiertaOrThrow: jest.Mock<Promise<SessionRow>, [unknown]>;
@@ -360,6 +449,9 @@ function buildDeps(overrides: Partial<Deps> = {}): Deps {
   return {
     stockService: {
       descontarPorVenta: jest
+        .fn<Promise<void>, [unknown, unknown]>()
+        .mockResolvedValue(undefined),
+      revertirPorAnulacion: jest
         .fn<Promise<void>, [unknown, unknown]>()
         .mockResolvedValue(undefined),
     },
@@ -2410,6 +2502,467 @@ describe('SalesService.crearVenta — T4.6 ajuste de redondeo (RN-6, AD-14, inva
         new Prisma.Decimal(0),
       );
       expect(sumNetos.toFixed(2)).toBe('27.50');
+    });
+  });
+});
+
+// ─── Fase 04a (T4.7) — anulación de venta, sesión aislada nueva ──────────
+//
+// Fuente única: `docs/build-protocol/state/ROADMAP.md` T4.7 (Etapa 4);
+// `BLUEPRINT.md` AD-19 (sección 2), invariantes 13 y 15 (sección 6), §5.3
+// (paso de anulación, reglas debajo del flujo numerado); §9.4 (patrón de
+// lock de fila); `state/reports/modulo-sales-spec.md` RN-8 (líneas
+// ~131-149), sección 4.2 (firma de `revertirPorAnulacion`), sección 5
+// (transacciones/concurrencia), sección 6 (edge cases de anulación),
+// sección 7 (tabla de errores), sección 8 (permisos), sección 9 (tests
+// necesarios, viñeta "Anulación"); `backend/prisma/schema.prisma` (modelos
+// `Sale`/`Return`, enums `SaleEstado`/`CashMovementTipo`/
+// `StockMovementTipo` — confirmado que `ANULACION` existe en los dos
+// últimos). NO se abrió `sales.service.ts` — `anularVenta` no existe
+// todavía en `SalesService`, así que las llamadas de más abajo no
+// compilan (`Property 'anularVenta' does not exist on type
+// 'SalesService'`). Es la razón correcta de rojo para este ticket en
+// particular: a diferencia de T4.3/T4.5/T4.6 (que ampliaban un método ya
+// existente y necesitaban un tipo de input más ancho para no ensuciar el
+// rojo con un error de compilación), acá el método en sí es enteramente
+// nuevo — no hay forma de "ampliar" algo que no existe, y la fase 04a
+// (`docs/build-protocol/04a-tests-first.md`) para este ticket específico
+// acepta ese rojo de compilación como el esperado.
+//
+// Excepción explícita del prompt de esta fase: SÍ se importó el TIPO
+// `CrearVentaInput` y la clase `SalesService` para poder llamar
+// `salesService.crearVenta(tx, input)` como setup de los tests de
+// integración (necesitan una venta real ya creada antes de poder
+// anularla) — no se miró ninguna otra cosa de ese archivo.
+//
+// Contrato de `anularVenta(tx, input)`, decisión de esta sesión (documentado
+// también en el prompt del ticket, no reinterpretado):
+//
+//   interface AnularVentaInput {
+//     saleId: number;
+//     userId: number;
+//     esOwner: boolean;   // resuelto por el futuro controller a partir de
+//                         // `user.rol` (JWT verificado) — mismo patrón que
+//                         // `esOwner` de `crearVenta` (T4.3).
+//   }
+//   async anularVenta(tx, input): Promise<Sale>
+//
+// Flujo esperado, en este orden exacto:
+//   1. `!input.esOwner` → ForbiddenException('Solo un OWNER puede anular
+//      una venta'), SIN leer nada de la base (ni el lock, ni `findUnique`).
+//   2. Lock de la fila de venta (`SELECT id FROM sales WHERE id = $1 FOR
+//      UPDATE`, BLUEPRINT §9.4). Venta inexistente →
+//      NotFoundException('Venta no encontrada').
+//   3. Con el lock tomado, lee la venta completa (`items`, `payments`) —
+//      acá modelada como `tx.sale.findUnique`, decisión de esta sesión
+//      (ver el comentario de `MockTx` más arriba). `estado === 'ANULADA'`
+//      → ConflictException('Esta venta ya está anulada'), sin revertir
+//      nada.
+//   4. Alguna `Return` con `saleId` igual a esta venta (`tx.return.
+//      findFirst({ where: { saleId } })`) → ConflictException('Esta venta
+//      tiene devoluciones registradas, no se puede anular'), sin revertir
+//      nada (AD-19, invariante 13).
+//   5. Algún `payment.metodo === 'CREDITO_DEVOLUCION'` → ConflictException
+//      (invariante 15), sin revertir nada. Mensaje sin texto literal en la
+//      spec — se verifica acá con una expresión regular amplia sobre
+//      "crédito"/"devolución", no un string exacto.
+//   6. La sesión de caja `ABIERTA` actual
+//      (`cashRegisterService.getSesionAbiertaOrThrow(tx)`) tiene que
+//      coincidir con `sale.cashRegisterSessionId` — si no coincide,
+//      ConflictException('Solo se puede anular dentro del mismo turno de
+//      caja'), sin revertir nada. Si no hay NINGUNA sesión abierta, el
+//      rechazo lo produce directamente `getSesionAbiertaOrThrow` (ya VERDE
+//      desde T3.2), reusado tal cual.
+//   7. Por cada `sale_item`: `stockService.revertirPorAnulacion(tx, {
+//      variantId, cantidad, saleId, userId: input.userId })` — una llamada
+//      por línea, nunca agregada por variante (a diferencia de RN-7 de
+//      `crearVenta`, acá no hay validación de umbral que agregar).
+//   8. Suma de `payments` con `metodo === 'EFECTIVO'`; si `> 0`,
+//      `cashRegisterService.registrarMovimiento(tx, { sessionId:
+//      sale.cashRegisterSessionId, tipo: 'ANULACION', monto: sumaEfectivo,
+//      referenciaTipo: 'SALE', referenciaId: sale.id, descripcion,
+//      userId: input.userId })` — monto siempre POSITIVO, el servicio de
+//      caja aplica el signo negativo él mismo según `tipo` (confirmado
+//      leyendo `cash-register.service.ts`: `TIPOS_POSITIVOS` no incluye
+//      `ANULACION`, así que ese servicio ya lo resta solo — no se
+//      reimplementa acá).
+//   9. `tx.sale.update({ where: { id: saleId }, data: { estado:
+//      'ANULADA' } })` — modelado acá como devolviendo la venta con
+//      `estado: 'ANULADA'`, resultado que el método final devuelve.
+interface AnularVentaInputT47 {
+  saleId: number;
+  userId: number;
+  esOwner: boolean;
+}
+
+describe('SalesService.anularVenta — T4.7', () => {
+  describe('RN-8 paso 1 — solo OWNER', () => {
+    it('esOwner: false rechaza con ForbiddenException, sin leer nada de la base', async () => {
+      const tx = buildMockTx([]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: 501,
+        userId: 7,
+        esOwner: false,
+      };
+
+      await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+        /solo.*owner/i,
+      );
+
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
+      expect(tx.sale.findUnique).not.toHaveBeenCalled();
+      expect(tx.sale.update).not.toHaveBeenCalled();
+      expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('RN-8 paso 2 — venta inexistente', () => {
+    it('rechaza con NotFoundException, sin revertir nada', async () => {
+      // saleRow: null (default de buildMockTx) simula que la venta no
+      // existe.
+      const tx = buildMockTx([]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: 9999,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+        /venta no encontrada/i,
+      );
+
+      expect(tx.sale.update).not.toHaveBeenCalled();
+      expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('RN-8 paso 3 — venta ya ANULADA', () => {
+    it('rechaza con ConflictException, sin llamar a revertirPorAnulacion ni a registrarMovimiento', async () => {
+      const saleRow = buildSaleRowT47({ estado: 'ANULADA' });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+        /ya está anulada/i,
+      );
+
+      expect(tx.sale.update).not.toHaveBeenCalled();
+      expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('RN-8 paso 4 — venta con devolución existente (AD-19, invariante 13)', () => {
+    it('rechaza con ConflictException, sin revertir nada', async () => {
+      const saleRow = buildSaleRowT47();
+      const tx = buildMockTx([], { saleRow, returnExists: true });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+        /devoluci/i,
+      );
+
+      expect(tx.sale.update).not.toHaveBeenCalled();
+      expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('RN-8 paso 5 — venta con un pago CREDITO_DEVOLUCION (invariante 15)', () => {
+    it('rechaza con ConflictException, sin revertir nada', async () => {
+      const saleRow = buildSaleRowT47({
+        payments: [
+          {
+            id: 1,
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+      });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+        /cr[eé]dito|devoluci[oó]n/i,
+      );
+
+      expect(tx.sale.update).not.toHaveBeenCalled();
+      expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('RN-8 paso 6 — solo dentro de la misma sesión de caja actual', () => {
+    it('venta de una sesión de caja distinta a la actual: rechaza con ConflictException, sin revertir nada', async () => {
+      const saleRow = buildSaleRowT47({ cashRegisterSessionId: 555 });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps({
+        cashRegisterService: {
+          // Sesión ABIERTA actual es la 1, distinta de la 555 en la que se
+          // hizo la venta.
+          getSesionAbiertaOrThrow: jest
+            .fn<Promise<SessionRow>, [unknown]>()
+            .mockResolvedValue(buildSessionRow({ id: 1 })),
+          registrarMovimiento: jest.fn<
+            Promise<{ id: number }>,
+            [unknown, { monto: Prisma.Decimal.Value }]
+          >(),
+        },
+      });
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await expect(service.anularVenta(asTx(tx), input)).rejects.toThrow(
+        /mismo turno de caja/i,
+      );
+
+      expect(tx.sale.update).not.toHaveBeenCalled();
+      expect(deps.stockService.revertirPorAnulacion).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('camino feliz — venta 100% EFECTIVO', () => {
+    it('revierte stock (una llamada por línea) y registra UN cash_movement tipo ANULACION por la suma cobrada en efectivo', async () => {
+      const saleRow = buildSaleRowT47({
+        items: [{ id: 1, variantId: 10, cantidad: 2 }],
+        payments: [
+          {
+            id: 1,
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+      });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      const result = await service.anularVenta(asTx(tx), input);
+
+      expect(result.estado).toBe('ANULADA');
+
+      // Lock de la fila de venta (BLUEPRINT §9.4), antes de leer nada.
+      const saleLockCall = tx.$queryRaw.mock.calls.find((call) =>
+        sqlText(call).includes('sales'),
+      );
+      expect(saleLockCall).toBeDefined();
+      expect(sqlText(saleLockCall!)).toContain('for update');
+
+      expect(deps.stockService.revertirPorAnulacion).toHaveBeenCalledTimes(1);
+      expect(deps.stockService.revertirPorAnulacion).toHaveBeenCalledWith(
+        asTx(tx),
+        expect.objectContaining({
+          variantId: 10,
+          cantidad: 2,
+          saleId: saleRow.id,
+          userId: 7,
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      expect(deps.cashRegisterService.registrarMovimiento).toHaveBeenCalledWith(
+        asTx(tx),
+        expect.objectContaining({
+          sessionId: saleRow.cashRegisterSessionId,
+          tipo: 'ANULACION',
+          referenciaTipo: 'SALE',
+          referenciaId: saleRow.id,
+          userId: 7,
+        }),
+      );
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
+      expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe('200');
+
+      expect(tx.sale.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: saleRow.id },
+          data: expect.objectContaining({ estado: 'ANULADA' }) as unknown,
+        }),
+      );
+    });
+  });
+
+  describe('camino feliz — venta 100% TARJETA', () => {
+    it('revierte stock, NO llama a registrarMovimiento (nada entró en efectivo, nada tiene que salir)', async () => {
+      const saleRow = buildSaleRowT47({
+        payments: [
+          {
+            id: 1,
+            metodo: PaymentMetodo.TARJETA_CREDITO,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+      });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await service.anularVenta(asTx(tx), input);
+
+      expect(deps.stockService.revertirPorAnulacion).toHaveBeenCalledTimes(1);
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('camino feliz — venta con pago MIXTO (efectivo + tarjeta)', () => {
+    it('el movimiento de caja de la anulación es solo por la parte en EFECTIVO, no por el total de la venta', async () => {
+      const saleRow = buildSaleRowT47({
+        payments: [
+          {
+            id: 1,
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('120.00'),
+          },
+          {
+            id: 2,
+            metodo: PaymentMetodo.TARJETA_DEBITO,
+            monto: new Prisma.Decimal('180.00'),
+          },
+        ],
+      });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await service.anularVenta(asTx(tx), input);
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const movimientoCall =
+        deps.cashRegisterService.registrarMovimiento.mock.calls[0][1];
+      expect(new Prisma.Decimal(movimientoCall.monto).toString()).toBe('120');
+    });
+  });
+
+  describe('RN-7 (criterio análogo) — dos líneas de la misma variante en la venta original', () => {
+    it('se revierten las DOS líneas por separado, una llamada a revertirPorAnulacion por cada sale_item, no agregadas', async () => {
+      const saleRow = buildSaleRowT47({
+        items: [
+          { id: 1, variantId: 10, cantidad: 3 },
+          { id: 2, variantId: 10, cantidad: 4 },
+        ],
+        payments: [
+          {
+            id: 1,
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('700.00'),
+          },
+        ],
+      });
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      await service.anularVenta(asTx(tx), input);
+
+      expect(deps.stockService.revertirPorAnulacion).toHaveBeenCalledTimes(2);
+      const cantidades = deps.stockService.revertirPorAnulacion.mock.calls
+        .map((c) => (c[1] as { cantidad: number }).cantidad)
+        .sort((a, b) => a - b);
+      expect(cantidades).toEqual([3, 4]);
+    });
+  });
+
+  describe('paso 9 — tx.sale.update y el resultado devuelto', () => {
+    it('se llama con estado: ANULADA, y el resultado devuelto refleja ese estado', async () => {
+      const saleRow = buildSaleRowT47();
+      const tx = buildMockTx([], { saleRow });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: AnularVentaInputT47 = {
+        saleId: saleRow.id,
+        userId: 7,
+        esOwner: true,
+      };
+
+      const result = await service.anularVenta(asTx(tx), input);
+
+      expect(tx.sale.update).toHaveBeenCalledTimes(1);
+      expect(tx.sale.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: saleRow.id },
+          data: expect.objectContaining({ estado: 'ANULADA' }) as unknown,
+        }),
+      );
+      expect(result.estado).toBe('ANULADA');
     });
   });
 });

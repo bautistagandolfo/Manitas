@@ -487,6 +487,113 @@ describe('StockService', () => {
     });
   });
 
+  // Fase 04a (T4.7, `sales`) — tests escritos ANTES de la implementación.
+  // `revertirPorAnulacion` no existe todavía en `StockService` (solo
+  // `registrarEntrada`, `registrarAjuste` y `descontarPorVenta` — se
+  // confirmó leyendo el archivo real completo, permitido explícitamente
+  // por el prompt de esta fase porque este ticket agrega un método nuevo
+  // ahí). Fuente única: `state/reports/modulo-sales-spec.md` sección 4.2
+  // (firma exacta) y el contrato fijado en el prompt de T4.7 (idéntico):
+  // `revertirPorAnulacion(tx, { variantId, cantidad, saleId, userId })`
+  // — `delta = +cantidad` (positivo, revierte el descuento original),
+  // `tipo = ANULACION`, `referenciaTipo = SALE`, `referenciaId = saleId`.
+  // Sin lock propio (mismo criterio que `registrarEntrada`: revertir
+  // siempre suma, Postgres serializa el UPDATE por sí solo) — mismo
+  // estilo que los 5 tests de `descontarPorVenta` de acá arriba.
+  describe('revertirPorAnulacion (T4.7, spec de `sales` sección 4.2)', () => {
+    it('camino feliz: aumenta stock_actual exactamente en la cantidad revertida', async () => {
+      const tx = createMockTx(5);
+
+      await service.revertirPorAnulacion(asTx(tx), {
+        variantId: 1,
+        cantidad: 3,
+        saleId: 501,
+        userId: 7,
+      });
+
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 3 } },
+      });
+    });
+
+    it('crea un stock_movement con delta POSITIVO, tipo ANULACION, referenciaTipo SALE y referenciaId = saleId', async () => {
+      const tx = createMockTx(5);
+
+      await service.revertirPorAnulacion(asTx(tx), {
+        variantId: 1,
+        cantidad: 3,
+        saleId: 501,
+        userId: 7,
+      });
+
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: {
+          variantId: 1,
+          delta: 3,
+          tipo: StockMovementTipo.ANULACION,
+          referenciaTipo: StockMovementReferenciaTipo.SALE,
+          referenciaId: 501,
+          userId: 7,
+        },
+      });
+    });
+
+    it('no valida stock contra ningún umbral: revierte igual aunque el resultado quede alto o la variante ya tuviera stock', async () => {
+      const tx = createMockTx(1000);
+
+      await expect(
+        service.revertirPorAnulacion(asTx(tx), {
+          variantId: 1,
+          cantidad: 50,
+          saleId: 501,
+          userId: 7,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 50 } },
+      });
+    });
+
+    it('no toma ningún lock propio — incremento atómico, mismo criterio que registrarEntrada', async () => {
+      const tx = createMockTx(5);
+
+      await service.revertirPorAnulacion(asTx(tx), {
+        variantId: 1,
+        cantidad: 3,
+        saleId: 501,
+        userId: 7,
+      });
+
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('dos reversiones de la misma variante (dos sale_items de la misma variante en la venta anulada) generan dos stock_movements independientes', async () => {
+      const tx = createMockTx(5);
+
+      await service.revertirPorAnulacion(asTx(tx), {
+        variantId: 1,
+        cantidad: 3,
+        saleId: 501,
+        userId: 7,
+      });
+      await service.revertirPorAnulacion(asTx(tx), {
+        variantId: 1,
+        cantidad: 4,
+        saleId: 501,
+        userId: 7,
+      });
+
+      expect(tx.stockMovement.create).toHaveBeenCalledTimes(2);
+      const deltas = tx.stockMovement.create.mock.calls.map(
+        (c: unknown[]) => (c[0] as { data: { delta: number } }).data.delta,
+      );
+      expect(deltas.sort((a: number, b: number) => a - b)).toEqual([3, 4]);
+    });
+  });
+
   describe('reconciliar (T2.8, invariante 1)', () => {
     it('sin variantes, no hay nada que reconciliar: devuelve la lista vacía', async () => {
       prismaMock.variant.findMany.mockResolvedValue([]);
