@@ -3,7 +3,11 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { StockService } from '../stock/stock.service';
 import type { CashRegisterService } from '../cash-registers/cash-register.service';
 import type { SettingsService } from '../../common/settings/settings.service';
-import { lineSubtotal } from '../../common/money/money.util';
+import {
+  lineSubtotal,
+  applyPercentage,
+  prorate,
+} from '../../common/money/money.util';
 import { SalesService } from './sales.service';
 
 // Fase 04a (T4.1) — tests escritos ANTES de la implementación, contra Prisma
@@ -95,6 +99,88 @@ import { SalesService } from './sales.service';
 // los endpoints GET/POST de la capa de controller, no de `crearVenta` en
 // sí. Se deja fuera a propósito, mismo criterio que "no adelantar tickets
 // futuros" (CLAUDE.md regla 10).
+//
+// ─── Fase 04a (T4.3) — agregado sobre lo de arriba, sesión aparte ────────
+//
+// Fuente única de esta sección: `ROADMAP.md` T4.3 y la nota en prosa
+// "Alcance de T4.3 achicado a propósito (2026-08-25)" debajo de la tabla de
+// Etapa 4; `BLUEPRINT.md` §5.3 (descuentos), AD-18 (prorrateo, sección 2),
+// §9.3 (redondeo/prorrateo/los 2 tests obligatorios), §6 invariantes 4 y
+// 12; `state/reports/modulo-sales-spec.md` RN-4 y RN-5;
+// `state/AMBIGUITIES.md` AMB-14 (incluida la nota "Construcción diferida
+// (2026-08-25)"); `backend/prisma/schema.prisma` modelo `SaleDiscount` y
+// enum `SaleDiscountTipo` (solo como tipos, no como lógica). NO se abrió
+// `sales.service.ts` para escribir nada de lo que sigue.
+//
+// Contrato ampliado de `crearVenta(tx, input)` para T4.3 (decisión de esta
+// sesión, ya que `sales.service.ts` no se puede mirar):
+//   input += {
+//     discounts?: Array<{ descripcion: string; porcentaje?: Decimal.Value; monto: Decimal.Value }>;
+//     esOwner: boolean;   // NUEVO CAMPO OBLIGATORIO, mismo patrón que
+//                         // `cerrarSesion` de `cash-registers` (ya VERDE):
+//                         // lo resuelve el futuro controller a partir de
+//                         // `user.rol`, nunca se confía en lo que manda el
+//                         // cliente. `crearVenta` lo recibe ya resuelto.
+//   }
+// `descuentoTotal = SUM(discounts[].monto)`, con `monto` efectivo de un
+// descuento porcentual igual a `applyPercentage(subtotal, porcentaje)`
+// (`common/money`, ya existe desde T0.12).
+//
+// Tope duro (invariante 4), siempre, para cualquier rol:
+// `0 ≤ descuentoTotal ≤ subtotal`. Por encima, rechazo 400 sin escribir
+// nada.
+//
+// Tope del vendedor (`max_descuento_vendedor_pct`,
+// `settingsService.getInt('max_descuento_vendedor_pct')`, sembrado en 10):
+// se evalúa `descuentoTotal / subtotal` contra ese porcentaje SOLO SI
+// `esOwner === false`. Si `esOwner === true`, el descuento se acepta sin
+// evaluar el tope del vendedor en absoluto — ni siquiera se espera que
+// `settingsService.getInt` sea invocado para esa clave en ese camino
+// (alcance textual del ROADMAP: "una dueña no tiene límite de vendedora").
+// Si `esOwner === false` y lo supera: rechazo 400, sin ningún mecanismo de
+// autorización todavía (AMB-14 queda diferida a un ticket futuro chico) —
+// es un bloqueo simple y correcto para este alcance, no un bug.
+//
+// `sale_discounts` se escribe con `tipo: 'MANUAL'` (único valor del enum
+// hoy), `descripcion`, `monto`, `porcentaje` solo si se cargó como tal, y
+// **`autorizadoPorUserId: null` siempre** en este ticket — tanto con
+// `esOwner: true` como `esOwner: false` dentro de tope — porque nunca se
+// autorizó nada explícitamente todavía (el mecanismo de contraseña de
+// AMB-14 no se construye acá). Relación en el schema: `Sale.discounts`
+// (`SaleDiscount[]`), así que se asume `sale.create({ data: { ...,
+// discounts: { create: [...] } } })`, mismo patrón nested que `items` y
+// `payments` en T4.1.
+//
+// Prorrateo real (AD-18/RN-5, `prorate()` de `common/money/money.util.ts`,
+// ya existe desde T0.12, no se reimplementa acá): con `descuentoTotal > 0`,
+// `netoLinea` dejar de coincidir con `subtotalLinea` — se calcula
+// `prorate(subtotalesDeLinea, total)` y el resultado se persiste por línea,
+// en el mismo orden de inserción (que es el de `id`, para el desempate de
+// residuo "menor id").
+//
+// ─── Ajuste de tooling sobre los tests VIEJOS de T4.1/T4.2 (esta sesión) ─
+//
+// `esOwner: true` se agregó a las 14 llamadas a `crearVenta` que ya
+// existían en este archivo, ANTES de escribir ningún test nuevo de T4.3.
+// Es un ajuste puramente de tipos, no de comportamiento: hoy
+// (`sales.service.ts` real, sin tocar) `crearVenta` no exige `esOwner`
+// todavía, así que agregarlo no cambiaba ninguna aserción existente ni el
+// resultado de esos 14 casos (siguen pasando igual). Se hizo de forma
+// preventiva porque, una vez que la Fase 04 (implementación) haga
+// `esOwner` un campo obligatorio del contrato real, esas 14 llamadas
+// dejarían de compilar si no lo tuvieran — y un error de compilación ahí
+// no sería "la razón correcta" de rojo (tapa la ausencia de funcionalidad
+// real). Sin este ajuste, la sesión de implementación se encontraría con
+// una ruptura de compilación en tests que no tocó y que no tiene nada que
+// ver con lo que implementó.
+//
+// Los tests NUEVOS de T4.3, más abajo, pasan `discounts`/`esOwner` a
+// través de una variable con un tipo explícito más ancho
+// (`CrearVentaInputT43`) en vez de un objeto literal inline — evita que
+// TypeScript los rechace por "propiedad extra no reconocida" contra el
+// tipo real (todavía angosto) del parámetro de `crearVenta`, y así el rojo
+// que producen es un rojo de aserción (falta la funcionalidad) en vez de
+// un rojo de compilación, que es justo la distinción que pide la fase 04a.
 
 interface VariantRow {
   id: number;
@@ -153,6 +239,19 @@ interface PaymentCreateInput {
   referencia?: string | null;
 }
 
+// T4.3 — forma esperada de un `sale_discounts` a crear, nested dentro de
+// `sale.create` (relación `Sale.discounts`, schema.prisma). `tipo: 'MANUAL'`
+// es el único valor del enum `SaleDiscountTipo` hoy; `autorizadoPorUserId`
+// siempre `null` en este ticket (nunca se autorizó nada explícitamente,
+// AMB-14 diferida).
+interface SaleDiscountCreateInput {
+  tipo: 'MANUAL';
+  descripcion: string;
+  porcentaje?: Prisma.Decimal.Value | null;
+  monto: Prisma.Decimal.Value;
+  autorizadoPorUserId: number | null;
+}
+
 interface SaleCreateCall {
   data: {
     fecha: Date;
@@ -164,6 +263,8 @@ interface SaleCreateCall {
     total: Prisma.Decimal.Value;
     items: { create: SaleItemCreateInput[] };
     payments: { create: PaymentCreateInput[] };
+    // Opcional: T4.1/T4.2 nunca lo mandaban (descuento_total fijo en 0).
+    discounts?: { create: SaleDiscountCreateInput[] };
   };
 }
 
@@ -172,6 +273,7 @@ interface CreatedSale {
   numero: number;
   items: Array<SaleItemCreateInput & { id: number }>;
   payments: Array<PaymentCreateInput & { id: number }>;
+  discounts: Array<SaleDiscountCreateInput & { id: number }>;
 }
 
 function buildCreatedSaleFromCall(
@@ -188,6 +290,10 @@ function buildCreatedSaleFromCall(
     payments: call.data.payments.create.map((p, index) => ({
       id: index + 1,
       ...p,
+    })),
+    discounts: (call.data.discounts?.create ?? []).map((d, index) => ({
+      id: index + 1,
+      ...d,
     })),
   };
 }
@@ -240,7 +346,11 @@ interface Deps {
       [unknown, { monto: Prisma.Decimal.Value }]
     >;
   };
-  settingsService: { getBool: jest.Mock<Promise<boolean>, [string]> };
+  settingsService: {
+    getBool: jest.Mock<Promise<boolean>, [string]>;
+    // T4.3 — `getInt('max_descuento_vendedor_pct')`, sembrado en 10 (T0.13).
+    getInt: jest.Mock<Promise<number>, [string]>;
+  };
 }
 
 function buildDeps(overrides: Partial<Deps> = {}): Deps {
@@ -263,9 +373,38 @@ function buildDeps(overrides: Partial<Deps> = {}): Deps {
     },
     settingsService: {
       getBool: jest.fn<Promise<boolean>, [string]>().mockResolvedValue(false),
+      getInt: jest.fn<Promise<number>, [string]>().mockResolvedValue(10),
     },
     ...overrides,
   };
+}
+
+// ─── T4.3 — contrato ampliado del input de `crearVenta` ──────────────────
+//
+// Definido acá (no en `sales.service.ts`, que no se abrió) porque es lo que
+// esta sesión decide que el contrato DEBERÍA aceptar, derivado de la
+// especificación. Se pasa a `crearVenta` a través de una variable con este
+// tipo (nunca como objeto literal inline) para que la propiedad extra
+// (`discounts`/`esOwner`, que el tipo real de hoy no declara) no dispare el
+// chequeo de "excess property" de TypeScript en la llamada — eso
+// convertiría el rojo esperado (falta la funcionalidad) en un rojo de
+// compilación, que es justo lo que la fase 04a pide evitar.
+interface DiscountInputT43 {
+  descripcion: string;
+  porcentaje?: Prisma.Decimal.Value;
+  monto: Prisma.Decimal.Value;
+}
+
+interface CrearVentaInputT43 {
+  userId: number;
+  items: Array<{ variantId: number; cantidad: number }>;
+  payments: Array<{
+    metodo: PaymentMetodo;
+    monto: Prisma.Decimal.Value;
+    referencia?: string;
+  }>;
+  discounts?: DiscountInputT43[];
+  esOwner: boolean;
 }
 
 function buildService(deps: Deps): SalesService {
@@ -291,6 +430,7 @@ describe('SalesService.crearVenta', () => {
 
       const result = await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [{ variantId: 10, cantidad: 2 }],
         payments: [
           {
@@ -380,6 +520,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -407,6 +548,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -440,6 +582,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -471,6 +614,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [
           { variantId: 10, cantidad: 3 },
           { variantId: 10, cantidad: 4 },
@@ -501,6 +645,7 @@ describe('SalesService.crearVenta', () => {
       await expect(
         service.crearVenta(asTx(tx), {
           userId: 7,
+          esOwner: true,
           items: [
             { variantId: 10, cantidad: 3 },
             { variantId: 10, cantidad: 3 },
@@ -532,6 +677,7 @@ describe('SalesService.crearVenta', () => {
       await expect(
         service.crearVenta(asTx(tx), {
           userId: 7,
+          esOwner: true,
           items: [{ variantId: 10, cantidad: 3 }],
           payments: [
             {
@@ -564,6 +710,7 @@ describe('SalesService.crearVenta', () => {
       await expect(
         service.crearVenta(asTx(tx), {
           userId: 7,
+          esOwner: true,
           items: [{ variantId: 10, cantidad: 5 }],
           payments: [
             {
@@ -588,6 +735,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -617,6 +765,7 @@ describe('SalesService.crearVenta', () => {
       await expect(
         service.crearVenta(asTx(tx), {
           userId: 7,
+          esOwner: true,
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -647,6 +796,7 @@ describe('SalesService.crearVenta', () => {
       await expect(
         service.crearVenta(asTx(tx), {
           userId: 7,
+          esOwner: true,
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -681,6 +831,7 @@ describe('SalesService.crearVenta', () => {
       await expect(
         service.crearVenta(asTx(tx), {
           userId: 7,
+          esOwner: true,
           items: [{ variantId: 10, cantidad: 1 }],
           payments: [
             {
@@ -704,6 +855,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
           {
@@ -739,6 +891,7 @@ describe('SalesService.crearVenta', () => {
 
       await service.crearVenta(asTx(tx), {
         userId: 7,
+        esOwner: true,
         items: [
           { variantId: 30, cantidad: 1 },
           { variantId: 10, cantidad: 1 },
@@ -791,5 +944,480 @@ describe('SalesService.crearVenta', () => {
     it.todo(
       'total resultante negativo se rechaza — no alcanzable en T4.1 (descuento_total y ajuste_redondeo están fijos en 0); queda pendiente de T4.6, que es donde ajuste_redondeo deja de ser fijo',
     );
+  });
+});
+
+describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4, AMB-14 diferida)', () => {
+  describe('tope duro — 0 ≤ descuento_total ≤ subtotal, siempre, para cualquier rol', () => {
+    it('descuento_total > subtotal con esOwner: true se rechaza igual (invariante 4), sin escribir nada', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('0') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento excesivo', monto: new Prisma.Decimal('150.00') },
+        ],
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /subtotal/i,
+      );
+
+      expect(tx.sale.create).not.toHaveBeenCalled();
+      expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('descuento_total > subtotal con esOwner: false también se rechaza (el tope duro no depende del rol)', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('0') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento excesivo', monto: new Prisma.Decimal('101.00') },
+        ],
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /subtotal/i,
+      );
+      expect(tx.sale.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('tope del vendedor (max_descuento_vendedor_pct) — solo se evalúa si esOwner === false', () => {
+    it('esOwner: false, 8% de descuento con tope 10%: pasa sin problema', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('1000.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+      const monto = applyPercentage('1000.00', '8');
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1000.00').minus(monto) }],
+        discounts: [{ descripcion: 'Promo 8%', porcentaje: '8', monto }],
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).resolves.toBeDefined();
+      expect(tx.sale.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('esOwner: false, 15% de descuento con tope 10%: se rechaza, sin escribir nada, sin mecanismo de autorización (AMB-14 diferida)', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('1000.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+      const monto = applyPercentage('1000.00', '15');
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1000.00').minus(monto) }],
+        discounts: [{ descripcion: 'Promo 15%', porcentaje: '15', monto }],
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /l[ií]mite.*vendedor|vendedor.*l[ií]mite/i,
+      );
+      expect(tx.sale.create).not.toHaveBeenCalled();
+      expect(deps.stockService.descontarPorVenta).not.toHaveBeenCalled();
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('esOwner: false, dos descuentos manuales del 8% cada uno (16% agregado): se rechaza — el tope se evalúa sobre descuento_total, no por descuento separado', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('1000.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+      const montoCadaUno = applyPercentage('1000.00', '8');
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('1000.00').minus(montoCadaUno).minus(montoCadaUno),
+          },
+        ],
+        discounts: [
+          { descripcion: 'Promo 8% (1)', porcentaje: '8', monto: montoCadaUno },
+          { descripcion: 'Promo 8% (2)', porcentaje: '8', monto: montoCadaUno },
+        ],
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+        /l[ií]mite.*vendedor|vendedor.*l[ií]mite/i,
+      );
+      expect(tx.sale.create).not.toHaveBeenCalled();
+    });
+
+    it('esOwner: true, 50% de descuento (muy por encima del tope del vendedor): pasa igual, sin evaluar el tope del vendedor en absoluto', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('1000.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+      const monto = applyPercentage('1000.00', '50');
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1000.00').minus(monto) }],
+        discounts: [{ descripcion: 'Descuento de la dueña', porcentaje: '50', monto }],
+      };
+
+      await expect(service.crearVenta(asTx(tx), input)).resolves.toBeDefined();
+      expect(tx.sale.create).toHaveBeenCalledTimes(1);
+      // "sin evaluar el tope del vendedor en absoluto" — ni siquiera se
+      // consulta el setting cuando esOwner es true.
+      expect(deps.settingsService.getInt).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('registro de sale_discounts (RN-4) — camino feliz', () => {
+    it('descuento manual por monto, esOwner: true: sale_discounts queda con tipo MANUAL, descripcion, monto, SIN porcentaje, autorizado_por_user_id null', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('500.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: true,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('450.00') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento manual', monto: new Prisma.Decimal('50.00') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.descuentoTotal).toString()).toBe(
+        '50',
+      );
+      expect(call.data.discounts?.create).toHaveLength(1);
+      const discount = call.data.discounts!.create[0];
+      expect(discount.tipo).toBe('MANUAL');
+      expect(discount.descripcion).toBe('Descuento manual');
+      expect(new Prisma.Decimal(discount.monto).toString()).toBe('50');
+      expect(discount.porcentaje == null).toBe(true);
+      expect(discount.autorizadoPorUserId).toBeNull();
+    });
+
+    it('descuento manual por monto, esOwner: false (dentro del tope): mismo resultado, autorizado_por_user_id también null', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('500.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('475.00') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento manual chico', monto: new Prisma.Decimal('25.00') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      const discount = call.data.discounts!.create[0];
+      expect(discount.autorizadoPorUserId).toBeNull();
+    });
+
+    it('descuento cargado como porcentaje: el monto efectivo coincide con applyPercentage(subtotal, porcentaje) y se guarda el porcentaje', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('333.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+      const montoEsperado = applyPercentage('333.00', '10');
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('333.00').minus(montoEsperado),
+          },
+        ],
+        discounts: [
+          { descripcion: 'Promo 10%', porcentaje: new Prisma.Decimal('10') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      const discount = call.data.discounts!.create[0];
+      expect(new Prisma.Decimal(discount.monto).toString()).toBe(
+        montoEsperado.toString(),
+      );
+      expect(new Prisma.Decimal(discount.porcentaje!).toString()).toBe('10');
+    });
+  });
+
+  describe('prorrateo real a las líneas (AD-18, RN-5) — con descuento > 0, neto_linea usa prorate()', () => {
+    it('3 líneas, descuento que deja residuo naïve: SUM(neto_linea) da exactamente el total, ajustado a la línea de mayor neto (mismos números que el test obligatorio #2 de BLUEPRINT §9.3)', async () => {
+      // subtotal = 10.00 + 10.00 + 10.01 = 30.01; descuento manual 3.01;
+      // total = 27.00. `prorate(['10.00','10.00','10.01'], '27.00')` ya
+      // está probado en `money.util.spec.ts` y da ['9.00','9.00','9.00'].
+      const v1 = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('10.00'),
+      });
+      const v2 = buildVariantRow({
+        id: 20,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('10.00'),
+      });
+      const v3 = buildVariantRow({
+        id: 30,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('10.01'),
+      });
+      const tx = buildMockTx([v1, v2, v3]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: true, // evita cualquier interacción con el tope del vendedor
+        items: [
+          { variantId: 10, cantidad: 1 },
+          { variantId: 20, cantidad: 1 },
+          { variantId: 30, cantidad: 1 },
+        ],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('27.00') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento variado', monto: new Prisma.Decimal('3.01') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('27');
+
+      const netos = call.data.items.create.map((item) =>
+        new Prisma.Decimal(item.netoLinea).toFixed(2),
+      );
+      const expectedNetos = prorate(
+        ['10.00', '10.00', '10.01'],
+        '27.00',
+      ).map((n) => n.toFixed(2));
+      expect(netos).toEqual(expectedNetos);
+
+      const sumNetos = call.data.items.create.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.netoLinea)),
+        new Prisma.Decimal(0),
+      );
+      expect(sumNetos.toFixed(2)).toBe('27.00');
+    });
+  });
+
+  describe('BLUEPRINT §9.3, tests obligatorios — flujo completo de una venta real (no solo la primitiva de common/money)', () => {
+    it('test obligatorio #1: 15% de descuento sobre $2.999 da un total de $2.549,15, persistido en la venta completa', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('2999.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: true, // 15% > tope del 10% del vendedor
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('2549.15') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento 15%', porcentaje: new Prisma.Decimal('15') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.subtotal).toString()).toBe('2999');
+      expect(new Prisma.Decimal(call.data.descuentoTotal).toString()).toBe(
+        '449.85',
+      );
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('2549.15');
+      const item = call.data.items.create[0];
+      expect(new Prisma.Decimal(item.netoLinea).toString()).toBe('2549.15');
+    });
+
+    // Test obligatorio #2 de BLUEPRINT §9.3 (venta de 3 líneas con
+    // descuento cuyo prorrateo naïve deja residuo, SUM(neto_linea) == total
+    // exacto): no se duplica acá como test aparte — es exactamente el test
+    // 'prorrateo real a las líneas (AD-18, RN-5)' de más arriba, con los
+    // mismos números del ejemplo de BLUEPRINT §9.3 (10.00 + 10.00 + 10.01,
+    // total 27.00). Un test que solo repitiera esa aserción sin agregar
+    // nada no verificaría nada nuevo (violaría la regla de la fase 04a de
+    // no escribir tests que no prueben algo real).
+  });
+
+  describe('invariante 12 — subtotal == SUM(sale_items.subtotal), descuento_total == SUM(sale_discounts.monto), SUM(sale_items.neto_linea) == total', () => {
+    it('con descuento real, las tres igualdades se cumplen exactamente', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 2 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('360.00') },
+        ],
+        discounts: [
+          { descripcion: 'Descuento 10%', porcentaje: '10', monto: new Prisma.Decimal('40.00') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      const subtotalLinea = lineSubtotal(2, variant.precioVenta);
+      expect(new Prisma.Decimal(call.data.subtotal).toString()).toBe(
+        subtotalLinea.toString(),
+      );
+      const sumItemSubtotal = call.data.items.create.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.subtotal)),
+        new Prisma.Decimal(0),
+      );
+      expect(sumItemSubtotal.toString()).toBe(
+        new Prisma.Decimal(call.data.subtotal).toString(),
+      );
+
+      const sumDiscountMonto = (call.data.discounts?.create ?? []).reduce(
+        (sum, d) => sum.plus(new Prisma.Decimal(d.monto)),
+        new Prisma.Decimal(0),
+      );
+      expect(sumDiscountMonto.toString()).toBe(
+        new Prisma.Decimal(call.data.descuentoTotal).toString(),
+      );
+
+      const sumNetoLinea = call.data.items.create.reduce(
+        (sum, item) => sum.plus(new Prisma.Decimal(item.netoLinea)),
+        new Prisma.Decimal(0),
+      );
+      expect(sumNetoLinea.toString()).toBe(
+        new Prisma.Decimal(call.data.total).toString(),
+      );
+    });
+  });
+
+  describe('regresión — esOwner ahora es obligatorio, pero sin discounts sigue funcionando como T4.1/T4.2', () => {
+    it('discounts ausente, esOwner: false: descuento_total en 0, total == subtotal, igual que antes de T4.3', async () => {
+      const variant = buildVariantRow({
+        id: 10,
+        stockActual: 5,
+        precioVenta: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([variant]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input: CrearVentaInputT43 = {
+        userId: 7,
+        esOwner: false,
+        items: [{ variantId: 10, cantidad: 1 }],
+        payments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+        ],
+      };
+
+      await service.crearVenta(asTx(tx), input);
+
+      const call = tx.sale.create.mock.calls[0][0];
+      expect(new Prisma.Decimal(call.data.descuentoTotal).toString()).toBe(
+        '0',
+      );
+      expect(new Prisma.Decimal(call.data.total).toString()).toBe('100');
+    });
   });
 });
