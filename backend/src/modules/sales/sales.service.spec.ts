@@ -265,6 +265,9 @@ interface SaleCreateCall {
     payments: { create: PaymentCreateInput[] };
     // Opcional: T4.1/T4.2 nunca lo mandaban (descuento_total fijo en 0).
     discounts?: { create: SaleDiscountCreateInput[] };
+    // T4.5 (RN-9, AD-10) — opcional acá porque T4.1-T4.4 nunca lo mandaban;
+    // se vuelve el foco de esta sección de tests.
+    idempotencyKey?: string;
   };
 }
 
@@ -405,6 +408,29 @@ interface CrearVentaInputT43 {
   }>;
   discounts?: DiscountInputT43[];
   esOwner: boolean;
+}
+
+// ─── T4.5 — idempotencia (RN-9, AD-10, BLUEPRINT §9.7) ───────────────────
+//
+// Fuente única: `ROADMAP.md` (T4.5) y su alcance real ya decidido de
+// antemano (no reinterpretado acá): `crearVenta` acepta un nuevo campo
+// obligatorio `idempotencyKey: string`, que se persiste tal cual en
+// `sales.idempotency_key` (`tx.sale.create({ data: { ...,
+// idempotencyKey: input.idempotencyKey } })`) — ya `@unique` en el schema
+// desde la fase 01. `crearVenta` NO envuelve su propia llamada con
+// `withIdempotency`: recibe el `tx` ya abierto por quien llama (nunca abre
+// su propia transacción, contrato de T4.1), y `withIdempotency` necesita
+// hacer una lectura de recuperación DESPUÉS de que la transacción que
+// falló ya terminó — esa responsabilidad es de quien abre la transacción
+// (el futuro `SalesController`, T4.10/T4.11, todavía no existe). Esta
+// sesión NO leyó `sales.service.ts` — mismo tipo ampliado por variable
+// (no objeto literal inline) que `CrearVentaInputT43`, para que la
+// propiedad nueva no dispare "excess property" de TypeScript contra el
+// tipo real (todavía angosto) del parámetro — así el rojo que produce es
+// un rojo de aserción (el campo no se persiste), no un rojo de
+// compilación.
+interface CrearVentaInputT45 extends CrearVentaInputT43 {
+  idempotencyKey: string;
 }
 
 function buildService(deps: Deps): SalesService {
@@ -1758,5 +1784,94 @@ describe('SalesService.crearVenta — T4.4 pagos (RN-1 paso 5, invariantes 3 y 7
       expect(referencia).not.toBe('');
       expect(referencia).not.toBeUndefined();
     });
+  });
+});
+
+// ─── Fase 04a (T4.5) — agregado sobre lo de arriba, sesión aparte ─────────
+//
+// T4.5 ("Aplicar el interceptor de idempotencia a la venta") tiene el
+// alcance real recortado y decidido de antemano (ver `ROADMAP.md`, nota de
+// esta fecha bajo la Etapa 4, y el propio ticket): `sales` no tiene
+// `SalesController` ni módulo Nest todavía (T4.1-T4.4 construyeron
+// únicamente `SalesService`, a propósito — los controllers son
+// T4.10/T4.11), así que no hay ninguna ruta HTTP donde aplicar
+// `IdempotencyInterceptor`/`@IdempotencyKey()` de verdad. Lo que sí es
+// responsabilidad de este ticket: (1) `crearVenta` acepta
+// `idempotencyKey: string` obligatorio, (2) lo persiste tal cual en
+// `sales.idempotency_key` vía `tx.sale.create`, (3) NO lo envuelve con
+// `withIdempotency` (esa responsabilidad es de quien abre la transacción
+// — el futuro controller). El mecanismo de punta a punta (índice único +
+// `withIdempotency`) ya está probado empíricamente contra Postgres real en
+// `test/integration/sales-idempotency.integration.spec.ts`, envolviendo
+// manualmente `prisma.$transaction((tx) => salesService.crearVenta(tx,
+// input))` con `withIdempotency`, exactamente como lo haría el futuro
+// controller — no se prueba acá contra un mock, porque lo que hay que
+// probar (violación real de unicidad bajo choque) un mock no lo reproduce.
+//
+// Esta sesión no abrió `sales.service.ts`. Fuente: `ROADMAP.md` (T4.5),
+// `BLUEPRINT.md` §9.7 y AD-10 (sección 2),
+// `state/reports/modulo-sales-spec.md` RN-9, `schema.prisma`
+// (`sales.idempotency_key`, `String? @unique`, ya confirmado desde la fase
+// 01), y `common/idempotency/idempotency.util.ts`/`idempotency.interceptor.ts`
+// (infraestructura ya construida en T0.14, leídos completos como tooling,
+// no como lógica de negocio de `sales`).
+describe('SalesService.crearVenta — T4.5 idempotencia (RN-9, AD-10, §9.7)', () => {
+  it('pasa el idempotencyKey recibido tal cual a tx.sale.create, sin transformarlo', async () => {
+    const variant = buildVariantRow({ id: 10, stockActual: 5 });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+    const key = 'idem-key-11111111-2222-3333-4444-555555555555';
+
+    const input: CrearVentaInputT45 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: key,
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await service.crearVenta(asTx(tx), input);
+
+    expect(tx.sale.create).toHaveBeenCalledTimes(1);
+    const call = tx.sale.create.mock.calls[0][0];
+    expect(call.data.idempotencyKey).toBe(key);
+  });
+
+  it('dos ventas distintas (idempotencyKey distinta en cada una) persisten cada una su propia clave, sin pisarse entre sí', async () => {
+    const variant = buildVariantRow({ id: 10, stockActual: 10 });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const inputA: CrearVentaInputT45 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'key-a-11111111-2222-3333-4444-555555555555',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+    const inputB: CrearVentaInputT45 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'key-b-11111111-2222-3333-4444-555555555555',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+      ],
+    };
+
+    await service.crearVenta(asTx(tx), inputA);
+    await service.crearVenta(asTx(tx), inputB);
+
+    expect(tx.sale.create).toHaveBeenCalledTimes(2);
+    const callA = tx.sale.create.mock.calls[0][0];
+    const callB = tx.sale.create.mock.calls[1][0];
+    expect(callA.data.idempotencyKey).toBe(inputA.idempotencyKey);
+    expect(callB.data.idempotencyKey).toBe(inputB.idempotencyKey);
   });
 });
