@@ -208,7 +208,7 @@ El módulo más crítico del sistema.
 | T4.5 | Aplicar el interceptor de idempotencia (T0.14) a la venta | T4.1, T0.14 | VERDE (alcance recortado por falta de controller, ver nota) |
 | T4.6 | **Ajuste de redondeo** + tests de las reglas de redondeo (§9.3) | T4.4, T0.12 | VERDE |
 | T4.7 | Anulación de venta: revierte stock y caja con movimientos nuevos | T4.4, **T3.2** | VERDE |
-| T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | PENDIENTE |
+| T4.8 | Tests de invariantes 3, 4, 5 y 7 | T4.6 | VERDE |
 | T4.9 | Test de concurrencia: dos ventas simultáneas de la última unidad | T4.1 | PENDIENTE |
 | T4.10 | **Pantalla de venta con teclado y lector** (blueprint §12.1) | T4.5, T4.6 | PENDIENTE |
 | T4.11 | Pantalla de cobro: medios de pago, saldo pendiente, vuelto | T4.10 | PENDIENTE |
@@ -293,6 +293,20 @@ completa en la sección 12.1 del blueprint.
 > siempre, desde el paso 1 — asignado a **T4.1**. Ver
 > `state/reports/modulo-sales-spec.md` secciones 3 y 5 para el detalle
 > completo de los tres.
+>
+> **T4.8 construyó más que "solo tests" (2026-08-25):** el título
+> ("Tests de invariantes 3, 4, 5 y 7") es engañoso — `BLUEPRINT.md` §6
+> exige que las "tres primeras" invariantes (1 `stock`, 2 `cash-registers`,
+> 3 `sales`) tengan además "un chequeo de reconciliación ejecutable", no
+> solo un test. Mismo patrón de título ya usado dos veces en este roadmap
+> para ese propósito exacto: **T2.8** ("Test de reconciliación del
+> invariante 1") construyó `StockService.reconciliar()`; **T3.6** ("Test
+> del invariante 2") construyó `CashRegisterService.reconciliar()`. T4.8
+> sigue el mismo criterio y construye `SalesService.reconciliar()` para
+> el invariante 3. Además, siguiendo la recomendación explícita de
+> `state/reports/modulo-sales-spec.md` sección 9, se agregaron también
+> tests dedicados de los invariantes 12 y 13/15 (no listados en la fila
+> de arriba, pero "invariantes que este módulo sí garantiza").
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
