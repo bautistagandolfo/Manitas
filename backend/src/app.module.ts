@@ -24,6 +24,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { AuthGuard } from './common/auth/auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
 import { jsonOnlyMiddleware } from './common/security/json-only.middleware';
+import { OriginCheckMiddleware } from './common/security/origin-check.middleware';
 
 @Module({
   imports: [
@@ -102,6 +103,16 @@ export class AppModule implements NestModule, OnModuleInit {
     // existían. Vía configure() (no en main.ts) para que también corra
     // en los tests de integración, que arman la app con TestingModule +
     // createNestApplication() sin pasar por bootstrap().
-    consumer.apply(helmet(), jsonOnlyMiddleware, cookieParser()).forRoutes('*');
+    // OriginCheckMiddleware: fase 10 de `sales` (hallazgo HIGH matizado
+    // de la fase 09, CSRF) — segunda barrera independiente de CORS, ver
+    // el comentario del archivo.
+    consumer
+      .apply(
+        helmet(),
+        jsonOnlyMiddleware,
+        OriginCheckMiddleware,
+        cookieParser(),
+      )
+      .forRoutes('*');
   }
 }

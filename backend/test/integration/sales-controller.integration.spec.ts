@@ -11,7 +11,9 @@ import {
 } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'node:crypto';
+import { ConfigService } from '@nestjs/config';
 import { AppModule } from '../../src/app.module';
+import type { EnvConfig } from '../../src/config/env.schema';
 
 // Fase 04a (T4.11) — tests de integración HTTP escritos ANTES de la
 // implementación, sesión aislada (sin visibilidad del resto de la
@@ -57,6 +59,7 @@ describe('sales-controller (integration, T4.11)', () => {
   let sellerId: number;
   let ownerCookie: string;
   let sellerCookie: string;
+  let frontendUrl: string;
 
   const createdUserIds: number[] = [];
   const createdProductIds: number[] = [];
@@ -143,6 +146,10 @@ describe('sales-controller (integration, T4.11)', () => {
 
     app = moduleFixture.createNestApplication();
     await app.init();
+
+    frontendUrl = moduleFixture
+      .get<ConfigService<EnvConfig, true>>(ConfigService)
+      .get('FRONTEND_URL', { infer: true });
 
     const passwordHash = await argon2.hash('password123');
 
@@ -504,6 +511,39 @@ describe('sales-controller (integration, T4.11)', () => {
         })
         .expect(400);
     });
+
+    // Fase 10 (security remediation) — hallazgo LOW de la fase 09 (sección
+    // 6): sin `@ArrayMaxSize`, este body pasaba la validación de forma
+    // íntegro. 501 líneas > el máximo de 500 de `CreateSaleDto`.
+    it('caso 12b — más de 500 líneas en items → 400, rechazado antes de tocar crearVenta', async () => {
+      const variant = await createVariant({ stockActual: 1000 });
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          items: Array.from({ length: 501 }, () => ({
+            variantId: variant.id,
+            cantidad: 1,
+          })),
+          payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
+        })
+        .expect(400);
+    });
+
+    it('caso 12c — más de 20 pagos → 400', async () => {
+      const variant = await createVariant({ stockActual: 5 });
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          items: [{ variantId: variant.id, cantidad: 1 }],
+          payments: Array.from({ length: 21 }, () => ({
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: '1.00',
+          })),
+        })
+        .expect(400);
+    });
   });
 
   describe('autenticación y autorización', () => {
@@ -552,6 +592,54 @@ describe('sales-controller (integration, T4.11)', () => {
         where: { id: variant.id },
       });
       expect(variantAfter?.stockActual).toBe(5);
+    });
+
+    // Fase 10 (security remediation) — hallazgo HIGH matizado de la fase
+    // 09 (CSRF, `state/reports/modulo-sales-secaudit-2026-08-25.md`,
+    // sección 9): un fetch()/XHR cross-origin con la cookie real de una
+    // víctima logueada, mandando `Content-Type: application/json` (el
+    // único vector que pasa `jsonOnlyMiddleware`), tiene que rechazarse
+    // ANTES de tocar la sesión o el negocio si el header `Origin` no
+    // coincide con `FRONTEND_URL` — `OriginCheckMiddleware`, segunda
+    // barrera independiente de que el preflight de CORS esté bien
+    // configurado.
+    it('caso 15 — Origin cross-site (simula un atacante con la cookie real de la víctima) → 403, nada escrito', async () => {
+      await abrirSesion(owned);
+      const variant = await createVariant({ stockActual: 5 });
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', randomUUID())
+        .set('Origin', 'https://evil.example.com')
+        .send({
+          items: [{ variantId: variant.id, cantidad: 1 }],
+          payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
+        })
+        .expect(403);
+
+      const variantAfter = await prisma.variant.findUnique({
+        where: { id: variant.id },
+      });
+      expect(variantAfter?.stockActual).toBe(5);
+    });
+
+    it('caso 16 — Origin que coincide con FRONTEND_URL (el frontend legítimo real) → sigue funcionando, 201', async () => {
+      await abrirSesion(owned);
+      const variant = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+
+      const response = await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', randomUUID())
+        .set('Origin', frontendUrl)
+        .send({
+          items: [{ variantId: variant.id, cantidad: 1 }],
+          payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
+        })
+        .expect(201);
+
+      const body = response.body as { id: number };
+      createdSaleIds.push(body.id);
     });
   });
 });

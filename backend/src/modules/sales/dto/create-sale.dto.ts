@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsDecimal,
@@ -70,21 +71,37 @@ export class SalePaymentDto {
 // el controller (`user.rol === 'OWNER'`), nunca de algo que mande el
 // cliente. Si el cliente igual lo manda, `forbidNonWhitelisted` (pipe
 // global) lo rechaza con 400 antes de llegar al handler.
+// Fase 10 (security remediation) — hallazgo LOW de la fase 09 (sección 6
+// del reporte de auditoría): sin cota superior, un body con decenas de
+// miles de líneas pasaba la validación de forma (cada entrada individual
+// es válida) y llegaba íntegro a `crearVenta`, que arma un
+// `Prisma.join(variantIds)` y un `tx.sale.create` nested de esa misma
+// longitud — consumo de memoria/tiempo de un único request y una
+// transacción más larga, sin ninguna ganancia de negocio real (una venta
+// de mostrador no tiene cientos de líneas). 500 como techo generoso: muy
+// por encima de cualquier venta real, sin inventar un límite de negocio
+// más ajustado que el blueprint no pide (mismo criterio que
+// `create-variant-grid.dto.ts`, `@ArrayMaxSize(1000)` para su grilla).
+// `payments`/`discounts` casi siempre son de un dígito — 20 es igual de
+// generoso para el caso real de pagos partidos en varios medios.
 export class CreateSaleDto {
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayMaxSize(500)
   @ValidateNested({ each: true })
   @Type(() => SaleItemDto)
   items!: SaleItemDto[];
 
   @IsArray()
   @ArrayNotEmpty()
+  @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => SalePaymentDto)
   payments!: SalePaymentDto[];
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => SaleDiscountDto)
   discounts?: SaleDiscountDto[];
