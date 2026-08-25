@@ -2027,16 +2027,17 @@ describe('SalesService.crearVenta — T4.6 ajuste de redondeo (RN-6, AD-14, inva
         idempotencyKey: 'idem-test-key',
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
         ],
       };
 
       await service.crearVenta(asTx(tx), input);
 
       const call = tx.sale.create.mock.calls[0][0];
-      expect(new Prisma.Decimal(call.data.ajusteRedondeo).toString()).toBe(
-        '0',
-      );
+      expect(new Prisma.Decimal(call.data.ajusteRedondeo).toString()).toBe('0');
       expect(new Prisma.Decimal(call.data.total).toString()).toBe('100');
     });
   });

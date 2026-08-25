@@ -29,11 +29,7 @@ import {
 // abierta por quien llama (mismo contrato que `stock.service.ts`/
 // `cash-register.service.ts`) — nunca abre la suya propia.
 //
-// Alcance de este ticket, sin `discounts` (T4.3) ni `ajusteRedondeo`
-// explícito (T4.6): con ambos fijos en 0, `neto_linea = subtotal_linea`
-// coincide exactamente con lo que el prorrateo general (AD-18) daría en
-// este caso — no se reimplementa acá, queda para cuando haya descuento o
-// ajuste real. Sin idempotencia (T4.5) ni anulación (T4.7) todavía.
+// Sin anulación (T4.7) todavía.
 
 export interface CrearVentaItemInput {
   variantId: number;
@@ -73,6 +69,10 @@ export interface CrearVentaInput {
   // transacción — el futuro `SalesController` (T4.10/T4.11) — nunca
   // `crearVenta`, que no es dueño de su propio `tx`.
   idempotencyKey: string;
+  // T4.6 (RN-6, AD-14): lo carga quien cobra, el sistema nunca lo calcula
+  // solo — opcional, default 0 (mantiene el comportamiento de T4.1-T4.5
+  // para quien no lo manda).
+  ajusteRedondeo?: Prisma.Decimal.Value;
 }
 
 @Injectable()
@@ -245,8 +245,29 @@ export class SalesService {
       }
     }
 
-    const ajusteRedondeo = new Prisma.Decimal(0);
+    // T4.6 (RN-6): |ajuste_redondeo| < 1, siempre — lo carga quien cobra,
+    // nunca lo calcula el sistema solo.
+    const ajusteRedondeo =
+      input.ajusteRedondeo !== undefined
+        ? new Prisma.Decimal(input.ajusteRedondeo)
+        : new Prisma.Decimal(0);
+    if (ajusteRedondeo.abs().greaterThanOrEqualTo(1)) {
+      throw new BadRequestException(
+        'El ajuste de redondeo debe ser menor a $1 en valor absoluto',
+      );
+    }
+
     const total = subtotal.minus(descuentoTotal).plus(ajusteRedondeo);
+
+    // Invariante 4 (hallazgo real, spec sección 3): `total >= 0` no se
+    // sigue automáticamente de `0 <= descuento_total <= subtotal` y
+    // `|ajuste_redondeo| < 1` combinados — un ajuste negativo puede dejarlo
+    // en negativo igual.
+    if (total.isNegative()) {
+      throw new BadRequestException(
+        'El ajuste de redondeo deja el total en negativo',
+      );
+    }
 
     // Paso 7c (AD-18/RN-5): prorratea el total real a cada línea — con
     // descuento 0 (camino de T4.1/T4.2), `prorate` devuelve exactamente
