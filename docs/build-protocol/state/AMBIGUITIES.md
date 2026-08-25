@@ -32,6 +32,7 @@ curso que haya generado ambigüedades propias).
 | AMB-11 | ⚠️ ALTO | `products` / `variants` | ¿`SELLER` puede editar `precioVenta` manual, cargar costo en la grilla, o hacer ingreso de mercadería? | `OWNER`-only para las tres | Etapa 2 completa (T2.3, T2.5, T2.11), Fase 06 de `products`/`variants` | RESUELTA — `OWNER`-only las tres | Sí |
 | AMB-12 | MEDIO | `products` / `variants` (carga inicial) | Formato de columnas del CSV de importación | Plantilla propia, ajustable si B4 revela un formato existente | T2.13 (nuevo) | RESUELTA — plantilla propia | Sí |
 | AMB-13 | ⚠️ ALTO | `cash-registers` | ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? | `OWNER`-only para ambas | T3.3, Fase 06 de `cash-registers` | RESUELTA — `OWNER`-only las dos | Sí |
+| AMB-14 | ⚠️ ALTO | `sales` | Mecanismo de autorización de `OWNER` para un descuento por encima del tope, en el momento de la venta | Campo de contraseña de `OWNER` en el formulario, verificado por el backend sin cambiar la sesión activa | T4.3, Fase 06 de `sales` | PENDIENTE | — |
 
 ---
 
@@ -483,3 +484,63 @@ dos endpoints depende de esta respuesta.
 
 **Resolución (2026-08-24):** RESUELTA. El PO aprobó la recomendación:
 `OWNER`-only para `INGRESO_MANUAL` y `RETIRO`. **T3.3 desbloqueado.**
+
+## AMB-14 — Mecanismo de autorización de `OWNER` para un descuento por encima del tope ⚠️ ALTO RIESGO
+
+**Ubicación:** módulo `sales` (BLUEPRINT §5.3, AMB-3;
+`state/reports/modulo-sales-spec.md`, secciones 4.1, 8 y 10).
+
+**Descripción:** AMB-3 ya confirmó el **número** — hasta 10%
+(`max_descuento_vendedor_pct`) lo aplica cualquier vendedor, por
+encima requiere autorización de un `OWNER`, registrada en
+`sale_discounts.autorizado_por_user_id`. Lo que el blueprint nunca
+especifica es **cómo** ocurre esa autorización en el momento real de
+la venta: quien está cobrando en el mostrador es la `SELLER`, logueada
+con su propia sesión — no hay una sesión de `OWNER` activa a la que
+"pedirle permiso" con un clic.
+
+**Por qué no se resuelve solo con el código:** es una decisión de
+producto sobre el flujo físico del mostrador, no una regla derivable
+del modelo de datos. La columna `autorizado_por_user_id` ya existe
+(fase 01) y acepta cualquier `user_id` de un `OWNER` — pero *cómo* se
+llena ese campo de forma segura (sin que una `SELLER` pueda mandar el
+id de un `OWNER` real sin que ese `OWNER` haya hecho nada) es
+enteramente una decisión de UX + seguridad que el blueprint no toma.
+
+**Pregunta para el PO:** cuando una vendedora necesita aplicar un
+descuento mayor al 10%, ¿cómo se espera que la dueña lo autorice en el
+momento? Opciones típicas de punto de venta:
+
+1. **Contraseña de supervisor:** un campo de contraseña aparece en el
+   formulario de descuento; la vendedora le pide a la dueña que la
+   tipee ahí mismo (sin cerrar la sesión de la vendedora). El backend
+   verifica esa contraseña contra un usuario `OWNER` real (mismo
+   mecanismo de hash que el login, sin emitir un JWT nuevo ni cambiar
+   la cookie de sesión activa) y, si coincide, completa
+   `autorizado_por_user_id` con el id de ese `OWNER`.
+2. **La dueña hace el descuento ella misma:** la vendedora le pasa el
+   mostrador o pide que la dueña se loguee un momento en esa
+   estación. Sin desarrollo extra, pero interrumpe la venta y no
+   funciona si la dueña no está físicamente presente.
+3. **Aprobación asincrónica:** la venta queda en un estado
+   "pendiente de autorización" y la dueña la aprueba después, desde su
+   propio dispositivo. Mucho más desarrollo (estado nuevo, notificación,
+   pantalla de aprobación) para un caso que en una tienda chica es
+   probablemente raro.
+
+**RECOMENDACIÓN:** opción 1 (contraseña de supervisor). Es el patrón
+estándar de la industria retail para este problema exacto, no agrega
+un estado nuevo a la venta (sigue siendo una operación atómica de un
+solo paso), y no depende de que la dueña esté físicamente disponible
+para loguearse — solo de que sepa su contraseña, que ya tiene que
+saber para todo lo demás del sistema.
+
+**RIESGO DE LA RECOMENDACIÓN:** requiere que el backend exponga un
+mecanismo de verificación de contraseña que no es un login completo
+(no emite cookie, no cambia `req.user`) — una superficie nueva, chica
+pero real, que la fase 09 de este módulo va a tener que auditar con
+cuidado (por ejemplo, que no sea vulnerable a fuerza bruta sin rate
+limiting, ya que a diferencia de `/auth/login` hoy no tiene uno).
+
+**Bloquea a:** T4.3 y la parte de la Fase 06 de `sales` que depende de
+esta respuesta — el resto del módulo (T4.1, T4.2, T4.4–T4.11) no.

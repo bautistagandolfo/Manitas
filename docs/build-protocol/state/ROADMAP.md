@@ -217,6 +217,44 @@ El módulo más crítico del sistema.
 El flujo completo tiene que poder hacerse sin tocar el mouse. Especificación
 completa en la sección 12.1 del blueprint.
 
+> **T4.3 bloqueada por AMB-14 (fase 06 de este módulo, nueva):** el
+> blueprint confirma el tope de descuento del vendedor (10%, AMB-3)
+> pero no dice **cómo** un `OWNER` autoriza en el momento un descuento
+> que lo supera, con la vendedora logueada en el mostrador y sin
+> sesión de `OWNER` activa. Recomendación: contraseña de supervisor,
+> verificada por el backend sin cambiar la sesión activa. Ver
+> `state/AMBIGUITIES.md` AMB-14 y `state/reports/modulo-sales-spec.md`
+> sección 10. **T4.1, T4.2, T4.4–T4.11 no dependen de esta respuesta y
+> pueden avanzar ya.**
+>
+> **Hallazgo técnico (fase 06 de este módulo): `stock.service.ts`
+> (`products`/`stock`, ya VERDE) no expone lo que `sales` necesita
+> para descontar/revertir stock.** Su propia spec (fase 06 de
+> `products`/`variants`) había reservado `descontarPorVenta` y
+> `revertirPorAnulacion`, pero nunca se construyeron — la fase 07 de
+> ese módulo no lo detectó. No es una ambigüedad de negocio: agregar
+> `descontarPorVenta` (tipo `VENTA`, referencia a la venta, sin lock
+> propio — lo toma `sales.service` una sola vez por todas las
+> variantes) pasa a ser requisito de **T4.1**; `revertirPorAnulacion`,
+> de **T4.7**. Ver `state/reports/modulo-sales-spec.md` sección 4.2
+> para las firmas exactas.
+>
+> **Hallazgos técnicos menores (fase 06 de este módulo), incorporados
+> a sus tickets sin agregar tickets nuevos:** `total >= 0` no se sigue
+> automáticamente de las otras reglas del invariante 4 (un
+> `ajuste_redondeo` negativo puede dejarlo en negativo aunque
+> `descuento_total` sea válido) — validación explícita + `CHECK` de
+> base recomendado, asignado a **T4.6**. `0 ≤ descuento_total ≤
+> subtotal` sin `CHECK` de base — asignado a **T4.3**. El chequeo de
+> "hay sesión de caja abierta" (paso 1 del flujo, §5.3) no toma lock
+> hoy, y el único lock real de la sesión ocurre recién al registrar el
+> movimiento de caja — que no se ejecuta si la venta no tiene ningún
+> pago en efectivo, dejando una ventana de concurrencia angosta para
+> ventas 100% tarjeta. Recomendado que `sales.service` tome ese lock
+> siempre, desde el paso 1 — asignado a **T4.1**. Ver
+> `state/reports/modulo-sales-spec.md` secciones 3 y 5 para el detalle
+> completo de los tres.
+
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
 ---
