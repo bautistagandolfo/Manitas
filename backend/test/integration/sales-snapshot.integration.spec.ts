@@ -121,6 +121,7 @@ describe('sales — descripcion_snapshot y congelado de precio/costo (T4.2, inte
     const sale = await prisma.$transaction((tx) =>
       salesService.crearVenta(tx, {
         userId: sellerId,
+        esOwner: true,
         items: [{ variantId, cantidad: 1 }],
         payments: [
           { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal(monto) },

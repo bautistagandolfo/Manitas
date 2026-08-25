@@ -392,7 +392,7 @@ function buildDeps(overrides: Partial<Deps> = {}): Deps {
 interface DiscountInputT43 {
   descripcion: string;
   porcentaje?: Prisma.Decimal.Value;
-  monto: Prisma.Decimal.Value;
+  monto?: Prisma.Decimal.Value;
 }
 
 interface CrearVentaInputT43 {
@@ -703,6 +703,7 @@ describe('SalesService.crearVenta', () => {
           getBool: jest
             .fn<Promise<boolean>, [string]>()
             .mockResolvedValue(true),
+          getInt: jest.fn<Promise<number>, [string]>().mockResolvedValue(10),
         },
       });
       const service = buildService(deps);
@@ -967,7 +968,10 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
           { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('0') },
         ],
         discounts: [
-          { descripcion: 'Descuento excesivo', monto: new Prisma.Decimal('150.00') },
+          {
+            descripcion: 'Descuento excesivo',
+            monto: new Prisma.Decimal('150.00'),
+          },
         ],
       };
 
@@ -1000,7 +1004,10 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
           { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('0') },
         ],
         discounts: [
-          { descripcion: 'Descuento excesivo', monto: new Prisma.Decimal('101.00') },
+          {
+            descripcion: 'Descuento excesivo',
+            monto: new Prisma.Decimal('101.00'),
+          },
         ],
       };
 
@@ -1027,7 +1034,12 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         userId: 7,
         esOwner: false,
         items: [{ variantId: 10, cantidad: 1 }],
-        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1000.00').minus(monto) }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('1000.00').minus(monto),
+          },
+        ],
         discounts: [{ descripcion: 'Promo 8%', porcentaje: '8', monto }],
       };
 
@@ -1050,7 +1062,12 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         userId: 7,
         esOwner: false,
         items: [{ variantId: 10, cantidad: 1 }],
-        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1000.00').minus(monto) }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('1000.00').minus(monto),
+          },
+        ],
         discounts: [{ descripcion: 'Promo 15%', porcentaje: '15', monto }],
       };
 
@@ -1082,7 +1099,9 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         payments: [
           {
             metodo: PaymentMetodo.EFECTIVO,
-            monto: new Prisma.Decimal('1000.00').minus(montoCadaUno).minus(montoCadaUno),
+            monto: new Prisma.Decimal('1000.00')
+              .minus(montoCadaUno)
+              .minus(montoCadaUno),
           },
         ],
         discounts: [
@@ -1112,8 +1131,15 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         userId: 7,
         esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
-        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('1000.00').minus(monto) }],
-        discounts: [{ descripcion: 'Descuento de la dueña', porcentaje: '50', monto }],
+        payments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('1000.00').minus(monto),
+          },
+        ],
+        discounts: [
+          { descripcion: 'Descuento de la dueña', porcentaje: '50', monto },
+        ],
       };
 
       await expect(service.crearVenta(asTx(tx), input)).resolves.toBeDefined();
@@ -1140,10 +1166,16 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         esOwner: true,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('450.00') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('450.00'),
+          },
         ],
         discounts: [
-          { descripcion: 'Descuento manual', monto: new Prisma.Decimal('50.00') },
+          {
+            descripcion: 'Descuento manual',
+            monto: new Prisma.Decimal('50.00'),
+          },
         ],
       };
 
@@ -1177,10 +1209,16 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         esOwner: false,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('475.00') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('475.00'),
+          },
         ],
         discounts: [
-          { descripcion: 'Descuento manual chico', monto: new Prisma.Decimal('25.00') },
+          {
+            descripcion: 'Descuento manual chico',
+            monto: new Prisma.Decimal('25.00'),
+          },
         ],
       };
 
@@ -1261,10 +1299,16 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
           { variantId: 30, cantidad: 1 },
         ],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('27.00') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('27.00'),
+          },
         ],
         discounts: [
-          { descripcion: 'Descuento variado', monto: new Prisma.Decimal('3.01') },
+          {
+            descripcion: 'Descuento variado',
+            monto: new Prisma.Decimal('3.01'),
+          },
         ],
       };
 
@@ -1276,10 +1320,9 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
       const netos = call.data.items.create.map((item) =>
         new Prisma.Decimal(item.netoLinea).toFixed(2),
       );
-      const expectedNetos = prorate(
-        ['10.00', '10.00', '10.01'],
-        '27.00',
-      ).map((n) => n.toFixed(2));
+      const expectedNetos = prorate(['10.00', '10.00', '10.01'], '27.00').map(
+        (n) => n.toFixed(2),
+      );
       expect(netos).toEqual(expectedNetos);
 
       const sumNetos = call.data.items.create.reduce(
@@ -1306,10 +1349,16 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         esOwner: true, // 15% > tope del 10% del vendedor
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('2549.15') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('2549.15'),
+          },
         ],
         discounts: [
-          { descripcion: 'Descuento 15%', porcentaje: new Prisma.Decimal('15') },
+          {
+            descripcion: 'Descuento 15%',
+            porcentaje: new Prisma.Decimal('15'),
+          },
         ],
       };
 
@@ -1351,10 +1400,17 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         esOwner: false,
         items: [{ variantId: 10, cantidad: 2 }],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('360.00') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('360.00'),
+          },
         ],
         discounts: [
-          { descripcion: 'Descuento 10%', porcentaje: '10', monto: new Prisma.Decimal('40.00') },
+          {
+            descripcion: 'Descuento 10%',
+            porcentaje: '10',
+            monto: new Prisma.Decimal('40.00'),
+          },
         ],
       };
 
@@ -1407,16 +1463,17 @@ describe('SalesService.crearVenta — T4.3 descuentos (RN-4, RN-5, invariante 4,
         esOwner: false,
         items: [{ variantId: 10, cantidad: 1 }],
         payments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('100.00') },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
         ],
       };
 
       await service.crearVenta(asTx(tx), input);
 
       const call = tx.sale.create.mock.calls[0][0];
-      expect(new Prisma.Decimal(call.data.descuentoTotal).toString()).toBe(
-        '0',
-      );
+      expect(new Prisma.Decimal(call.data.descuentoTotal).toString()).toBe('0');
       expect(new Prisma.Decimal(call.data.total).toString()).toBe('100');
     });
   });

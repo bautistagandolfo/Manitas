@@ -9,13 +9,19 @@ import {
   PaymentMetodo,
   Prisma,
   Sale,
+  SaleDiscountTipo,
 } from '@prisma/client';
 import { StockService } from '../stock/stock.service';
 import { CashRegisterService } from '../cash-registers/cash-register.service';
 import { SettingsService } from '../../common/settings/settings.service';
 import { SETTINGS_KEYS } from '../../common/settings/settings-keys';
 import { PrismaService } from '../../prisma/prisma.service';
-import { lineSubtotal, roundCurrency } from '../../common/money/money.util';
+import {
+  applyPercentage,
+  lineSubtotal,
+  prorate,
+  roundCurrency,
+} from '../../common/money/money.util';
 
 // T4.1 — servicio de venta transaccional (BLUEPRINT §5.3, RN-1 a RN-9 de
 // `modulo-sales-spec.md`). Recibe siempre el `tx` de una transacción ya
@@ -39,10 +45,27 @@ export interface CrearVentaPaymentInput {
   referencia?: string;
 }
 
+// T4.3 — descuento manual (único `tipo` del MVP). Con `porcentaje`, el
+// servicio calcula `monto` él mismo vía `applyPercentage` — nunca confía
+// en que quien llama ya lo haya calculado bien, así que un `monto`
+// mandado junto con `porcentaje` se ignora. Sin `porcentaje`, `monto` es
+// obligatorio (se rechaza si falta).
+export interface CrearVentaDiscountInput {
+  descripcion: string;
+  porcentaje?: Prisma.Decimal.Value;
+  monto?: Prisma.Decimal.Value;
+}
+
 export interface CrearVentaInput {
   userId: number;
   items: CrearVentaItemInput[];
   payments: CrearVentaPaymentInput[];
+  discounts?: CrearVentaDiscountInput[];
+  // T4.3 — mismo patrón que `esOwner` en `cash-register.service.cerrarSesion`:
+  // lo resuelve el controller a partir de `user.rol` (JWT verificado),
+  // nunca se confía en algo que mande el cliente. Obligatorio: no hay un
+  // default seguro para "no sé qué rol es quien vende".
+  esOwner: boolean;
 }
 
 @Injectable()
@@ -121,11 +144,11 @@ export class SalesService {
       }
     }
 
-    // Paso 7 (AD-5, AD-18 trivial sin descuento/ajuste): congelar precio y
-    // costo por línea, calcular subtotal. `neto_linea`/`neto_unitario`
-    // coinciden con `subtotal_linea` porque `descuento_total` y
-    // `ajuste_redondeo` están fijos en 0 en este ticket.
-    const itemsData = input.items.map((item) => {
+    // Paso 7 (AD-5): congelar precio y costo por línea, calcular subtotal.
+    // `neto_linea`/`neto_unitario` no se calculan todavía acá — dependen del
+    // `total` final (AD-18/RN-5, prorrateo), que recién se conoce después de
+    // resolver el descuento (paso 7b).
+    const itemsBase = input.items.map((item) => {
       const variant = variantById.get(item.variantId);
       if (!variant) {
         throw new BadRequestException(
@@ -137,8 +160,8 @@ export class SalesService {
       // de vender"): talle y color se omiten si la variante no los tiene
       // (AD-15, ambos nullable) — nunca aparece "null"/"undefined" en el
       // texto. Formato sin especificar por el blueprint ni por la spec del
-      // módulo (AMB señalada en la fase 04a de este ticket, no bloqueante);
-      // se elige uno legible y estable, no hay margen de negocio en juego.
+      // módulo (AMB señalada en la fase 04a de T4.2, no bloqueante); se
+      // elige uno legible y estable, no hay margen de negocio en juego.
       const descripcionSnapshot = [
         variant.product.nombre,
         variant.size?.nombre,
@@ -154,18 +177,83 @@ export class SalesService {
         precioUnitario: variant.precioVenta,
         costoUnitario: variant.costoActual,
         subtotal: subtotalLinea,
-        netoLinea: subtotalLinea,
-        netoUnitario: roundCurrency(subtotalLinea.dividedBy(item.cantidad)),
       };
     });
 
-    const subtotal = itemsData.reduce(
+    const subtotal = itemsBase.reduce(
       (acc, i) => acc.plus(i.subtotal),
       new Prisma.Decimal(0),
     );
-    const descuentoTotal = new Prisma.Decimal(0);
+
+    // Paso 7b (T4.3, RN-4): descuentos — `monto` de uno cargado como
+    // porcentaje se resuelve acá con `applyPercentage`, nunca se confía en
+    // que quien llama ya lo haya calculado bien.
+    const discountsData = (input.discounts ?? []).map((d) => {
+      if (d.porcentaje === undefined && d.monto === undefined) {
+        throw new BadRequestException(
+          `El descuento "${d.descripcion}" necesita un monto o un porcentaje`,
+        );
+      }
+      return {
+        tipo: SaleDiscountTipo.MANUAL,
+        descripcion: d.descripcion,
+        porcentaje:
+          d.porcentaje !== undefined ? new Prisma.Decimal(d.porcentaje) : null,
+        monto:
+          d.porcentaje !== undefined
+            ? applyPercentage(subtotal, d.porcentaje)
+            : new Prisma.Decimal(d.monto!),
+        // AMB-14 diferida (ver `state/AMBIGUITIES.md`): el mecanismo de
+        // autorización por contraseña de OWNER no se construye en este
+        // ticket — nunca se autoriza nada explícitamente todavía.
+        autorizadoPorUserId: null as number | null,
+      };
+    });
+    const descuentoTotal = discountsData.reduce(
+      (acc, d) => acc.plus(d.monto),
+      new Prisma.Decimal(0),
+    );
+
+    // Tope duro (invariante 4), siempre, para cualquier rol.
+    if (descuentoTotal.isNegative() || descuentoTotal.greaterThan(subtotal)) {
+      throw new BadRequestException(
+        'El descuento no puede superar el subtotal de la venta',
+      );
+    }
+
+    // Tope del vendedor (RN-4): se evalúa sobre el TOTAL descontado, nunca
+    // sumando cada descuento por separado — y solo si quien vende no es
+    // `OWNER` (una dueña no tiene límite de vendedora, RN-4/permiso). Sin
+    // mecanismo de autorización todavía (AMB-14 diferida): superarlo
+    // rechaza la venta directo.
+    if (!input.esOwner && !subtotal.isZero()) {
+      const maxDescuentoPct = await this.settingsService.getInt(
+        SETTINGS_KEYS.MAX_DESCUENTO_VENDEDOR_PCT,
+      );
+      const ratioAplicado = descuentoTotal.dividedBy(subtotal).times(100);
+      if (ratioAplicado.greaterThan(maxDescuentoPct)) {
+        throw new BadRequestException(
+          `El descuento supera el límite del vendedor (${maxDescuentoPct}%)`,
+        );
+      }
+    }
+
     const ajusteRedondeo = new Prisma.Decimal(0);
     const total = subtotal.minus(descuentoTotal).plus(ajusteRedondeo);
+
+    // Paso 7c (AD-18/RN-5): prorratea el total real a cada línea — con
+    // descuento 0 (camino de T4.1/T4.2), `prorate` devuelve exactamente
+    // `subtotal_linea` por línea, sin residuo, así que este paso no cambia
+    // el comportamiento ya probado ahí.
+    const netos = prorate(
+      itemsBase.map((i) => i.subtotal),
+      total,
+    );
+    const itemsData = itemsBase.map((item, index) => ({
+      ...item,
+      netoLinea: netos[index],
+      netoUnitario: roundCurrency(netos[index].dividedBy(item.cantidad)),
+    }));
 
     // Paso 8 (invariante 3): la suma de pagos tiene que ser EXACTAMENTE el
     // total, antes de escribir nada.
@@ -183,9 +271,8 @@ export class SalesService {
       referencia: p.referencia ?? null,
     }));
 
-    // Paso 9: crear la venta con líneas y pagos en una sola escritura
-    // nested — no hay ningún cálculo intermedio entre "crear sale+items" y
-    // "registrar payments" en este ticket sin descuentos.
+    // Paso 9: crear la venta con líneas, descuentos y pagos en una sola
+    // escritura nested.
     const sale = await tx.sale.create({
       data: {
         fecha: new Date(),
@@ -196,6 +283,7 @@ export class SalesService {
         ajusteRedondeo,
         total,
         items: { create: itemsData },
+        discounts: { create: discountsData },
         payments: { create: paymentsData },
       },
     });

@@ -63,7 +63,7 @@ const prisma = new PrismaClient();
 interface DiscountInputT43 {
   descripcion: string;
   porcentaje?: Prisma.Decimal.Value;
-  monto: Prisma.Decimal.Value;
+  monto?: Prisma.Decimal.Value;
 }
 
 interface CrearVentaInputT43 {
@@ -625,13 +625,10 @@ describe('sales — descuentos (integration, T4.3)', () => {
       expect(sumNetoLinea.toFixed(2)).toBe('27.00');
       expect(sumNetoLinea.toString()).toBe(dbSale.total.toString());
 
-      const expectedNetos = prorate(
-        ['10.00', '10.00', '10.01'],
-        '27.00',
-      ).map((n) => n.toFixed(2));
-      const actualNetos = dbSale.items.map((item) =>
-        item.netoLinea.toFixed(2),
+      const expectedNetos = prorate(['10.00', '10.00', '10.01'], '27.00').map(
+        (n) => n.toFixed(2),
       );
+      const actualNetos = dbSale.items.map((item) => item.netoLinea.toFixed(2));
       expect(actualNetos).toEqual(expectedNetos);
     });
 
