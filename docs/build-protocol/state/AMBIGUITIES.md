@@ -34,6 +34,7 @@ curso que haya generado ambigüedades propias).
 | AMB-13 | ⚠️ ALTO | `cash-registers` | ¿`SELLER` puede hacer ingreso manual o retiro de efectivo? | `OWNER`-only para ambas | T3.3, Fase 06 de `cash-registers` | RESUELTA — `OWNER`-only las dos | Sí |
 | AMB-14 | ⚠️ ALTO | `sales` | Mecanismo de autorización de `OWNER` para un descuento por encima del tope, en el momento de la venta | Campo de contraseña de `OWNER` en el formulario, verificado por el backend sin cambiar la sesión activa | T4.3, Fase 06 de `sales` | RESUELTA — contraseña de supervisor | Sí |
 | AMB-15 | MEDIO | `sales` / `products` | ¿Se puede vender una variante `activo: true` cuyo producto padre está `activo: false` (dado de baja)? | Bloquear en `crearVenta`, mismo criterio que RN-11 del buscador | ninguno nuevo (defensa en profundidad opcional) | PENDIENTE | — |
+| AMB-16 | ⚠️ ALTO | `returns` | ¿El crédito de una devolución (`CREDITO_DEVOLUCION`) se consume solo dentro del mismo flujo atómico de cambio, o queda disponible para usarse en una venta separada más adelante (nota de crédito)? | Solo atómico — coherente con AD-17 (sin cuenta corriente) y con el único flujo que el blueprint describe con precisión | T5.5, Fase 06 de `returns` | PENDIENTE | — |
 
 ---
 
@@ -623,3 +624,54 @@ producto primero (y volverlo a desactivar después).
 recomendación, es un cambio acotado a `sales.service.ts` paso 5b
 (agregar `product: { select: { activo: true } }` al `select` existente
 y extender la condición ya escrita ahí).
+
+---
+
+## AMB-16 — ¿Crédito de devolución atómico o diferido? ⚠️ ALTO RIESGO
+
+**Ubicación:** módulo `returns` (BLUEPRINT §5.4, invariante 14;
+`state/reports/modulo-returns-spec.md`, secciones 2 RN-9/RN-10, 5, 10).
+
+**Descripción:** el blueprint describe el `CAMBIO` como una secuencia
+de 4 pasos, **toda en una transacción** (crear la devolución, registrar
+un `return_payment` `CREDITO_DEVOLUCION`, crear la venta nueva con un
+`payment` `CREDITO_DEVOLUCION` que referencia la devolución, actualizar
+`sale_nueva_id`) — nunca menciona la posibilidad de que ese crédito
+quede disponible para usarse después, en una venta separada. Pero el
+modelo de datos (`payments.return_id`, columna general, no exclusiva
+del flujo atómico) y el invariante 14 ("la suma de los pagos
+`CREDITO_DEVOLUCION` que referencian una devolución nunca supera su
+`total_devuelto`") están redactados de forma genérica, sin acotar
+"dentro del mismo request" — dejando abierta la posibilidad de una nota
+de crédito diferida que el texto en prosa no confirma ni descarta con
+precisión.
+
+**Por qué no se resuelve solo con el código:** es una decisión de
+política comercial (¿la tienda ofrece crédito a favor de la clienta
+para usar otro día?), no algo que se derive de que un campo del schema
+sea técnicamente reutilizable.
+
+**Pregunta para el PO:** cuando alguien devuelve una prenda sin
+llevarse otra en el momento, ¿el sistema genera algún crédito a favor
+utilizable en una compra posterior, o el `CREDITO_DEVOLUCION` como
+método de pago solo existe dentro del flujo atómico de un cambio
+inmediato (nunca "guardado" para después)?
+
+**RECOMENDACIÓN:** solo atómico. Es la única lectura que el blueprint
+respalda con precisión textual, evita construir una superficie nueva de
+"nota de crédito" que ningún otro lugar del documento menciona, y es
+coherente con AD-17 (sin cuenta corriente ni fiado — un crédito
+diferido es, en la práctica, una cuenta corriente a favor de la
+clienta).
+
+**RIESGO DE LA RECOMENDACIÓN:** si en la práctica una clienta pide un
+cambio pero no puede completarlo en el momento ("¿me guardan el
+crédito para la semana que viene?"), el sistema no tiene forma de
+registrarlo — se resolvería a mano, fuera del sistema, hasta que se
+construya la extensión (nueva pantalla de "aplicar crédito", endpoint
+de consulta de saldo disponible, chequeo activo del invariante 14 en
+`sales.service.ts`).
+
+**Bloquea a:** T5.5 (`returns`, flujo de `CAMBIO`) — el resto de la
+Etapa 5 (T5.1–T5.4, T5.6, la parte de T5.1 que no depende de "cuánto
+crédito queda disponible") no depende de esta respuesta.
