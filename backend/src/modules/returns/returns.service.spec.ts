@@ -3,6 +3,7 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashRegisterService } from '../cash-registers/cash-register.service';
 import type { SettingsService } from '../../common/settings/settings.service';
 import type { StockService } from '../stock/stock.service';
+import type { SalesService } from '../sales/sales.service';
 import { ReturnsService } from './returns.service';
 
 // Fase 04a (T5.1) — tests escritos ANTES de la implementación, en sesión
@@ -132,6 +133,83 @@ function buildInput(
     userId: 7,
     esOwner: false,
     idempotencyKey: 'idem-test-key',
+    ...overrides,
+  };
+}
+
+// ─── T5.5 — contrato ampliado de `crearDevolucion(tx, input)`, RN-9 ──────
+//
+// Fuente: `ROADMAP.md` (T5.5, nota Etapa 5 + AMB-16 RESUELTA — diferido),
+// `state/reports/modulo-returns-spec.md` (RN-9/RN-10, secciones 4/5/6),
+// `BLUEPRINT.md` (§5.4 "CAMBIO", literal, secuencia de 4 pasos). Diseño
+// fijado literal en las instrucciones de esta sesión.
+//
+// `CrearDevolucionInput` gana dos campos opcionales (compatibilidad total
+// con las ~45 llamadas existentes que nunca los mandan):
+//   tipo?: 'DEVOLUCION' | 'CAMBIO' — default 'DEVOLUCION' si no viene.
+//   ventaNueva?: {
+//     items: Array<{ variantId: number; cantidad: number }>;
+//     payments: Array<{ metodo: PaymentMetodo; monto: Decimal.Value; referencia?: string }>;
+//     discounts?: Array<{ descripcion: string; porcentaje?: Decimal.Value; monto?: Decimal.Value }>;
+//     ajusteRedondeo?: Decimal.Value;
+//   };
+//
+// Reglas nuevas, AL PRINCIPIO de `crearDevolucion` (antes de todo lo
+// demás):
+//   - `tipo === 'CAMBIO'` exige `ventaNueva` (400 "Un cambio necesita la
+//     venta nueva") y EXACTAMENTE UN pago `CREDITO_DEVOLUCION` en
+//     `returnPayments` (400 "Un cambio necesita exactamente un reintegro
+//     de tipo crédito de devolución" si hay 0 o más de 1).
+//   - `tipo === 'DEVOLUCION'` (default) rechaza `ventaNueva` presente (400
+//     "Una devolución simple no lleva venta nueva") y rechaza cualquier
+//     `returnPayments` con `CREDITO_DEVOLUCION` (400 "Una devolución
+//     simple no genera crédito").
+//   - Todo lo demás (RN-1 a RN-8) se valida EXACTAMENTE IGUAL que hoy.
+//
+// Secuencia para `tipo = CAMBIO`, después de crear la devolución y los
+// pasos ya existentes de T5.2/T5.3: llama a
+// `salesService.crearVenta(tx, { ...ventaNueva, payments: [...ventaNueva.payments,
+// { metodo: CREDITO_DEVOLUCION, monto: <el pago CREDITO_DEVOLUCION de
+// returnPayments>, returnId: <id de la devolución recién creada> }],
+// idempotencyKey: `${input.idempotencyKey}:cambio` })`, después
+// `tx.return.update({ where: { id: return.id }, data: { saleNuevaId: sale.id } })`.
+// `crearDevolucion` sigue devolviendo `Promise<Return>` (sin cambiar la
+// firma de retorno) — para un cambio, quien llama lee
+// `devolucion.saleNuevaId`.
+interface VentaNuevaItemInputT55 {
+  variantId: number;
+  cantidad: number;
+}
+
+interface VentaNuevaPaymentInputT55 {
+  metodo: PaymentMetodo;
+  monto: Prisma.Decimal.Value;
+  referencia?: string;
+}
+
+interface VentaNuevaDiscountInputT55 {
+  descripcion: string;
+  porcentaje?: Prisma.Decimal.Value;
+  monto?: Prisma.Decimal.Value;
+}
+
+interface VentaNuevaInputT55 {
+  items: VentaNuevaItemInputT55[];
+  payments: VentaNuevaPaymentInputT55[];
+  discounts?: VentaNuevaDiscountInputT55[];
+  ajusteRedondeo?: Prisma.Decimal.Value;
+}
+
+interface CrearDevolucionInputT55 extends CrearDevolucionInput {
+  tipo?: 'DEVOLUCION' | 'CAMBIO';
+  ventaNueva?: VentaNuevaInputT55;
+}
+
+function buildInputT55(
+  overrides: Partial<CrearDevolucionInputT55> = {},
+): CrearDevolucionInputT55 {
+  return {
+    ...buildInput(),
     ...overrides,
   };
 }
@@ -283,6 +361,9 @@ interface MockTx {
     // comportamiento de siempre).
     findUnique: jest.Mock<Promise<CreatedReturn | null>, [unknown]>;
     create: jest.Mock<Promise<CreatedReturn>, [ReturnCreateCall]>;
+    // T5.5 (RN-9, paso 4/15) — actualiza `sale_nueva_id` con el id de la
+    // venta nueva del cambio. Nunca se llama fuera de `tipo = CAMBIO`.
+    update: jest.Mock<Promise<CreatedReturn>, [unknown]>;
   };
   $queryRaw: jest.Mock<
     Promise<unknown[]>,
@@ -326,6 +407,12 @@ function buildMockTx(
         .mockImplementation((call) =>
           Promise.resolve(buildCreatedReturnFromCall(call)),
         ),
+      // Default sin uso real (ningún test de T5.1-T5.4 llama a `update`,
+      // ninguno de este archivo comprueba su valor de retorno — solo que
+      // se haya llamado con el `where`/`data` correctos).
+      update: jest
+        .fn<Promise<CreatedReturn>, [unknown]>()
+        .mockResolvedValue({} as CreatedReturn),
     },
     $queryRaw: jest
       .fn<Promise<unknown[]>, [TemplateStringsArray, ...unknown[]]>()
@@ -354,6 +441,26 @@ interface Deps {
   stockService: {
     reingresarPorDevolucion: jest.Mock<Promise<void>, [unknown, unknown]>;
   };
+  // Fase 04a (T5.5, RN-9) — quinto colaborador: `crearDevolucion` reusa
+  // `SalesService.crearVenta` TAL CUAL para crear la venta nueva de un
+  // `CAMBIO` (spec sección 5, pasos 14-15) — no reimplementa ninguna regla
+  // de venta. Ninguna aserción de los ~40 tests preexistentes de T5.1-T5.4
+  // depende de este mock (nunca se llama fuera de `tipo = CAMBIO`).
+  salesService: {
+    crearVenta: jest.Mock<Promise<SaleRowT55>, [unknown, unknown]>;
+  };
+}
+
+// Fase 04a (T5.5) — forma mínima de la `Sale` que devuelve
+// `salesService.crearVenta` (mock), suficiente para que `crearDevolucion`
+// pueda leer `id` y persistirlo en `returns.sale_nueva_id` (paso 15).
+interface SaleRowT55 {
+  id: number;
+  numero: number;
+}
+
+function buildSaleRowT55(overrides: Partial<SaleRowT55> = {}): SaleRowT55 {
+  return { id: 601, numero: 601, ...overrides };
 }
 
 function buildDeps(overrides: Partial<Deps> = {}): Deps {
@@ -375,6 +482,11 @@ function buildDeps(overrides: Partial<Deps> = {}): Deps {
         .fn<Promise<void>, [unknown, unknown]>()
         .mockResolvedValue(undefined),
     },
+    salesService: {
+      crearVenta: jest
+        .fn<Promise<SaleRowT55>, [unknown, unknown]>()
+        .mockResolvedValue(buildSaleRowT55()),
+    },
     ...overrides,
   };
 }
@@ -385,6 +497,7 @@ function buildService(deps: Deps): ReturnsService {
     deps.cashRegisterService as unknown as CashRegisterService,
     deps.settingsService as unknown as SettingsService,
     deps.stockService as unknown as StockService,
+    deps.salesService as unknown as SalesService,
   );
 }
 
@@ -1427,6 +1540,383 @@ describe('ReturnsService.crearDevolucion', () => {
       const itemB = call.data.items.create.find((i) => i.saleItemId === 2)!;
       expect(new Prisma.Decimal(itemA.costoUnitario).toString()).toBe('30');
       expect(new Prisma.Decimal(itemB.costoUnitario).toString()).toBe('55.25');
+    });
+  });
+});
+
+// ─── Fase 04a (T5.5) — CAMBIO: devolución + venta nueva ligadas (RN-9) ───
+//
+// Diseño fijado literal en las instrucciones de esta sesión (ver el
+// comentario junto a `CrearDevolucionInputT55` más arriba). No se abrió
+// `returns.service.ts` para escribir este bloque.
+describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
+  describe('validación de forma, al principio, antes de leer nada', () => {
+    it('tipo: "CAMBIO" sin ventaNueva: 400, sin tocar la base', async () => {
+      const tx = buildMockTx([buildSaleItemRow()]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+      });
+
+      await expect(service.crearDevolucion(asTx(tx), input)).rejects.toThrow(
+        /cambio.*necesita.*venta nueva/i,
+      );
+
+      expect(
+        deps.cashRegisterService.getSesionAbiertaOrThrow,
+      ).not.toHaveBeenCalled();
+      expect(tx.return.create).not.toHaveBeenCalled();
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
+    });
+
+    it('tipo: "CAMBIO" con ventaNueva pero SIN ningún pago CREDITO_DEVOLUCION en returnPayments: 400', async () => {
+      const tx = buildMockTx([buildSaleItemRow()]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+        ventaNueva: { items: [{ variantId: 20, cantidad: 1 }], payments: [] },
+      });
+
+      await expect(service.crearDevolucion(asTx(tx), input)).rejects.toThrow(
+        /cambio.*exactamente un reintegro.*cr[eé]dito/i,
+      );
+
+      expect(tx.return.create).not.toHaveBeenCalled();
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
+    });
+
+    it('tipo: "CAMBIO" con DOS pagos CREDITO_DEVOLUCION: 400', async () => {
+      const tx = buildMockTx([buildSaleItemRow()]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('100.00'),
+          },
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('100.00'),
+          },
+        ],
+        ventaNueva: { items: [{ variantId: 20, cantidad: 1 }], payments: [] },
+      });
+
+      await expect(service.crearDevolucion(asTx(tx), input)).rejects.toThrow(
+        /cambio.*exactamente un reintegro.*cr[eé]dito/i,
+      );
+
+      expect(tx.return.create).not.toHaveBeenCalled();
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
+    });
+
+    it('tipo: "DEVOLUCION" (o sin tipo) con ventaNueva presente: 400', async () => {
+      const tx = buildMockTx([buildSaleItemRow()]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        ventaNueva: { items: [{ variantId: 20, cantidad: 1 }], payments: [] },
+      });
+
+      await expect(service.crearDevolucion(asTx(tx), input)).rejects.toThrow(
+        /devoluci[oó]n simple no lleva venta nueva/i,
+      );
+
+      expect(tx.return.create).not.toHaveBeenCalled();
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
+    });
+
+    it('tipo: "DEVOLUCION" con un pago CREDITO_DEVOLUCION en returnPayments: 400', async () => {
+      const tx = buildMockTx([buildSaleItemRow()]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+      });
+
+      await expect(service.crearDevolucion(asTx(tx), input)).rejects.toThrow(
+        /devoluci[oó]n simple no genera cr[eé]dito/i,
+      );
+
+      expect(tx.return.create).not.toHaveBeenCalled();
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('camino feliz — cambio a precio igual', () => {
+    it('salesService.crearVenta se llama con items/payments correctos (incluida la línea CREDITO_DEVOLUCION con el returnId de la devolución recién creada), y tx.return.update se llama con saleNuevaId', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+        ventaNueva: {
+          items: [{ variantId: 20, cantidad: 1 }],
+          payments: [],
+        },
+      });
+
+      const devolucion = await service.crearDevolucion(asTx(tx), input);
+
+      expect(deps.salesService.crearVenta).toHaveBeenCalledTimes(1);
+      const [, ventaInput] = deps.salesService.crearVenta.mock.calls[0] as [
+        unknown,
+        {
+          items: unknown;
+          payments: Array<{
+            metodo: PaymentMetodo;
+            monto: Prisma.Decimal.Value;
+            returnId?: number;
+          }>;
+        },
+      ];
+      expect(ventaInput.items).toEqual([{ variantId: 20, cantidad: 1 }]);
+      const creditPayment = ventaInput.payments.find(
+        (p) => p.metodo === PaymentMetodo.CREDITO_DEVOLUCION,
+      );
+      expect(creditPayment).toBeDefined();
+      expect(new Prisma.Decimal(creditPayment!.monto).toString()).toBe('200');
+      expect(creditPayment!.returnId).toBe(devolucion.id);
+
+      expect(tx.return.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: devolucion.id },
+          data: expect.objectContaining({ saleNuevaId: 601 }),
+        }),
+      );
+    });
+  });
+
+  describe('camino feliz — prenda nueva más cara', () => {
+    it('payments de crearVenta incluye el pago extra de ventaNueva.payments ADEMÁS del crédito', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+        ventaNueva: {
+          items: [{ variantId: 20, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('50.00'),
+            },
+          ],
+        },
+      });
+
+      await service.crearDevolucion(asTx(tx), input);
+
+      const [, ventaInput] = deps.salesService.crearVenta.mock.calls[0] as [
+        unknown,
+        {
+          payments: Array<{
+            metodo: PaymentMetodo;
+            monto: Prisma.Decimal.Value;
+          }>;
+        },
+      ];
+      expect(ventaInput.payments).toHaveLength(2);
+      const efectivoPayment = ventaInput.payments.find(
+        (p) => p.metodo === PaymentMetodo.EFECTIVO,
+      );
+      expect(efectivoPayment).toBeDefined();
+      expect(new Prisma.Decimal(efectivoPayment!.monto).toString()).toBe(
+        '50',
+      );
+    });
+  });
+
+  describe('camino feliz — prenda nueva más barata', () => {
+    it('el excedente queda en OTRO returnPayment (no CREDITO_DEVOLUCION) y la suma de returnPayments sigue dando total_devuelto exacto', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('150.00'),
+          },
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('50.00'),
+          },
+        ],
+        ventaNueva: {
+          items: [{ variantId: 20, cantidad: 1 }],
+          payments: [],
+        },
+      });
+
+      const devolucion = await service.crearDevolucion(asTx(tx), input);
+
+      expect(devolucion.totalDevuelto.toString()).toBe('200');
+      const call = tx.return.create.mock.calls[0][0];
+      const sumaReintegros = call.data.returnPayments.create.reduce(
+        (acc, p) => acc.plus(new Prisma.Decimal(p.monto)),
+        new Prisma.Decimal(0),
+      );
+      expect(sumaReintegros.toString()).toBe('200');
+
+      const [, ventaInput] = deps.salesService.crearVenta.mock.calls[0] as [
+        unknown,
+        {
+          payments: Array<{
+            metodo: PaymentMetodo;
+            monto: Prisma.Decimal.Value;
+          }>;
+        },
+      ];
+      // Solo el crédito viaja a la venta nueva — el excedente en efectivo
+      // se reintegra por los medios habituales (return_payments), no como
+      // pago de la venta nueva.
+      expect(ventaInput.payments).toHaveLength(1);
+      expect(ventaInput.payments[0].metodo).toBe(
+        PaymentMetodo.CREDITO_DEVOLUCION,
+      );
+      expect(new Prisma.Decimal(ventaInput.payments[0].monto).toString()).toBe(
+        '150',
+      );
+    });
+  });
+
+  describe('orden — salesService.crearVenta se llama DESPUÉS de tx.return.create', () => {
+    it('crearVenta ocurre después de crear la devolución (necesita su id)', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+        ventaNueva: { items: [{ variantId: 20, cantidad: 1 }], payments: [] },
+      });
+
+      await service.crearDevolucion(asTx(tx), input);
+
+      const createOrder = tx.return.create.mock.invocationCallOrder[0];
+      const crearVentaOrder =
+        deps.salesService.crearVenta.mock.invocationCallOrder[0];
+      expect(createOrder).toBeLessThan(crearVentaOrder);
+    });
+  });
+
+  describe('idempotencyKey de la venta nueva — determinístico y distinto al de la devolución', () => {
+    it('no es igual al idempotencyKey de la devolución, y es el mismo en dos llamadas equivalentes (determinístico)', async () => {
+      const saleItem = () =>
+        buildSaleItemRow({
+          id: 1,
+          cantidad: 2,
+          netoLinea: new Prisma.Decimal('200.00'),
+        });
+
+      const input = buildInputT55({
+        tipo: 'CAMBIO',
+        idempotencyKey: 'idem-cambio-test',
+        items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('200.00'),
+          },
+        ],
+        ventaNueva: { items: [{ variantId: 20, cantidad: 1 }], payments: [] },
+      });
+
+      const tx1 = buildMockTx([saleItem()]);
+      const deps1 = buildDeps();
+      const service1 = buildService(deps1);
+      await service1.crearDevolucion(asTx(tx1), input);
+      const [, ventaInput1] = deps1.salesService.crearVenta.mock.calls[0] as [
+        unknown,
+        { idempotencyKey: string },
+      ];
+      expect(ventaInput1.idempotencyKey).not.toBe(input.idempotencyKey);
+      expect(ventaInput1.idempotencyKey).toBe(`${input.idempotencyKey}:cambio`);
+
+      // Determinístico: la misma idempotencyKey de entrada produce siempre
+      // la misma clave derivada para la venta nueva.
+      const tx2 = buildMockTx([saleItem()]);
+      const deps2 = buildDeps();
+      const service2 = buildService(deps2);
+      await service2.crearDevolucion(asTx(tx2), input);
+      const [, ventaInput2] = deps2.salesService.crearVenta.mock.calls[0] as [
+        unknown,
+        { idempotencyKey: string },
+      ];
+      expect(ventaInput2.idempotencyKey).toBe(ventaInput1.idempotencyKey);
     });
   });
 });

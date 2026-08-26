@@ -246,6 +246,11 @@ interface PaymentCreateInput {
   metodo: PaymentMetodo;
   monto: Prisma.Decimal.Value;
   referencia?: string | null;
+  // T5.5 (invariante 14, AMB-16 RESUELTA — crédito diferido) — persistido
+  // tal cual cuando el pago es CREDITO_DEVOLUCION. Opcional: ninguno de
+  // los ~150 tests preexistentes de T4.1-T4.9 lo necesita, así que no
+  // cambia el resultado esperado de ninguno de ellos.
+  returnId?: number | null;
 }
 
 // T4.3 — forma esperada de un `sale_discounts` a crear, nested dentro de
@@ -376,11 +381,41 @@ interface MockTx {
   // no cuántas ni cuáles.
   return: {
     findFirst: jest.Mock<Promise<{ id: number } | null>, [unknown]>;
+    // T5.5 (invariante 14) — lectura de la devolución referenciada por un
+    // pago CREDITO_DEVOLUCION (spec sección 5, paso 3 del mecanismo
+    // compartido), con el lock de su fila ya tomado. `null` simula "no
+    // existe" (404 "Devolución no encontrada").
+    findUnique: jest.Mock<Promise<ReturnRow | null>, [unknown]>;
+  };
+  // T5.5 (invariante 14) — consumo previo del crédito de una devolución,
+  // agregado sobre CUALQUIER venta (no solo la actual): `SUM(payments.monto)
+  // WHERE returnId = X AND metodo = CREDITO_DEVOLUCION`.
+  payment: {
+    aggregate: jest.Mock<
+      Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+      [unknown]
+    >;
   };
   $queryRaw: jest.Mock<
     Promise<unknown[]>,
     [TemplateStringsArray, ...unknown[]]
   >;
+}
+
+// T5.5 (invariante 14, AMB-16 RESUELTA — crédito diferido) — forma mínima
+// de la fila de `returns` que el mecanismo compartido de `crearVenta` lee
+// para validar el crédito de un pago CREDITO_DEVOLUCION.
+interface ReturnRow {
+  id: number;
+  totalDevuelto: Prisma.Decimal;
+}
+
+function buildReturnRow(overrides: Partial<ReturnRow> = {}): ReturnRow {
+  return {
+    id: 901,
+    totalDevuelto: new Prisma.Decimal('100.00'),
+    ...overrides,
+  };
 }
 
 // T4.7 — `saleFixture` es un parámetro nuevo, opcional, con default vacío:
@@ -393,7 +428,16 @@ interface MockTx {
 // (default) simula "sin devoluciones registradas".
 function buildMockTx(
   variantRows: VariantRow[],
-  saleFixture: { saleRow?: SaleRowT47 | null; returnExists?: boolean } = {},
+  saleFixture: {
+    saleRow?: SaleRowT47 | null;
+    returnExists?: boolean;
+    // T5.5 (invariante 14) — default: ninguna devolución existe (simula
+    // 404) y ningún crédito fue consumido todavía. Ningún test
+    // preexistente de T4.1-T4.9 pasa un pago con `returnId`, así que este
+    // código nuevo nunca se ejecuta en esos ~150 tests.
+    returnRow?: ReturnRow | null;
+    creditoConsumidoPrevio?: Prisma.Decimal.Value;
+  } = {},
 ): MockTx {
   return {
     variant: {
@@ -421,6 +465,21 @@ function buildMockTx(
       findFirst: jest
         .fn<Promise<{ id: number } | null>, [unknown]>()
         .mockResolvedValue(saleFixture.returnExists ? { id: 9001 } : null),
+      findUnique: jest
+        .fn<Promise<ReturnRow | null>, [unknown]>()
+        .mockResolvedValue(saleFixture.returnRow ?? null),
+    },
+    payment: {
+      aggregate: jest
+        .fn<Promise<{ _sum: { monto: Prisma.Decimal | null } }>, [unknown]>()
+        .mockResolvedValue({
+          _sum: {
+            monto:
+              saleFixture.creditoConsumidoPrevio !== undefined
+                ? new Prisma.Decimal(saleFixture.creditoConsumidoPrevio)
+                : null,
+          },
+        }),
     },
     $queryRaw: jest
       .fn<Promise<unknown[]>, [TemplateStringsArray, ...unknown[]]>()
@@ -573,6 +632,46 @@ interface CrearVentaInputT45 extends CrearVentaInputT43 {
 //      cada línea — no el subtotal ni el total sin ajustar.
 interface CrearVentaInputT46 extends CrearVentaInputT45 {
   ajusteRedondeo?: Prisma.Decimal.Value;
+}
+
+// ─── T5.5 — crédito de devolución diferido (invariante 14, AMB-16) ───────
+//
+// Fuente: `ROADMAP.md` (T5.5, nota de la Etapa 5 + AMB-16 RESUELTA —
+// diferido), `state/reports/modulo-returns-spec.md` (RN-9/RN-10, secciones
+// 4/5), `BLUEPRINT.md` (§5.4 "CAMBIO", invariante 14, §9.4). Diseño fijado
+// literal en las instrucciones de esta sesión, no reinventado acá.
+//
+// Contrato ampliado de un pago de `crearVenta(tx, input)`:
+// `payments[i] += { returnId?: number }`. Reglas nuevas, en el mismo punto
+// donde ya valida cada pago (positivo, dentro de precisión):
+//   1. `metodo: CREDITO_DEVOLUCION` SIEMPRE necesita `returnId` (400 si
+//      falta).
+//   2. `returnId` presente SOLO puede acompañar a
+//      `metodo: CREDITO_DEVOLUCION` (400 en cualquier otra combinación).
+//   3. Por cada `returnId` DISTINTO entre los pagos: lock de la fila de
+//      `Return` (`SELECT id FROM returns WHERE id IN (...) ORDER BY id
+//      FOR UPDATE`, mismo patrón BLUEPRINT §9.4, un solo `$queryRaw` para
+//      todos los ids, antes de leer nada). Con el lock tomado: la `Return`
+//      existe (404 si no) y `consumido_previo
+//      (SUM(payments.monto) WHERE returnId = X AND metodo =
+//      CREDITO_DEVOLUCION, sobre CUALQUIER venta) + monto_de_este_pago >
+//      return.totalDevuelto` rechaza con 400.
+//   4. `paymentsData` persiste `returnId: p.returnId ?? null` tal cual en
+//      `payments.create`.
+// Sin impacto en ningún pago SIN `returnId` (el 100% de los casos
+// existentes) — mismo tipo ampliado por variable (nunca objeto literal
+// inline) que el resto de los contratos de esta sección, para que la
+// propiedad nueva no dispare "excess property" de TypeScript contra el
+// tipo real (todavía angosto) del parámetro.
+interface CrearVentaPaymentInputT55 {
+  metodo: PaymentMetodo;
+  monto: Prisma.Decimal.Value;
+  referencia?: string;
+  returnId?: number;
+}
+
+interface CrearVentaInputT55 extends Omit<CrearVentaInputT46, 'payments'> {
+  payments: CrearVentaPaymentInputT55[];
 }
 
 function buildService(deps: Deps): SalesService {
@@ -3769,5 +3868,336 @@ describe('SalesService — Fase 08: gaps de cobertura (mutation testing)', () =>
         descripcion: `Anulación venta #${saleRow.numero}`,
       }),
     );
+  });
+});
+
+describe('SalesService.crearVenta — T5.5 crédito de devolución diferido (invariante 14, AMB-16)', () => {
+  it('pago CREDITO_DEVOLUCION con returnId de una devolución con crédito disponible suficiente: se acepta, payments.create incluye returnId', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const returnRow = buildReturnRow({
+      id: 901,
+      totalDevuelto: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant], {
+      returnRow,
+      creditoConsumidoPrevio: '0.00',
+    });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('100.00'),
+          returnId: 901,
+        },
+      ],
+    };
+
+    const result = await service.crearVenta(asTx(tx), input);
+
+    expect(result.id).toBe(501);
+    expect(tx.sale.create).toHaveBeenCalledTimes(1);
+    const call = tx.sale.create.mock.calls[0][0];
+    expect(call.data.payments.create[0].metodo).toBe(
+      PaymentMetodo.CREDITO_DEVOLUCION,
+    );
+    expect(call.data.payments.create[0].returnId).toBe(901);
+  });
+
+  it('pago CREDITO_DEVOLUCION SIN returnId: 400', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('100.00'),
+        },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /cr[eé]dito de devoluci[oó]n.*indicar cu[aá]l/i,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('pago con returnId pero metodo distinto de CREDITO_DEVOLUCION: 400', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.EFECTIVO,
+          monto: new Prisma.Decimal('100.00'),
+          returnId: 901,
+        },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /cr[eé]dito de devoluci[oó]n.*solo aplica/i,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('returnId de una devolución inexistente: 404', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant], { returnRow: null });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('100.00'),
+          returnId: 9999,
+        },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /devoluci[oó]n no encontrada/i,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('crédito que excede lo disponible (total_devuelto=$100, ya consumidos $60, se piden $50 más): 400, sin crear la venta', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('50.00'),
+    });
+    const returnRow = buildReturnRow({
+      id: 901,
+      totalDevuelto: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant], {
+      returnRow,
+      creditoConsumidoPrevio: '60.00',
+    });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('50.00'),
+          returnId: 901,
+        },
+      ],
+    };
+
+    await expect(service.crearVenta(asTx(tx), input)).rejects.toThrow(
+      /devoluci[oó]n #901.*no alcanza.*40/i,
+    );
+    expect(tx.sale.create).not.toHaveBeenCalled();
+  });
+
+  it('crédito exacto al disponible: se acepta (borde, no rechaza por igualdad)', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('40.00'),
+    });
+    const returnRow = buildReturnRow({
+      id: 901,
+      totalDevuelto: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant], {
+      returnRow,
+      creditoConsumidoPrevio: '60.00',
+    });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('40.00'),
+          returnId: 901,
+        },
+      ],
+    };
+
+    const result = await service.crearVenta(asTx(tx), input);
+
+    expect(result.id).toBe(501);
+    expect(tx.sale.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('toma un lock (SELECT ... FOR UPDATE) sobre la fila de returns ANTES de sumar el consumo previo', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('100.00'),
+    });
+    const returnRow = buildReturnRow({
+      id: 901,
+      totalDevuelto: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([variant], {
+      returnRow,
+      creditoConsumidoPrevio: '0.00',
+    });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('100.00'),
+          returnId: 901,
+        },
+      ],
+    };
+
+    await service.crearVenta(asTx(tx), input);
+
+    const returnLockCall = tx.$queryRaw.mock.calls.find((call) =>
+      sqlText(call).includes('returns'),
+    );
+    expect(returnLockCall).toBeDefined();
+    expect(sqlText(returnLockCall!)).toContain('for update');
+
+    const lockCallIndex = tx.$queryRaw.mock.calls.indexOf(returnLockCall!);
+    const lockOrder = tx.$queryRaw.mock.invocationCallOrder[lockCallIndex];
+    const aggregateOrder = tx.payment.aggregate.mock.invocationCallOrder[0];
+    expect(lockOrder).toBeLessThan(aggregateOrder);
+  });
+
+  it('dos pagos CREDITO_DEVOLUCION de DOS devoluciones distintas en la misma venta: cada uno se valida contra SU PROPIA devolución, el lock cubre ambos ids', async () => {
+    const variant = buildVariantRow({
+      id: 10,
+      stockActual: 5,
+      precioVenta: new Prisma.Decimal('150.00'),
+    });
+    const tx = buildMockTx([variant]);
+
+    const returnA = buildReturnRow({
+      id: 901,
+      totalDevuelto: new Prisma.Decimal('100.00'),
+    });
+    const returnB = buildReturnRow({
+      id: 902,
+      totalDevuelto: new Prisma.Decimal('50.00'),
+    });
+    const returnsById = new Map([
+      [901, returnA],
+      [902, returnB],
+    ]);
+    const consumidoById = new Map([
+      [901, '0.00'],
+      [902, '0.00'],
+    ]);
+
+    tx.return.findUnique.mockImplementation((args: unknown) => {
+      const id = (args as { where: { id: number } }).where.id;
+      return Promise.resolve(returnsById.get(id) ?? null);
+    });
+    tx.payment.aggregate.mockImplementation((args: unknown) => {
+      const id = (args as { where: { returnId: number } }).where.returnId;
+      const consumido = consumidoById.get(id) ?? '0.00';
+      return Promise.resolve({ _sum: { monto: new Prisma.Decimal(consumido) } });
+    });
+
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const input: CrearVentaInputT55 = {
+      userId: 7,
+      esOwner: true,
+      idempotencyKey: 'idem-test-key',
+      items: [{ variantId: 10, cantidad: 1 }],
+      payments: [
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('100.00'),
+          returnId: 901,
+        },
+        {
+          metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+          monto: new Prisma.Decimal('50.00'),
+          returnId: 902,
+        },
+      ],
+    };
+
+    const result = await service.crearVenta(asTx(tx), input);
+
+    expect(result.id).toBe(501);
+    const call = tx.sale.create.mock.calls[0][0];
+    expect(call.data.payments.create).toHaveLength(2);
+    expect(
+      call.data.payments.create.find((p) => p.returnId === 901),
+    ).toBeDefined();
+    expect(
+      call.data.payments.create.find((p) => p.returnId === 902),
+    ).toBeDefined();
+
+    // El lock (un solo $queryRaw, BLUEPRINT §9.4) cubre AMBOS ids.
+    const returnLockCall = tx.$queryRaw.mock.calls.find((call) =>
+      sqlText(call).includes('returns'),
+    );
+    expect(returnLockCall).toBeDefined();
+    const joinArg = returnLockCall![1] as Prisma.Sql;
+    expect(joinArg.values).toHaveLength(2);
+    expect(joinArg.values).toEqual(expect.arrayContaining([901, 902]));
   });
 });

@@ -197,6 +197,7 @@ describe('returns (integration, T5.1)', () => {
       cashRegisterService,
       settingsService,
       stockService,
+      salesService,
     );
 
     const passwordHash = await argon2.hash('password123');
@@ -230,8 +231,16 @@ describe('returns (integration, T5.1)', () => {
         data: { estado: CashRegisterSessionEstado.ABIERTA },
       });
 
-      // Las devoluciones se borran ANTES que las ventas/sale_items que
-      // referencian (`return_items.sale_item_id`, `returns.sale_id`).
+      // T5.5: `payments.return_id` (nuevo, crédito de devolución diferido)
+      // referencia `returns.id` — un `payment` de una venta-cambio puede
+      // apuntar a la devolución que lo originó. Por eso `payment` (más
+      // abajo) tiene que borrarse ANTES que `return`, no después como
+      // antes de T5.5: borrar `return` primero violaría esa FK en
+      // cualquier test de CAMBIO. `return_items`/`return_payments` no
+      // tienen ese problema (nada más los referencia) — se borran ya, sin
+      // esperar. `returns.sale_id`/`returns.sale_nueva_id` (FK a `sales`)
+      // siguen exigiendo que `return` se borre ANTES que `sale`, más
+      // abajo.
       const returnsInSession = await prisma.return.findMany({
         where: { cashRegisterSessionId: id },
         select: { id: true },
@@ -243,9 +252,6 @@ describe('returns (integration, T5.1)', () => {
         });
         await prisma.returnItem.deleteMany({
           where: { returnId: { in: returnIdsInSession } },
-        });
-        await prisma.return.deleteMany({
-          where: { id: { in: returnIdsInSession } },
         });
       }
 
@@ -261,6 +267,11 @@ describe('returns (integration, T5.1)', () => {
         });
         await prisma.saleItem.deleteMany({
           where: { saleId: { in: saleIdsInSession } },
+        });
+      }
+      if (returnIdsInSession.length > 0) {
+        await prisma.return.deleteMany({
+          where: { id: { in: returnIdsInSession } },
         });
       }
       await prisma.cashMovement.deleteMany({ where: { sessionId: id } });
@@ -1156,6 +1167,207 @@ describe('returns (integration, T5.1)', () => {
       expect(returnItemA.reingresaStock).toBe(true);
       expect(returnItemB.costoUnitario.toString()).toBe('22.5');
       expect(returnItemB.reingresaStock).toBe(false);
+    });
+  });
+
+  // ─── Fase 04a (T5.5) — CAMBIO: devolución + venta nueva ligadas, contra
+  // Postgres real (BLUEPRINT §5.4, RN-9, invariante 14, AMB-16 RESUELTA).
+  // No se abrió `returns.service.ts` ni `sales.service.ts` para escribir
+  // este bloque.
+  describe('ReturnsService.crearDevolucion — T5.5 CAMBIO', () => {
+    it('cambio completo, precio igual: venta nueva creada de verdad, con un payment CREDITO_DEVOLUCION y return_id igual al de la devolución; returns.sale_nueva_id apunta a esa venta; el stock de la variante devuelta sube y el de la variante nueva baja', async () => {
+      const variantVieja = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 10,
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 5,
+      });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variantVieja.id,
+        cantidad: 1,
+        precioVenta: '150.00',
+      });
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId,
+          tipo: 'CAMBIO',
+          items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+              monto: new Prisma.Decimal('150.00'),
+            },
+          ],
+          ventaNueva: {
+            items: [{ variantId: variantNueva.id, cantidad: 1 }],
+            payments: [],
+          },
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      expect(devolucion.tipo).toBe('CAMBIO');
+      expect(devolucion.saleNuevaId).not.toBeNull();
+      createdSaleIds.push(devolucion.saleNuevaId!);
+
+      const ventaNueva = await prisma.sale.findUniqueOrThrow({
+        where: { id: devolucion.saleNuevaId! },
+        include: { payments: true, items: true },
+      });
+      expect(ventaNueva.total.toString()).toBe('150');
+      expect(ventaNueva.payments).toHaveLength(1);
+      expect(ventaNueva.payments[0].metodo).toBe(
+        PaymentMetodo.CREDITO_DEVOLUCION,
+      );
+      expect(ventaNueva.payments[0].returnId).toBe(devolucion.id);
+      expect(ventaNueva.items[0].variantId).toBe(variantNueva.id);
+
+      const variantViejaAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantVieja.id },
+      });
+      // 10 (inicial) - 1 (vendida en la venta original) + 1 (reingresada
+      // por la devolución del cambio) = 10.
+      expect(variantViejaAfter.stockActual).toBe(10);
+
+      const variantNuevaAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantNueva.id },
+      });
+      // 5 (inicial) - 1 (vendida en la venta nueva del cambio) = 4.
+      expect(variantNuevaAfter.stockActual).toBe(4);
+    });
+
+    it('cambio, prenda nueva más cara: el pago extra en efectivo queda registrado en la venta nueva y genera su propio cash_movement de tipo VENTA', async () => {
+      const variantVieja = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 10,
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variantVieja.id,
+        cantidad: 1,
+        precioVenta: '100.00',
+      });
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId,
+          tipo: 'CAMBIO',
+          items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+          ventaNueva: {
+            items: [{ variantId: variantNueva.id, cantidad: 1 }],
+            payments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('50.00'),
+              },
+            ],
+          },
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      createdSaleIds.push(devolucion.saleNuevaId!);
+
+      const ventaNueva = await prisma.sale.findUniqueOrThrow({
+        where: { id: devolucion.saleNuevaId! },
+        include: { payments: true },
+      });
+      expect(ventaNueva.total.toString()).toBe('150');
+      expect(ventaNueva.payments).toHaveLength(2);
+      const pagoEfectivo = ventaNueva.payments.find(
+        (p) => p.metodo === PaymentMetodo.EFECTIVO,
+      );
+      expect(pagoEfectivo).toBeDefined();
+      expect(pagoEfectivo!.monto.toString()).toBe('50');
+
+      const cashMovs = await prisma.cashMovement.findMany({
+        where: {
+          referenciaTipo: CashMovementReferenciaTipo.SALE,
+          referenciaId: devolucion.saleNuevaId!,
+        },
+      });
+      expect(cashMovs).toHaveLength(1);
+      expect(cashMovs[0].tipo).toBe('VENTA');
+      expect(cashMovs[0].monto.toString()).toBe('50');
+      expect(cashMovs[0].sessionId).toBe(session.id);
+    });
+
+    it('rollback: si la venta nueva se rechaza por un motivo real de sales (stock insuficiente de la variante nueva), TODA la transacción revierte — ni la devolución ni sus return_items/return_payments quedan creados', async () => {
+      const variantVieja = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 10,
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 0,
+      });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variantVieja.id,
+        cantidad: 1,
+        precioVenta: '100.00',
+      });
+
+      await expect(
+        prisma.$transaction((tx) =>
+          returnsService.crearDevolucion(tx, {
+            saleId,
+            tipo: 'CAMBIO',
+            items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+            returnPayments: [
+              {
+                metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+                monto: new Prisma.Decimal('100.00'),
+              },
+            ],
+            ventaNueva: {
+              items: [{ variantId: variantNueva.id, cantidad: 1 }],
+              payments: [],
+            },
+            userId: ownerId,
+            esOwner: false,
+            idempotencyKey: randomUUID(),
+          }),
+        ),
+      ).rejects.toThrow(/stock insuficiente/i);
+
+      const returnsForSale = await prisma.return.findMany({
+        where: { saleId },
+      });
+      expect(returnsForSale).toHaveLength(0);
+
+      const variantViejaAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantVieja.id },
+      });
+      // Solo lo que descontó la venta ORIGINAL — el cambio entero revirtió,
+      // sin reingreso de stock de la línea devuelta.
+      expect(variantViejaAfter.stockActual).toBe(9);
+
+      const variantNuevaAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantNueva.id },
+      });
+      expect(variantNuevaAfter.stockActual).toBe(0);
     });
   });
 });
