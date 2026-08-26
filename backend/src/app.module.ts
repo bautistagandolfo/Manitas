@@ -20,6 +20,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { StockModule } from './modules/stock/stock.module';
 import { CashRegistersModule } from './modules/cash-registers/cash-registers.module';
 import { SalesModule } from './modules/sales/sales.module';
+import { ReturnsModule } from './modules/returns/returns.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuthGuard } from './common/auth/auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
@@ -61,6 +62,7 @@ import { OriginCheckMiddleware } from './common/security/origin-check.middleware
     StockModule,
     CashRegistersModule,
     SalesModule,
+    ReturnsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

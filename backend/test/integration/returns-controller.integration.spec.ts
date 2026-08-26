@@ -516,9 +516,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
     });
 
     it('caso 5 — sin autenticación (sin cookie) → 401', async () => {
-      await request(app.getHttpServer())
-        .get('/returns/sales/1')
-        .expect(401);
+      await request(app.getHttpServer()).get('/returns/sales/1').expect(401);
     });
   });
 
@@ -541,7 +539,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       });
       expect(variantAfterVenta.stockActual).toBe(7);
 
-      const response = await owned(request(app.getHttpServer()).post('/returns'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
         .set('Idempotency-Key', randomUUID())
         .send({
           saleId: venta.saleId,
@@ -553,9 +553,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '300.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '300.00' }],
         })
         .expect(201);
 
@@ -600,7 +598,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       });
       expect(variantAfterVenta.stockActual).toBe(8);
 
-      const response = await owned(request(app.getHttpServer()).post('/returns'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
         .set('Idempotency-Key', randomUUID())
         .send({
           saleId: venta.saleId,
@@ -612,9 +612,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: false,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '80.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '80.00' }],
         })
         .expect(201);
 
@@ -654,7 +652,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
         montoTotal: '150.00',
       });
 
-      const response = await owned(request(app.getHttpServer()).post('/returns'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
         .set('Idempotency-Key', randomUUID())
         .send({
           saleId: venta.saleId,
@@ -722,9 +722,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(400);
     });
@@ -782,9 +780,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
           saleId: 999999999,
           tipo: ReturnTipo.DEVOLUCION,
           items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '10.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '10.00' }],
         })
         .expect(404);
     });
@@ -811,9 +807,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(409);
     });
@@ -840,9 +834,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(409);
     });
@@ -868,9 +860,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '500.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '500.00' }],
         })
         .expect(400);
 
@@ -907,9 +897,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         });
       expect([400, 403]).toContain(response.status);
 
@@ -929,7 +917,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       });
       await envejecerVentaDirect(venta.saleId, 40);
 
-      const response = await owned(request(app.getHttpServer()).post('/returns'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
         .set('Idempotency-Key', randomUUID())
         .send({
           saleId: venta.saleId,
@@ -941,9 +931,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(201);
 
@@ -980,9 +968,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '50.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '50.00' }],
         })
         .expect(400);
     });
@@ -1046,9 +1032,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
           ventaNueva: {
             items: [{ variantId: variantNueva.id, cantidad: 1 }],
             payments: [],
@@ -1065,9 +1049,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
         .send({
           saleId: 1,
           tipo: ReturnTipo.DEVOLUCION,
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(400);
     });
@@ -1093,9 +1075,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
           esOwner: true,
         })
         .expect(400);
@@ -1120,9 +1100,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
             cantidad: 1,
             reingresaStock: true,
           })),
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(400);
     });
@@ -1137,9 +1115,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
           saleId: 1,
           tipo: ReturnTipo.DEVOLUCION,
           items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(401);
     });
@@ -1168,9 +1144,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(201);
 
@@ -1208,9 +1182,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(403);
 
@@ -1232,7 +1204,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
         montoTotal: '100.00',
       });
 
-      const response = await owned(request(app.getHttpServer()).post('/returns'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
         .set('Idempotency-Key', randomUUID())
         .set('Origin', frontendUrl)
         .send({
@@ -1245,9 +1219,7 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
               reingresaStock: true,
             },
           ],
-          returnPayments: [
-            { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
-          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '100.00' }],
         })
         .expect(201);
 

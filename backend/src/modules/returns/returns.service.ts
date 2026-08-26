@@ -90,6 +90,31 @@ export interface CrearDevolucionInput {
   ventaNueva?: CrearDevolucionVentaNuevaInput;
 }
 
+// T5.7 (backend) — respuesta de lectura pura para armar la pantalla de
+// devolución/cambio: qué le queda disponible a cada línea de una venta.
+// `costoUnitario` es opcional: el controller lo omite para `SELLER`
+// (RN-10 de `sales`, mismo criterio ya aplicado en otros endpoints).
+export interface BuscarVentaParaDevolucionItem {
+  saleItemId: number;
+  variantId: number;
+  descripcionSnapshot: string;
+  cantidadVendida: number;
+  cantidadDisponible: number;
+  netoLineaOriginal: Prisma.Decimal;
+  netoLineaDisponible: Prisma.Decimal;
+  costoUnitario?: Prisma.Decimal;
+}
+
+export interface BuscarVentaParaDevolucionResult {
+  saleId: number;
+  numero: number;
+  fecha: Date;
+  estado: string;
+  dentroDePlazo: boolean;
+  items: BuscarVentaParaDevolucionItem[];
+  payments: Array<{ metodo: PaymentMetodo; monto: Prisma.Decimal }>;
+}
+
 @Injectable()
 export class ReturnsService {
   constructor(
@@ -389,5 +414,88 @@ export class ReturnsService {
     }
 
     return devolucion;
+  }
+
+  // T5.7 (backend) — `GET /returns/sales/:numero` (spec sección 4): lectura
+  // pura, sin lock (el lock real que protege de devolver de más lo toma
+  // `crearDevolucion` recién al escribir, sección 5 de la spec). Abre su
+  // propia transacción de solo lectura (`RepeatableRead`) para que las
+  // líneas y el acumulado de devoluciones previas se lean de un mismo
+  // snapshot consistente — mismo criterio que `reconciliar()` de
+  // `sales`/`cash-registers`/`stock`.
+  async buscarVentaParaDevolucion(
+    numero: number,
+    opts: { incluirCosto: boolean },
+  ): Promise<BuscarVentaParaDevolucionResult> {
+    const { sale, items, previousReturnItems, payments } =
+      await this.prisma.$transaction(
+        async (tx) => {
+          const sale = await tx.sale.findUnique({ where: { numero } });
+          if (!sale) {
+            throw new NotFoundException('Venta no encontrada');
+          }
+          const items = await tx.saleItem.findMany({
+            where: { saleId: sale.id },
+            orderBy: { id: 'asc' },
+          });
+          const previousReturnItems = await tx.returnItem.findMany({
+            where: { saleItemId: { in: items.map((i) => i.id) } },
+          });
+          const payments = await tx.payment.findMany({
+            where: { saleId: sale.id },
+          });
+          return { sale, items, previousReturnItems, payments };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      );
+
+    const cantidadDevueltaPorLinea = new Map<number, number>();
+    const netoDevueltoPorLinea = new Map<number, Prisma.Decimal>();
+    for (const previo of previousReturnItems) {
+      cantidadDevueltaPorLinea.set(
+        previo.saleItemId,
+        (cantidadDevueltaPorLinea.get(previo.saleItemId) ?? 0) +
+          previo.cantidad,
+      );
+      netoDevueltoPorLinea.set(
+        previo.saleItemId,
+        (
+          netoDevueltoPorLinea.get(previo.saleItemId) ?? new Prisma.Decimal(0)
+        ).plus(previo.netoLinea),
+      );
+    }
+
+    const diasPlazo = await this.settingsService.getInt(
+      SETTINGS_KEYS.DIAS_PLAZO_DEVOLUCION,
+    );
+    const diasTranscurridos =
+      (Date.now() - sale.fecha.getTime()) / (1000 * 60 * 60 * 24);
+
+    return {
+      saleId: sale.id,
+      numero: sale.numero,
+      fecha: sale.fecha,
+      estado: sale.estado,
+      dentroDePlazo: diasTranscurridos <= diasPlazo,
+      items: items.map((item) => {
+        const cantidadDevuelta = cantidadDevueltaPorLinea.get(item.id) ?? 0;
+        const netoDevuelto =
+          netoDevueltoPorLinea.get(item.id) ?? new Prisma.Decimal(0);
+        const base: BuscarVentaParaDevolucionItem = {
+          saleItemId: item.id,
+          variantId: item.variantId,
+          descripcionSnapshot: item.descripcionSnapshot,
+          cantidadVendida: item.cantidad,
+          cantidadDisponible: item.cantidad - cantidadDevuelta,
+          netoLineaOriginal: item.netoLinea,
+          netoLineaDisponible: item.netoLinea.minus(netoDevuelto),
+        };
+        if (opts.incluirCosto) {
+          base.costoUnitario = item.costoUnitario;
+        }
+        return base;
+      }),
+      payments: payments.map((p) => ({ metodo: p.metodo, monto: p.monto })),
+    };
   }
 }
