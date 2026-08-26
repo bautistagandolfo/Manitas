@@ -167,10 +167,24 @@ interface SaleRow {
   id: number;
   estado: 'COMPLETADA' | 'ANULADA';
   fecha: Date;
+  // Fase 04a (T5.3): agregado de infraestructura de test, no una regla de
+  // negocio nueva — el movimiento de caja de la devolución (paso 13 de la
+  // spec) arma su `descripcion` con el NÚMERO DE LA VENTA ORIGINAL
+  // (`Devolución venta #${sale.numero}`), que hasta T5.2 ningún test de
+  // este archivo necesitaba leer de `sale`. Mismo criterio ya usado para
+  // `variantId` en `SaleItemRow`: ninguna aserción de los 22 tests de
+  // T5.1/T5.2 de más arriba depende de este campo.
+  numero: number;
 }
 
 function buildSaleRow(overrides: Partial<SaleRow> = {}): SaleRow {
-  return { id: 501, estado: 'COMPLETADA', fecha: new Date(), ...overrides };
+  return {
+    id: 501,
+    estado: 'COMPLETADA',
+    fecha: new Date(),
+    numero: 4242,
+    ...overrides,
+  };
 }
 
 interface ReturnItemRow {
@@ -1051,6 +1065,255 @@ describe('ReturnsService.crearDevolucion', () => {
       ).rejects.toThrow(/anulada/i);
 
       expect(deps.stockService.reingresarPorDevolucion).not.toHaveBeenCalled();
+    });
+  });
+
+  // Fase 04a (T5.3) — tests NUEVOS, agregados a este archivo sin tocar
+  // ninguna aserción de los 22 tests de T5.1/T5.2 de más arriba. Fuente:
+  // `state/reports/modulo-returns-spec.md` (sección 5, paso 13) y
+  // BLUEPRINT AD-8/invariante 7/§3.6: si
+  // `SUM(returnPayments.monto WHERE metodo = EFECTIVO) > 0`, UNA sola
+  // llamada (nunca por línea) a `cashRegisterService.registrarMovimiento`
+  // con `tipo: 'DEVOLUCION'`, `monto` esa suma (SIEMPRE POSITIVA — el
+  // signo con que queda en la base lo resuelve `registrarMovimiento`
+  // internamente, mismo criterio que `sales` con `VENTA`/`ANULACION`, no
+  // algo que `ReturnsService` decida), `referenciaTipo: 'RETURN'`,
+  // `referenciaId` el id de la devolución recién creada, `sessionId` el de
+  // la sesión abierta, `descripcion` con el número de la VENTA ORIGINAL.
+  // Si no hay nada en efectivo, `registrarMovimiento` nunca se llama —
+  // igual que `sales` con un pago 100% no efectivo.
+  interface RegistrarMovimientoCallInput {
+    sessionId: number;
+    tipo: string;
+    monto: Prisma.Decimal.Value;
+    referenciaTipo?: string;
+    referenciaId?: number;
+    descripcion: string;
+    userId: number;
+  }
+
+  function ultimoLlamadoRegistrarMovimiento(
+    deps: Deps,
+  ): RegistrarMovimientoCallInput {
+    const calls = deps.cashRegisterService.registrarMovimiento.mock.calls;
+    return calls[calls.length - 1][1] as RegistrarMovimientoCallInput;
+  }
+
+  describe('T5.3 — movimiento de caja por reintegro en efectivo (invariante 7, AD-8)', () => {
+    it('reintegro 100% efectivo: registrarMovimiento se llama UNA vez, con tipo DEVOLUCION, el monto total (positivo), referenciaTipo RETURN, el id de la devolución y la sesión abierta', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem], {
+        saleRow: buildSaleRow({ numero: 4242 }),
+      });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const result = await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('200.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const call = ultimoLlamadoRegistrarMovimiento(deps);
+      expect(call.tipo).toBe('DEVOLUCION');
+      expect(new Prisma.Decimal(call.monto).toString()).toBe('200');
+      expect(call.referenciaTipo).toBe('RETURN');
+      expect(call.referenciaId).toBe(result.id);
+      expect(call.sessionId).toBe(buildSessionRow().id);
+    });
+
+    it('reintegro 100% tarjeta: registrarMovimiento nunca se llama', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('150.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.TARJETA_CREDITO,
+              monto: new Prisma.Decimal('150.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('reintegro mixto (efectivo + tarjeta): registrarMovimiento se llama UNA sola vez, con el monto SOLO de la parte en efectivo, nunca el total devuelto', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 3,
+        netoLinea: new Prisma.Decimal('300.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 3, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('50.00'),
+            },
+            {
+              metodo: PaymentMetodo.TARJETA_DEBITO,
+              monto: new Prisma.Decimal('250.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const call = ultimoLlamadoRegistrarMovimiento(deps);
+      // Solo la parte efectivo (50.00), nunca el total_devuelto (300.00).
+      expect(new Prisma.Decimal(call.monto).toString()).toBe('50');
+      expect(new Prisma.Decimal(call.monto).toString()).not.toBe('300');
+    });
+
+    it('dos pagos en efectivo declarados por separado: registrarMovimiento se llama UNA sola vez, con la SUMA de ambos', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('120.00'),
+            },
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('80.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const call = ultimoLlamadoRegistrarMovimiento(deps);
+      expect(new Prisma.Decimal(call.monto).toString()).toBe('200');
+    });
+
+    it('la descripción incluye el número de la VENTA ORIGINAL (sale.numero), no el de la devolución', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([saleItem], {
+        saleRow: buildSaleRow({ numero: 7777 }),
+      });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const call = ultimoLlamadoRegistrarMovimiento(deps);
+      expect(call.descripcion).toContain('7777');
+    });
+
+    it('si la devolución se rechaza (venta ANULADA, AD-19), registrarMovimiento nunca se llama, aun con reintegro 100% efectivo', async () => {
+      const saleItem = buildSaleItemRow();
+      const tx = buildMockTx([saleItem], {
+        saleRow: buildSaleRow({ estado: 'ANULADA' }),
+      });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await expect(
+        service.crearDevolucion(asTx(tx), buildInput()),
+      ).rejects.toThrow(/anulada/i);
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('la llamada a registrarMovimiento ocurre DESPUÉS de tx.return.create (recién ahí existe return.id)', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(
+        deps.cashRegisterService.registrarMovimiento,
+      ).toHaveBeenCalledTimes(1);
+      const createOrder = tx.return.create.mock.invocationCallOrder[0];
+      const movimientoOrder =
+        deps.cashRegisterService.registrarMovimiento.mock
+          .invocationCallOrder[0];
+      expect(movimientoOrder).toBeGreaterThan(createOrder);
     });
   });
 });

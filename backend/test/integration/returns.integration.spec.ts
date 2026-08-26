@@ -293,7 +293,7 @@ describe('returns (integration, T5.1)', () => {
   });
 
   describe('ReturnsService.crearDevolucion — camino feliz', () => {
-    it('devolución completa de una línea, reintegro 100% efectivo: return/return_items/return_payments quedan coherentes, la venta original no cambia, hay un stock_movement DEVOLUCION (T5.2) pero NO cash_movements de tipo RETURN (T5.3)', async () => {
+    it('devolución completa de una línea, reintegro 100% efectivo: return/return_items/return_payments quedan coherentes, la venta original no cambia, hay un stock_movement DEVOLUCION (T5.2) y un cash_movement DEVOLUCION (T5.3)', async () => {
       const variant = await createVariant({
         precioVenta: '150.00',
         stockActual: 10,
@@ -347,7 +347,11 @@ describe('returns (integration, T5.1)', () => {
       // T5.2 (reingreso de stock) ya existe — reingresaStock: true en la
       // única línea de esta devolución tiene que dejar un stock_movement
       // DEVOLUCION referenciando esta devolución. T5.3 (movimiento de
-      // caja) todavía no existe: sin cash_movement de tipo RETURN.
+      // caja) también ya existe: el reintegro es 100% EFECTIVO, así que
+      // tiene que haber exactamente un cash_movement DEVOLUCION
+      // referenciando esta devolución, con el monto NEGATIVO (AD-8,
+      // `cash_movements_monto_sign_check`: DEVOLUCION siempre < 0 — sale
+      // del cajón).
       const stockMovs = await prisma.stockMovement.findMany({
         where: {
           referenciaTipo: StockMovementReferenciaTipo.RETURN,
@@ -365,7 +369,10 @@ describe('returns (integration, T5.1)', () => {
           referenciaId: devolucion.id,
         },
       });
-      expect(cashMovs).toHaveLength(0);
+      expect(cashMovs).toHaveLength(1);
+      expect(cashMovs[0].tipo).toBe('DEVOLUCION');
+      expect(cashMovs[0].monto.toString()).toBe('-300');
+      expect(cashMovs[0].sessionId).toBe(session.id);
 
       const variantAfter = await prisma.variant.findUniqueOrThrow({
         where: { id: variant.id },
@@ -876,6 +883,140 @@ describe('returns (integration, T5.1)', () => {
         where: { variantId: variant.id, tipo: 'DEVOLUCION' },
       });
       expect(stockMovs).toHaveLength(0);
+    });
+  });
+
+  // Fase 04a (T5.3) — tests NUEVOS de integración contra Postgres real,
+  // agregados sin tocar ninguna aserción de los describes de arriba (T5.1/
+  // T5.2) salvo la única ya actualizada explícitamente en el primer test
+  // de "camino feliz" (comentario ahí mismo explica por qué). Fuente:
+  // `state/reports/modulo-returns-spec.md` sección 5 paso 13 y BLUEPRINT
+  // AD-8/invariante 7/§3.6.
+  describe('ReturnsService.crearDevolucion — T5.3 movimiento de caja por reintegro en efectivo', () => {
+    it('camino feliz, reintegro 100% efectivo: el cash_movement real queda en la base con tipo DEVOLUCION y el monto negativo del reintegro', async () => {
+      const variant = await createVariant({
+        precioVenta: '90.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variant.id,
+        cantidad: 1,
+        precioVenta: '90.00',
+      });
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId,
+          items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('90.00'),
+            },
+          ],
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      const cashMovs = await prisma.cashMovement.findMany({
+        where: {
+          referenciaTipo: CashMovementReferenciaTipo.RETURN,
+          referenciaId: devolucion.id,
+        },
+      });
+      expect(cashMovs).toHaveLength(1);
+      expect(cashMovs[0].tipo).toBe('DEVOLUCION');
+      expect(cashMovs[0].monto.toString()).toBe('-90');
+      expect(cashMovs[0].sessionId).toBe(session.id);
+      expect(cashMovs[0].userId).toBe(ownerId);
+    });
+
+    it('reintegro 100% tarjeta: no genera ningún cash_movement nuevo', async () => {
+      const variant = await createVariant({
+        precioVenta: '120.00',
+        stockActual: 5,
+      });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variant.id,
+        cantidad: 1,
+        precioVenta: '120.00',
+      });
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId,
+          items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.TARJETA_CREDITO,
+              monto: new Prisma.Decimal('120.00'),
+            },
+          ],
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      const cashMovs = await prisma.cashMovement.findMany({
+        where: {
+          referenciaTipo: CashMovementReferenciaTipo.RETURN,
+          referenciaId: devolucion.id,
+        },
+      });
+      expect(cashMovs).toHaveLength(0);
+    });
+
+    it('rollback: si la devolución se rechaza (venta ANULADA), ningún cash_movement de tipo DEVOLUCION queda creado', async () => {
+      const variant = await createVariant({ precioVenta: '100.00' });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variant.id,
+        cantidad: 1,
+        precioVenta: '100.00',
+      });
+
+      await prisma.$transaction((tx) =>
+        salesService.anularVenta(tx, {
+          saleId,
+          userId: ownerId,
+          esOwner: true,
+        }),
+      );
+
+      const cashMovsAntes = await prisma.cashMovement.count({
+        where: { tipo: 'DEVOLUCION' },
+      });
+
+      await expect(
+        prisma.$transaction((tx) =>
+          returnsService.crearDevolucion(tx, {
+            saleId,
+            items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+            returnPayments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('100.00'),
+              },
+            ],
+            userId: ownerId,
+            esOwner: false,
+            idempotencyKey: randomUUID(),
+          }),
+        ),
+      ).rejects.toThrow(/anulada/i);
+
+      const cashMovsDespues = await prisma.cashMovement.count({
+        where: { tipo: 'DEVOLUCION' },
+      });
+      expect(cashMovsDespues).toBe(cashMovsAntes);
     });
   });
 });
