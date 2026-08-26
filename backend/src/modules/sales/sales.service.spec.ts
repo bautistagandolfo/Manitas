@@ -4154,7 +4154,9 @@ describe('SalesService.crearVenta — T5.5 crédito de devolución diferido (inv
     tx.payment.aggregate.mockImplementation((args: unknown) => {
       const id = (args as { where: { returnId: number } }).where.returnId;
       const consumido = consumidoById.get(id) ?? '0.00';
-      return Promise.resolve({ _sum: { monto: new Prisma.Decimal(consumido) } });
+      return Promise.resolve({
+        _sum: { monto: new Prisma.Decimal(consumido) },
+      });
     });
 
     const deps = buildDeps();

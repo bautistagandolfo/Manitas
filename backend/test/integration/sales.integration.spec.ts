@@ -1099,9 +1099,9 @@ describe('sales (integration, T4.1)', () => {
       });
       expect(salesInSession).toHaveLength(2);
 
-      const variantSegundaCompraAfter = await prisma.variant.findUniqueOrThrow(
-        { where: { id: variantSegundaCompra.id } },
-      );
+      const variantSegundaCompraAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantSegundaCompra.id },
+      });
       expect(variantSegundaCompraAfter.stockActual).toBe(5);
     });
 

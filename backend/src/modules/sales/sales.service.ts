@@ -72,6 +72,16 @@ export interface CrearVentaPaymentInput {
   metodo: PaymentMetodo;
   monto: Prisma.Decimal.Value;
   referencia?: string;
+  // T5.5 (invariante 14, AMB-16 RESUELTA — crédito diferido): un pago
+  // `CREDITO_DEVOLUCION` siempre referencia la devolución que lo generó.
+  // El PO confirmó que el crédito NO se limita al mismo momento del
+  // cambio (`returns`, RN-9) — cualquier venta futura, sin relación con
+  // `ReturnsService`, puede gastarlo, así que la validación de que no se
+  // gasta de más (invariante 14) vive acá, no en `returns` (evita una
+  // dependencia circular de módulos — `sales` solo consulta
+  // `tx.return`/`tx.payment` directamente, mismo patrón que
+  // `anularVenta` ya usa contra `tx.return.findFirst`).
+  returnId?: number;
 }
 
 // T4.3 — descuento manual (único `tipo` del MVP). Con `porcentaje`, el
@@ -388,6 +398,73 @@ export class SalesService {
       assertDentroDePrecision(p.monto, 'El monto de cada pago');
     }
 
+    // Paso 8b (T5.5, invariante 14, AMB-16 RESUELTA): forma de cada pago
+    // con crédito de devolución — `CREDITO_DEVOLUCION` siempre necesita
+    // `returnId`, y `returnId` solo tiene sentido junto con ese método.
+    for (const p of input.payments) {
+      if (
+        p.metodo === PaymentMetodo.CREDITO_DEVOLUCION &&
+        p.returnId === undefined
+      ) {
+        throw new BadRequestException(
+          'Un pago con crédito de devolución necesita indicar cuál',
+        );
+      }
+      if (
+        p.returnId !== undefined &&
+        p.metodo !== PaymentMetodo.CREDITO_DEVOLUCION
+      ) {
+        throw new BadRequestException(
+          'El crédito de devolución solo aplica a ese método de pago',
+        );
+      }
+    }
+
+    // Paso 8c (T5.5, invariante 14): el crédito de una devolución nunca
+    // se gasta de más — ni en esta venta ni sumado a lo que ya se gastó
+    // en cualquier otra. Lock de TODAS las devoluciones referenciadas,
+    // ordenado por id (BLUEPRINT §9.4), ANTES de leer cuánto crédito
+    // tienen consumido — sin esto, dos ventas simultáneas que gastan el
+    // mismo crédito podrían leer el mismo "consumido hasta ahora" y las
+    // dos pasar.
+    const creditoPagos = input.payments.filter((p) => p.returnId !== undefined);
+    const returnIdsInvolucrados = [
+      ...new Set(creditoPagos.map((p) => p.returnId!)),
+    ].sort((a, b) => a - b);
+
+    if (returnIdsInvolucrados.length > 0) {
+      await tx.$queryRaw`SELECT id FROM returns WHERE id IN (${Prisma.join(returnIdsInvolucrados)}) ORDER BY id FOR UPDATE`;
+
+      for (const returnId of returnIdsInvolucrados) {
+        const returnRow = await tx.return.findUnique({
+          where: { id: returnId },
+        });
+        if (!returnRow) {
+          throw new NotFoundException('Devolución no encontrada');
+        }
+
+        const aggregate = await tx.payment.aggregate({
+          where: { returnId, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
+          _sum: { monto: true },
+        });
+        const consumidoPrevio = aggregate._sum.monto ?? new Prisma.Decimal(0);
+
+        const pedidoEnEstaVenta = creditoPagos
+          .filter((p) => p.returnId === returnId)
+          .reduce(
+            (acc, p) => acc.plus(new Prisma.Decimal(p.monto)),
+            new Prisma.Decimal(0),
+          );
+
+        const disponible = returnRow.totalDevuelto.minus(consumidoPrevio);
+        if (pedidoEnEstaVenta.greaterThan(disponible)) {
+          throw new BadRequestException(
+            `El crédito de la devolución #${returnId} no alcanza — disponible: $${disponible.toFixed(2)}`,
+          );
+        }
+      }
+    }
+
     // La suma de pagos tiene que ser EXACTAMENTE el total, antes de
     // escribir nada.
     const sumaPagos = input.payments.reduce(
@@ -402,6 +479,7 @@ export class SalesService {
       metodo: p.metodo,
       monto: new Prisma.Decimal(p.monto),
       referencia: p.referencia ?? null,
+      returnId: p.returnId ?? null,
     }));
 
     // Paso 9: crear la venta con líneas, descuentos y pagos en una sola

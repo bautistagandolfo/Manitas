@@ -12,6 +12,7 @@ import {
   Return,
   ReturnTipo,
 } from '@prisma/client';
+import { SalesService } from '../sales/sales.service';
 import { StockService } from '../stock/stock.service';
 import { CashRegisterService } from '../cash-registers/cash-register.service';
 import { SettingsService } from '../../common/settings/settings.service';
@@ -40,6 +41,27 @@ export interface CrearDevolucionPaymentInput {
   referencia?: string;
 }
 
+// T5.5 (RN-9) — la venta nueva de un `CAMBIO`, reusando `crearVenta` tal
+// cual: nunca reimplementa descuentos/prorrateo/stock, solo pasa lo que
+// el mostrador cargó para la prenda nueva. El pago con el crédito de la
+// devolución se arma DENTRO de `crearDevolucion` (paso 14), no acá —
+// `payments` de este tipo son SOLO los pagos ADEMÁS del crédito (vacío
+// si el cambio es a precio igual o menor).
+export interface CrearDevolucionVentaNuevaInput {
+  items: Array<{ variantId: number; cantidad: number }>;
+  payments: Array<{
+    metodo: PaymentMetodo;
+    monto: Prisma.Decimal.Value;
+    referencia?: string;
+  }>;
+  discounts?: Array<{
+    descripcion: string;
+    porcentaje?: Prisma.Decimal.Value;
+    monto?: Prisma.Decimal.Value;
+  }>;
+  ajusteRedondeo?: Prisma.Decimal.Value;
+}
+
 export interface CrearDevolucionInput {
   saleId: number;
   items: CrearDevolucionItemInput[];
@@ -59,6 +81,13 @@ export interface CrearDevolucionInput {
   // transacción (el futuro `ReturnsController`), nunca
   // `crearDevolucion`.
   idempotencyKey: string;
+  // T5.5 (RN-9): default `DEVOLUCION` si no viene — compatibilidad
+  // total con las llamadas existentes de T5.1-T5.4, que nunca lo
+  // mandan.
+  tipo?: ReturnTipo;
+  // T5.5: obligatorio cuando `tipo = CAMBIO`, prohibido en caso
+  // contrario (validado al principio, sección "Paso 0b" de abajo).
+  ventaNueva?: CrearDevolucionVentaNuevaInput;
 }
 
 @Injectable()
@@ -68,6 +97,7 @@ export class ReturnsService {
     private readonly cashRegisterService: CashRegisterService,
     private readonly settingsService: SettingsService,
     private readonly stockService: StockService,
+    private readonly salesService: SalesService,
   ) {}
 
   async crearDevolucion(
@@ -91,6 +121,41 @@ export class ReturnsService {
     });
     if (existente) {
       return existente;
+    }
+
+    // Paso 0b (T5.5, RN-9) — forma de `tipo`/`ventaNueva`/crédito, ANTES
+    // de tocar la base: un `CAMBIO` necesita la venta nueva Y
+    // exactamente un reintegro `CREDITO_DEVOLUCION` (ese es "el crédito
+    // aplicado al cambio", ver paso 14); una `DEVOLUCION` simple no
+    // lleva ninguna de las dos cosas — el método `CREDITO_DEVOLUCION`
+    // solo existe dentro de un cambio.
+    const tipo = input.tipo ?? ReturnTipo.DEVOLUCION;
+    const creditoPayments = input.returnPayments.filter(
+      (p) => p.metodo === PaymentMetodo.CREDITO_DEVOLUCION,
+    );
+
+    if (tipo === ReturnTipo.CAMBIO) {
+      if (!input.ventaNueva) {
+        throw new BadRequestException(
+          'Un cambio necesita la venta nueva y el crédito aplicado',
+        );
+      }
+      if (creditoPayments.length !== 1) {
+        throw new BadRequestException(
+          'Un cambio necesita exactamente un reintegro de tipo crédito de devolución',
+        );
+      }
+    } else {
+      if (input.ventaNueva) {
+        throw new BadRequestException(
+          'Una devolución simple no lleva venta nueva',
+        );
+      }
+      if (creditoPayments.length > 0) {
+        throw new BadRequestException(
+          'Una devolución simple no genera crédito',
+        );
+      }
     }
 
     // Paso 1 (RN-2): sesión de caja abierta — lectura fail-fast, ANTES
@@ -235,13 +300,13 @@ export class ReturnsService {
 
     // Paso 11: crear la devolución con líneas y reintegros en una sola
     // escritura nested.
-    const devolucion = await tx.return.create({
+    let devolucion = await tx.return.create({
       data: {
         saleId: input.saleId,
         fecha: new Date(),
         userId: input.userId,
         cashRegisterSessionId: sesion.id,
-        tipo: ReturnTipo.DEVOLUCION,
+        tipo,
         totalDevuelto,
         autorizadoPorUserId,
         idempotencyKey: input.idempotencyKey,
@@ -287,6 +352,39 @@ export class ReturnsService {
         referenciaId: devolucion.id,
         descripcion: `Devolución venta #${sale.numero}`,
         userId: input.userId,
+      });
+    }
+
+    // Pasos 14-15 (T5.5, RN-9): la venta nueva de un `CAMBIO`, recién
+    // acá porque necesita `devolucion.id` para el pago con crédito.
+    // Reusa `SalesService.crearVenta` tal cual — no reimplementa
+    // ninguna regla de venta (descuentos, prorrateo, stock, RN-4). El
+    // `idempotencyKey` derivado es determinístico (mismo input siempre
+    // da la misma clave) pero distinto al de la devolución — son dos
+    // filas distintas (`sales`/`returns`), cada una con su propia
+    // columna `idempotency_key` única.
+    if (tipo === ReturnTipo.CAMBIO) {
+      const creditoAplicado = creditoPayments[0];
+      const ventaNueva = await this.salesService.crearVenta(tx, {
+        userId: input.userId,
+        esOwner: input.esOwner,
+        idempotencyKey: `${input.idempotencyKey}:cambio`,
+        items: input.ventaNueva!.items,
+        payments: [
+          ...input.ventaNueva!.payments,
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal(creditoAplicado.monto),
+            returnId: devolucion.id,
+          },
+        ],
+        discounts: input.ventaNueva!.discounts,
+        ajusteRedondeo: input.ventaNueva!.ajusteRedondeo,
+      });
+
+      devolucion = await tx.return.update({
+        where: { id: devolucion.id },
+        data: { saleNuevaId: ventaNueva.id },
       });
     }
 

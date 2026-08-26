@@ -301,7 +301,7 @@ interface ReturnCreateCall {
     fecha: Date;
     userId: number;
     cashRegisterSessionId: number;
-    tipo: 'DEVOLUCION';
+    tipo: 'DEVOLUCION' | 'CAMBIO';
     totalDevuelto: Prisma.Decimal.Value;
     autorizadoPorUserId: number | null;
     idempotencyKey?: string;
@@ -313,6 +313,11 @@ interface ReturnCreateCall {
 interface CreatedReturn {
   id: number;
   numero: number;
+  saleId: number;
+  tipo: 'DEVOLUCION' | 'CAMBIO';
+  totalDevuelto: Prisma.Decimal.Value;
+  autorizadoPorUserId: number | null;
+  saleNuevaId: number | null;
   items: Array<ReturnItemCreateInput & { id: number }>;
   returnPayments: Array<ReturnPaymentCreateInput & { id: number }>;
 }
@@ -324,6 +329,17 @@ function buildCreatedReturnFromCall(
   return {
     id: returnId,
     numero: returnId,
+    // Mismo criterio que Prisma real: `create()` devuelve TODOS los
+    // campos escalares que se escribieron, no solo los de las
+    // relaciones anidadas — antes esta fábrica solo devolvía
+    // `id`/`numero`/`items`/`returnPayments`, y cualquier test que
+    // leyera `result.totalDevuelto` (en vez de `call.data.totalDevuelto`,
+    // el patrón que ya usa el resto de este archivo) veía `undefined`.
+    saleId: call.data.saleId,
+    tipo: call.data.tipo,
+    totalDevuelto: call.data.totalDevuelto,
+    autorizadoPorUserId: call.data.autorizadoPorUserId,
+    saleNuevaId: null,
     items: call.data.items.create.map((item, index) => ({
       id: index + 1,
       ...item,
@@ -379,6 +395,14 @@ function buildMockTx(
     existingReturn?: CreatedReturn | null;
   } = {},
 ): MockTx {
+  // T5.5: `update()` real de Prisma devuelve la fila COMPLETA con los
+  // campos nuevos ya fusionados, no un objeto vacío — la implementación
+  // reasigna `devolucion` al resultado de `tx.return.update` (necesita
+  // `saleNuevaId` en la fila que finalmente devuelve `crearDevolucion`).
+  // Esta variable capturada simula eso: recuerda la última fila que
+  // `create` devolvió y la usa como base para `update`.
+  let ultimaDevolucionCreada: CreatedReturn | undefined;
+
   return {
     sale: {
       findUnique: jest
@@ -404,15 +428,22 @@ function buildMockTx(
         .mockResolvedValue(options.existingReturn ?? null),
       create: jest
         .fn<Promise<CreatedReturn>, [ReturnCreateCall]>()
-        .mockImplementation((call) =>
-          Promise.resolve(buildCreatedReturnFromCall(call)),
-        ),
-      // Default sin uso real (ningún test de T5.1-T5.4 llama a `update`,
-      // ninguno de este archivo comprueba su valor de retorno — solo que
-      // se haya llamado con el `where`/`data` correctos).
+        .mockImplementation((call) => {
+          ultimaDevolucionCreada = buildCreatedReturnFromCall(call);
+          return Promise.resolve(ultimaDevolucionCreada);
+        }),
       update: jest
         .fn<Promise<CreatedReturn>, [unknown]>()
-        .mockResolvedValue({} as CreatedReturn),
+        .mockImplementation((args) => {
+          const { data } = args as {
+            where: { id: number };
+            data: Partial<CreatedReturn>;
+          };
+          return Promise.resolve({
+            ...(ultimaDevolucionCreada ?? ({} as CreatedReturn)),
+            ...data,
+          });
+        }),
     },
     $queryRaw: jest
       .fn<Promise<unknown[]>, [TemplateStringsArray, ...unknown[]]>()
@@ -1720,7 +1751,7 @@ describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
       expect(tx.return.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: devolucion.id },
-          data: expect.objectContaining({ saleNuevaId: 601 }),
+          data: expect.objectContaining({ saleNuevaId: 601 }) as unknown,
         }),
       );
     });
@@ -1773,9 +1804,7 @@ describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
         (p) => p.metodo === PaymentMetodo.EFECTIVO,
       );
       expect(efectivoPayment).toBeDefined();
-      expect(new Prisma.Decimal(efectivoPayment!.monto).toString()).toBe(
-        '50',
-      );
+      expect(new Prisma.Decimal(efectivoPayment!.monto).toString()).toBe('50');
     });
   });
 
