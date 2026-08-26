@@ -372,7 +372,7 @@ completa en la sección 12.1 del blueprint.
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
 | T5.1 | Devolución contra venta existente, con validación de plazo (`dias_plazo_devolucion`), cantidades e idempotencia (§9.7) | T4.4, T0.13, T0.14 | VERDE |
-| T5.2 | Reingreso de stock condicional (`reingresa_stock`) | T5.1 | PENDIENTE |
+| T5.2 | Reingreso de stock condicional (`reingresa_stock`) | T5.1 | VERDE |
 | T5.3 | Reintegro en efectivo → movimiento de caja negativo | T5.1, **T3.2** | PENDIENTE |
 | T5.4 | Reversión del costo congelado (para que el CMV quede correcto) | T5.1 | PENDIENTE |
 | T5.5 | Cambio: devolución + venta nueva ligadas | T5.3 | PENDIENTE |
