@@ -376,7 +376,7 @@ completa en la sección 12.1 del blueprint.
 | T5.3 | Reintegro en efectivo → movimiento de caja negativo | T5.1, **T3.2** | VERDE |
 | T5.4 | Reversión del costo congelado (para que el CMV quede correcto) | T5.1 | VERDE |
 | T5.5 | Cambio: devolución + venta nueva ligadas | T5.3 | VERDE |
-| T5.6 | Test del invariante 8 (no devolver más de lo vendido) | T5.1 | PENDIENTE |
+| T5.6 | Test del invariante 8 (no devolver más de lo vendido) | T5.1 | VERDE |
 | T5.7 | Pantallas de devolución y cambio | T5.5 | PENDIENTE |
 | T5.8 | Aplicar crédito de una devolución a una venta posterior (nota de crédito diferida, AMB-16) | T5.5, T5.1 | PENDIENTE |
 
