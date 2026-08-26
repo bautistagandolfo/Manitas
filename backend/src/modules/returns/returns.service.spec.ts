@@ -1321,4 +1321,114 @@ describe('ReturnsService.crearDevolucion', () => {
       expect(movimientoOrder).toBeGreaterThan(createOrder);
     });
   });
+
+  // Fase 04a (T5.4) — tests escritos ANTES de cualquier cambio de
+  // implementación, en sesión AISLADA. Fuente única:
+  // `docs/build-protocol/state/reports/modulo-returns-spec.md` RN-6,
+  // sección 2 (aclaración explícita: `returns` no ejecuta ninguna resta de
+  // costo activa — `return_items.costo_unitario` se copia tal cual de
+  // `sale_items.costo_unitario`, mismo congelado que ya hizo `sales`,
+  // BLUEPRINT AD-5); BLUEPRINT §5.6 (el filtro `reingresa_stock = true` lo
+  // aplica `resultados`, Etapa 6, todavía sin construir — no este módulo).
+  // A diferencia de T5.1/T5.2/T5.3, ningún test de arriba afirma
+  // explícitamente sobre el VALOR de `costo_unitario` en el `create` — este
+  // bloque lo hace de forma directa, sin importar el resultado (puede que
+  // ya pase en verde contra la implementación actual de T5.1).
+  describe('T5.4 — costo_unitario congelado, para el CMV de resultados (BLUEPRINT §5.6, RN-6)', () => {
+    it('copia costo_unitario TAL CUAL de la línea de venta original (AD-5) — no un valor recalculado ni el que traiga otra fuente', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+        costoUnitario: new Prisma.Decimal('73.50'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(asTx(tx), buildInput());
+
+      const call = tx.return.create.mock.calls[0][0];
+      expect(
+        new Prisma.Decimal(call.data.items.create[0].costoUnitario).toString(),
+      ).toBe('73.5');
+    });
+
+    it('con reingresaStock: true, el costo_unitario copiado es el mismo que con reingresaStock: false — el dato se persiste igual en los dos casos', async () => {
+      for (const reingresaStock of [true, false]) {
+        const saleItem = buildSaleItemRow({
+          id: 1,
+          cantidad: 1,
+          netoLinea: new Prisma.Decimal('100.00'),
+          costoUnitario: new Prisma.Decimal('40.00'),
+        });
+        const tx = buildMockTx([saleItem]);
+        const deps = buildDeps();
+        const service = buildService(deps);
+
+        await service.crearDevolucion(
+          asTx(tx),
+          buildInput({
+            items: [{ saleItemId: 1, cantidad: 1, reingresaStock }],
+            returnPayments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('100.00'),
+              },
+            ],
+          }),
+        );
+
+        const call = tx.return.create.mock.calls[0][0];
+        expect(
+          new Prisma.Decimal(
+            call.data.items.create[0].costoUnitario,
+          ).toString(),
+        ).toBe('40');
+        expect(call.data.items.create[0].reingresaStock).toBe(reingresaStock);
+      }
+    });
+
+    it('con DOS líneas de costos distintos en la misma devolución, cada return_item lleva el costo_unitario de SU línea, no un valor mezclado ni el de la otra', async () => {
+      const saleItemA = buildSaleItemRow({
+        id: 1,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('100.00'),
+        costoUnitario: new Prisma.Decimal('30.00'),
+      });
+      const saleItemB = buildSaleItemRow({
+        id: 2,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('70.00'),
+        costoUnitario: new Prisma.Decimal('55.25'),
+      });
+      const tx = buildMockTx([saleItemA, saleItemB]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [
+            { saleItemId: 1, cantidad: 2, reingresaStock: true },
+            { saleItemId: 2, cantidad: 1, reingresaStock: false },
+          ],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('170.00'),
+            },
+          ],
+        }),
+      );
+
+      const call = tx.return.create.mock.calls[0][0];
+      const itemA = call.data.items.create.find((i) => i.saleItemId === 1)!;
+      const itemB = call.data.items.create.find((i) => i.saleItemId === 2)!;
+      expect(new Prisma.Decimal(itemA.costoUnitario).toString()).toBe('30');
+      expect(new Prisma.Decimal(itemB.costoUnitario).toString()).toBe(
+        '55.25',
+      );
+    });
+  });
 });

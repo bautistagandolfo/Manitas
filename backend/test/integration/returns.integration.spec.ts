@@ -1019,4 +1019,143 @@ describe('returns (integration, T5.1)', () => {
       expect(cashMovsDespues).toBe(cashMovsAntes);
     });
   });
+
+  // Fase 04a (T5.4) — tests de integración escritos ANTES de cualquier
+  // cambio de implementación, en sesión AISLADA. Fuente única:
+  // `docs/build-protocol/state/reports/modulo-returns-spec.md` RN-6,
+  // sección 2 (aclaración explícita: `return_items.costo_unitario` se
+  // copia tal cual de `sale_items.costo_unitario`, mismo congelado que ya
+  // hizo `sales`, BLUEPRINT AD-5 — no hay ninguna resta de costo que este
+  // módulo ejecute; es `resultados`, Etapa 6, §5.6, quien filtra por
+  // `reingresa_stock = true` después). Contra Postgres real, para probar
+  // de verdad el congelado: se cambia `variant.costoActual` DESPUÉS de la
+  // venta, directo en la base, y se confirma que la devolución sigue
+  // usando el costo VIEJO leído de `sale_items`, no el actual.
+  describe('T5.4 — costo_unitario congelado, para el CMV de resultados (BLUEPRINT §5.6, RN-6)', () => {
+    it('costo_unitario de la devolución coincide con el congelado en sale_items al momento de la venta, no con costo_actual de la variante si éste cambió DESPUÉS (AD-5)', async () => {
+      const variant = await createVariant({
+        precioVenta: '120.00',
+        costoActual: '50.00',
+        stockActual: 10,
+      });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variant.id,
+        cantidad: 1,
+        precioVenta: '120.00',
+      });
+
+      const saleItemAntes = await prisma.saleItem.findUniqueOrThrow({
+        where: { id: saleItemId },
+      });
+      expect(saleItemAntes.costoUnitario.toString()).toBe('50');
+
+      // El costo de reposición de la variante cambia DESPUÉS de la venta —
+      // directo en la base, como haría un reingreso de mercadería (T2.x).
+      await prisma.variant.update({
+        where: { id: variant.id },
+        data: { costoActual: new Prisma.Decimal('999.00') },
+      });
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId,
+          items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('120.00'),
+            },
+          ],
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      const dbReturnItem = await prisma.returnItem.findFirstOrThrow({
+        where: { returnId: devolucion.id },
+      });
+      // Costo viejo, congelado en sale_items al momento de la venta — no
+      // los 999 que la variante tiene ahora.
+      expect(dbReturnItem.costoUnitario.toString()).toBe('50');
+    });
+
+    it('con DOS líneas de costos distintos y reingresaStock distinto, cada return_item conserva SU costo_unitario, sin mezclarse entre líneas', async () => {
+      const variantA = await createVariant({
+        precioVenta: '90.00',
+        costoActual: '40.00',
+        stockActual: 10,
+      });
+      const variantB = await createVariant({
+        precioVenta: '60.00',
+        costoActual: '22.50',
+        stockActual: 10,
+      });
+      await openSession(ownerId);
+
+      const sale = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, {
+          userId: ownerId,
+          esOwner: true,
+          idempotencyKey: randomUUID(),
+          items: [
+            { variantId: variantA.id, cantidad: 2 },
+            { variantId: variantB.id, cantidad: 1 },
+          ],
+          payments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('240.00'),
+            },
+          ],
+        }),
+      );
+      createdSaleIds.push(sale.id);
+
+      const saleWithItems = await prisma.sale.findUniqueOrThrow({
+        where: { id: sale.id },
+        include: { items: true },
+      });
+      const itemA = saleWithItems.items.find(
+        (i) => i.variantId === variantA.id,
+      )!;
+      const itemB = saleWithItems.items.find(
+        (i) => i.variantId === variantB.id,
+      )!;
+      expect(itemA.costoUnitario.toString()).toBe('40');
+      expect(itemB.costoUnitario.toString()).toBe('22.5');
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId: sale.id,
+          items: [
+            { saleItemId: itemA.id, cantidad: 2, reingresaStock: true },
+            { saleItemId: itemB.id, cantidad: 1, reingresaStock: false },
+          ],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('240.00'),
+            },
+          ],
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      const dbItems = await prisma.returnItem.findMany({
+        where: { returnId: devolucion.id },
+      });
+      const returnItemA = dbItems.find((i) => i.saleItemId === itemA.id)!;
+      const returnItemB = dbItems.find((i) => i.saleItemId === itemB.id)!;
+
+      expect(returnItemA.costoUnitario.toString()).toBe('40');
+      expect(returnItemA.reingresaStock).toBe(true);
+      expect(returnItemB.costoUnitario.toString()).toBe('22.5');
+      expect(returnItemB.reingresaStock).toBe(false);
+    });
+  });
 });
