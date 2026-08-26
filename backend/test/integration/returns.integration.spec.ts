@@ -1370,4 +1370,119 @@ describe('returns (integration, T5.1)', () => {
       expect(variantNuevaAfter.stockActual).toBe(0);
     });
   });
+
+  // T5.6 explícito en el ROADMAP (Etapa 5) — test de concurrencia real del
+  // invariante 8 (BLUEPRINT §6, ítem 8: `SUM(return_items.cantidad)` por
+  // `sale_item_id` nunca supera la `cantidad` vendida en esa línea).
+  // Fuente: `state/reports/modulo-returns-spec.md` sección 5, paso 4 ("Lock
+  // de los `sale_items` involucrados, ordenado por id... sin este lock, dos
+  // devoluciones parciales concurrentes de la MISMA línea leen el mismo
+  // acumulado 'viejo' y las dos podrían pasar el tope de RN-4") y sección 9
+  // ("Concurrencia real (Postgres, T5.6 del roadmap explícito): dos
+  // devoluciones parciales simultáneas de la MISMA línea, cerca del tope —
+  // una pasa, la otra rechaza por invariante 8, nunca las dos. Mismo patrón
+  // que T4.9 de `sales` (repetido varias veces con datos frescos por
+  // iteración)"). Mismo patrón MECÁNICO (no de lógica de negocio, módulo
+  // distinto) que el describe 'T4.9' de `sales.integration.spec.ts`:
+  // `Promise.allSettled` con dos llamadas reales contra Postgres, repetido
+  // 5 veces con datos frescos por iteración — la ventana real de la carrera
+  // es angosta, una sola vuelta podría no alcanzar a exponer una regresión
+  // del lock.
+  //
+  // A diferencia de una Fase 04a típica (donde todo debe fallar por
+  // ausencia de implementación), acá `ReturnsService.crearDevolucion` YA
+  // EXISTE desde T5.1 y ya debería tomar el lock de `sale_items`
+  // (BLUEPRINT §9.4) — así que es válido, y esperado, que este test PASE de
+  // entrada si el lock está bien implementado. El mensaje de rechazo
+  // esperado (`/supera|disponible/i`) es el mismo que ya usa, más arriba en
+  // este archivo, el test secuencial de RN-4 ('cantidad supera lo vendido
+  // disponible en la línea: rechaza y no crea nada', línea ~512) — no uno
+  // inventado para esta sesión.
+  describe('ReturnsService.crearDevolucion — T5.6 concurrencia real (invariante 8)', () => {
+    it('dos devoluciones parciales simultáneas de la MISMA línea que juntas superan lo vendido (aunque cada una sola no): una pasa, la otra rechaza — nunca las dos, y la suma en base nunca supera lo vendido', async () => {
+      const session = await openSession(ownerId);
+      void session;
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const variant = await createVariant({
+          precioVenta: '50.00',
+          stockActual: 20,
+        });
+        const { saleId, saleItemId } = await createSaleFixture({
+          userId: ownerId,
+          variantId: variant.id,
+          cantidad: 10,
+          precioVenta: '50.00',
+        });
+
+        // Línea vendida: 10 unidades, neto_linea total = 500.00 (sin
+        // descuento). Cada devolución pide 6 (6 < 10: pasa el tope de RN-4
+        // si se evalúa sola) pero juntas (12) superan las 10 vendidas — el
+        // caso exacto que ejercita el lock de `sale_items` de la sección 5
+        // de la spec, no una concurrencia trivial que ninguna de las dos
+        // alcanzaría a superar el tope por sí misma.
+        const [a, b] = await Promise.allSettled([
+          prisma.$transaction((tx) =>
+            returnsService.crearDevolucion(tx, {
+              saleId,
+              items: [{ saleItemId, cantidad: 6, reingresaStock: true }],
+              returnPayments: [
+                {
+                  metodo: PaymentMetodo.EFECTIVO,
+                  monto: new Prisma.Decimal('300.00'),
+                },
+              ],
+              userId: ownerId,
+              esOwner: false,
+              idempotencyKey: randomUUID(),
+            }),
+          ),
+          prisma.$transaction((tx) =>
+            returnsService.crearDevolucion(tx, {
+              saleId,
+              items: [{ saleItemId, cantidad: 6, reingresaStock: true }],
+              returnPayments: [
+                {
+                  metodo: PaymentMetodo.EFECTIVO,
+                  monto: new Prisma.Decimal('300.00'),
+                },
+              ],
+              userId: ownerId,
+              esOwner: false,
+              idempotencyKey: randomUUID(),
+            }),
+          ),
+        ]);
+
+        const results = [a, b];
+        const fulfilled = results.filter(
+          (r): r is PromiseFulfilledResult<Return> => r.status === 'fulfilled',
+        );
+        const rejected = results.filter(
+          (r): r is PromiseRejectedResult => r.status === 'rejected',
+        );
+
+        // Nunca las dos pasan (violaría el invariante 8: 12 > 10
+        // vendidas), y nunca las dos rechazan (6 unidades solas, sin la
+        // otra, están dentro del tope — alguna de las dos tiene que poder
+        // devolverse).
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect((rejected[0].reason as Error).message).toMatch(
+          /supera|disponible/i,
+        );
+
+        // Invariante 8 verificado con una query real contra la base
+        // después de que ambas promesas resolvieron, no solo infiriendo
+        // del resultado de las promesas: la suma de `return_items.cantidad`
+        // para esta línea nunca puede superar la `cantidad` vendida (10).
+        const sumaDevuelta = await prisma.returnItem.aggregate({
+          where: { saleItemId },
+          _sum: { cantidad: true },
+        });
+        expect(sumaDevuelta._sum.cantidad ?? 0).toBeLessThanOrEqual(10);
+        expect(sumaDevuelta._sum.cantidad ?? 0).toBe(6);
+      }
+    });
+  });
 });
