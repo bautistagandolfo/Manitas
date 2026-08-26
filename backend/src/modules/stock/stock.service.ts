@@ -66,6 +66,21 @@ export interface RevertirPorAnulacionInput {
   userId: number;
 }
 
+// T5.2 (`returns`) — método reservado desde la fase 06 de `returns`
+// (`modulo-returns-spec.md`, sección 5, paso 12) para reingresar al
+// stock vendible la mercadería de una devolución, solo cuando la
+// prenda vuelve en condiciones de venta (`reingresa_stock = true` por
+// línea — si es `false`, `returns.service.ts` ni siquiera llama a
+// este método). Sin lock propio, mismo criterio que
+// `revertirPorAnulacion`: reingresar siempre suma, nunca necesita
+// validar contra un umbral.
+export interface ReingresarPorDevolucionInput {
+  variantId: number;
+  cantidad: number;
+  returnId: number;
+  userId: number;
+}
+
 export interface StockReconciliationMismatch {
   variantId: number;
   stockActual: number;
@@ -244,6 +259,32 @@ export class StockService {
         tipo: StockMovementTipo.ANULACION,
         referenciaTipo: StockMovementReferenciaTipo.SALE,
         referenciaId: input.saleId,
+        userId: input.userId,
+      },
+    });
+
+    await tx.variant.update({
+      where: { id: input.variantId },
+      data: { stockActual: { increment: input.cantidad } },
+    });
+  }
+
+  // T5.2 (`returns`) — reingreso de stock por devolución (BLUEPRINT §5.4,
+  // RN-6 de `modulo-returns-spec.md`). `returns.service.ts` llama a este
+  // método una vez por línea con `reingresa_stock = true`, después de
+  // crear la devolución (recién ahí existe `return.id`) — nunca para las
+  // líneas donde la prenda volvió fallada.
+  async reingresarPorDevolucion(
+    tx: Prisma.TransactionClient,
+    input: ReingresarPorDevolucionInput,
+  ): Promise<void> {
+    await tx.stockMovement.create({
+      data: {
+        variantId: input.variantId,
+        delta: input.cantidad,
+        tipo: StockMovementTipo.DEVOLUCION,
+        referenciaTipo: StockMovementReferenciaTipo.RETURN,
+        referenciaId: input.returnId,
         userId: input.userId,
       },
     });

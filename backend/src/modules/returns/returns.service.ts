@@ -5,23 +5,21 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PaymentMetodo, Prisma, Return, ReturnTipo } from '@prisma/client';
+import { StockService } from '../stock/stock.service';
 import { CashRegisterService } from '../cash-registers/cash-register.service';
 import { SettingsService } from '../../common/settings/settings.service';
 import { SETTINGS_KEYS } from '../../common/settings/settings-keys';
 import { PrismaService } from '../../prisma/prisma.service';
 import { roundCurrency } from '../../common/money/money.util';
 
-// T5.1 — servicio de devolución transaccional (BLUEPRINT §5.4, RN-1 a
-// RN-8 de `modulo-returns-spec.md`). Recibe siempre el `tx` de una
-// transacción ya abierta por quien llama (mismo contrato que
+// T5.1/T5.2 — servicio de devolución transaccional (BLUEPRINT §5.4,
+// RN-1 a RN-8 de `modulo-returns-spec.md`). Recibe siempre el `tx` de
+// una transacción ya abierta por quien llama (mismo contrato que
 // `sales.service.ts`/`stock.service.ts`) — nunca abre la suya propia.
 //
-// Alcance de este ticket, a propósito acotado (ROADMAP.md, un ticket
-// por vez): solo `tipo = DEVOLUCION` (sin `CAMBIO`, eso es T5.5), sin
-// reingreso real de stock (T5.2) y sin movimiento de caja real (T5.3)
-// — `reingresa_stock` se recibe y se persiste, pero ningún colaborador
-// de stock/caja se llama todavía más allá de verificar que hay una
-// sesión abierta (RN-2, estructural, no depende de si hay efectivo).
+// Alcance acotado a propósito (ROADMAP.md, un ticket por vez): solo
+// `tipo = DEVOLUCION` (sin `CAMBIO`, eso es T5.5) y sin movimiento de
+// caja real (T5.3) — el reingreso de stock (T5.2) sí está construido.
 
 export interface CrearDevolucionItemInput {
   saleItemId: number;
@@ -62,6 +60,7 @@ export class ReturnsService {
     private readonly prisma: PrismaService,
     private readonly cashRegisterService: CashRegisterService,
     private readonly settingsService: SettingsService,
+    private readonly stockService: StockService,
   ) {}
 
   async crearDevolucion(
@@ -229,7 +228,7 @@ export class ReturnsService {
 
     // Paso 11: crear la devolución con líneas y reintegros en una sola
     // escritura nested.
-    return tx.return.create({
+    const devolucion = await tx.return.create({
       data: {
         saleId: input.saleId,
         fecha: new Date(),
@@ -243,5 +242,24 @@ export class ReturnsService {
         returnPayments: { create: returnPaymentsData },
       },
     });
+
+    // Paso 12 (T5.2, RN-6): reingreso de stock, un `reingresarPorDevolucion`
+    // por línea (nunca agregado por variante) — solo para las líneas donde
+    // la prenda vuelve en condiciones de venta. Recién acá existe
+    // `devolucion.id`, así que este paso no puede ir antes del `create`.
+    for (const item of input.items) {
+      if (!item.reingresaStock) {
+        continue;
+      }
+      const saleItem = saleItemById.get(item.saleItemId)!;
+      await this.stockService.reingresarPorDevolucion(tx, {
+        variantId: saleItem.variantId,
+        cantidad: item.cantidad,
+        returnId: devolucion.id,
+        userId: input.userId,
+      });
+    }
+
+    return devolucion;
   }
 }
