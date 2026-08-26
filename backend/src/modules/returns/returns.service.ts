@@ -4,7 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentMetodo, Prisma, Return, ReturnTipo } from '@prisma/client';
+import {
+  CashMovementReferenciaTipo,
+  CashMovementTipo,
+  PaymentMetodo,
+  Prisma,
+  Return,
+  ReturnTipo,
+} from '@prisma/client';
 import { StockService } from '../stock/stock.service';
 import { CashRegisterService } from '../cash-registers/cash-register.service';
 import { SettingsService } from '../../common/settings/settings.service';
@@ -256,6 +263,29 @@ export class ReturnsService {
         variantId: saleItem.variantId,
         cantidad: item.cantidad,
         returnId: devolucion.id,
+        userId: input.userId,
+      });
+    }
+
+    // Paso 13 (T5.3, invariante 7, AD-8): solo la parte del reintegro
+    // cobrada en EFECTIVO mueve la caja, sumada en un único movimiento
+    // (no uno por línea de reintegro) — mismo criterio exacto que
+    // `sales.crearVenta`.
+    const sumaEfectivo = input.returnPayments
+      .filter((p) => p.metodo === PaymentMetodo.EFECTIVO)
+      .reduce(
+        (acc, p) => acc.plus(new Prisma.Decimal(p.monto)),
+        new Prisma.Decimal(0),
+      );
+
+    if (sumaEfectivo.greaterThan(0)) {
+      await this.cashRegisterService.registrarMovimiento(tx, {
+        sessionId: sesion.id,
+        tipo: CashMovementTipo.DEVOLUCION,
+        monto: sumaEfectivo,
+        referenciaTipo: CashMovementReferenciaTipo.RETURN,
+        referenciaId: devolucion.id,
+        descripcion: `Devolución venta #${sale.numero}`,
         userId: input.userId,
       });
     }

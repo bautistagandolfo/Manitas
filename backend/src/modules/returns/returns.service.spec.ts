@@ -400,7 +400,7 @@ function fechaHaceDias(dias: number): Date {
 
 describe('ReturnsService.crearDevolucion', () => {
   describe('camino feliz — reintegro 100% efectivo (RN-1 a RN-8, invariante 11)', () => {
-    it('devuelve una línea completa: total_devuelto y neto_linea correctos, la venta original no se modifica, sin movimiento de caja (T5.3)', async () => {
+    it('devuelve una línea completa: total_devuelto y neto_linea correctos, la venta original no se modifica, mueve la caja por el reintegro en efectivo (T5.3)', async () => {
       const saleItem = buildSaleItemRow({
         id: 1,
         cantidad: 2,
@@ -432,10 +432,15 @@ describe('ReturnsService.crearDevolucion', () => {
       // La venta original nunca se toca: `returns` solo lee `sales`.
       expect(tx.sale.update).not.toHaveBeenCalled();
 
-      // T5.3 (movimiento de caja real) todavía no existe.
+      // T5.3 ya existe: el reintegro 100% efectivo de este caso mueve la
+      // caja en un único movimiento por el total.
       expect(
         deps.cashRegisterService.registrarMovimiento,
-      ).not.toHaveBeenCalled();
+      ).toHaveBeenCalledTimes(1);
+      const movimiento = deps.cashRegisterService.registrarMovimiento.mock
+        .calls[0][1] as { monto: Prisma.Decimal.Value; tipo: string };
+      expect(movimiento.tipo).toBe('DEVOLUCION');
+      expect(new Prisma.Decimal(movimiento.monto).toString()).toBe('200');
     });
   });
 
