@@ -2,6 +2,7 @@ import { Prisma, PaymentMetodo } from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashRegisterService } from '../cash-registers/cash-register.service';
 import type { SettingsService } from '../../common/settings/settings.service';
+import type { StockService } from '../stock/stock.service';
 import { ReturnsService } from './returns.service';
 
 // Fase 04a (T5.1) — tests escritos ANTES de la implementación, en sesión
@@ -138,6 +139,13 @@ function buildInput(
 interface SaleItemRow {
   id: number;
   saleId: number;
+  // Fase 04a (T5.2): agregado de infraestructura de test, no una regla de
+  // negocio nueva — la lectura de `sale_items` que `crearDevolucion` ya
+  // hace (paso 5) necesita `variantId` para poder resolverlo por línea y
+  // llamar a `stockService.reingresarPorDevolucion` (T5.2). Ninguna
+  // aserción de los tests de T5.1 de más abajo usa este campo, así que
+  // agregarlo no cambia ningún resultado esperado de esos tests.
+  variantId: number;
   cantidad: number;
   netoLinea: Prisma.Decimal;
   costoUnitario: Prisma.Decimal;
@@ -147,6 +155,7 @@ function buildSaleItemRow(overrides: Partial<SaleItemRow> = {}): SaleItemRow {
   return {
     id: 1,
     saleId: 501,
+    variantId: 10,
     cantidad: 2,
     netoLinea: new Prisma.Decimal('200.00'),
     costoUnitario: new Prisma.Decimal('60.00'),
@@ -322,6 +331,15 @@ interface Deps {
   settingsService: {
     getInt: jest.Mock<Promise<number>, [string]>;
   };
+  // Fase 04a (T5.2): agregado de infraestructura de test, mismo criterio
+  // que el `variantId` de `SaleItemRow` de más arriba — el constructor de
+  // `ReturnsService` gana un cuarto parámetro (`StockService`) para poder
+  // delegar el reingreso real de stock (CLAUDE.md regla 4: "Solo
+  // `stock.service.ts` escribe movimientos de stock"). Ninguna aserción de
+  // los 17 tests de T5.1 de más abajo depende de este mock.
+  stockService: {
+    reingresarPorDevolucion: jest.Mock<Promise<void>, [unknown, unknown]>;
+  };
 }
 
 function buildDeps(overrides: Partial<Deps> = {}): Deps {
@@ -338,6 +356,11 @@ function buildDeps(overrides: Partial<Deps> = {}): Deps {
       // dias_plazo_devolucion, sembrado en 30 (T0.13, AMB-2 RESUELTA).
       getInt: jest.fn<Promise<number>, [string]>().mockResolvedValue(30),
     },
+    stockService: {
+      reingresarPorDevolucion: jest
+        .fn<Promise<void>, [unknown, unknown]>()
+        .mockResolvedValue(undefined),
+    },
     ...overrides,
   };
 }
@@ -347,6 +370,7 @@ function buildService(deps: Deps): ReturnsService {
     {} as PrismaService,
     deps.cashRegisterService as unknown as CashRegisterService,
     deps.settingsService as unknown as SettingsService,
+    deps.stockService as unknown as StockService,
   );
 }
 
@@ -871,6 +895,162 @@ describe('ReturnsService.crearDevolucion', () => {
       const lockCallOrder =
         tx.$queryRaw.mock.invocationCallOrder[lockCallIndex];
       expect(lockCallOrder).toBeLessThan(readAcumuladoCallOrder);
+    });
+  });
+
+  // Fase 04a (T5.2) — tests NUEVOS, agregados a este archivo sin tocar
+  // ninguna aserción de los 17 tests de T5.1 de más arriba. Fuente:
+  // `state/reports/modulo-returns-spec.md` (sección 5, paso 12) — por cada
+  // `return_item` con `reingresaStock = true`, DESPUÉS de `tx.return.create`
+  // (recién ahí existe `return.id`), una llamada a
+  // `stockService.reingresarPorDevolucion(tx, { variantId, cantidad,
+  // returnId, userId })` por línea, nunca agrupada.
+  describe('T5.2 — reingreso de stock, delegado a StockService (spec sección 5, paso 12)', () => {
+    it('reingresaStock: true → llama a stockService.reingresarPorDevolucion UNA vez, con el variantId, la cantidad y el returnId correctos', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        variantId: 42,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const result = await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 2, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('200.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(deps.stockService.reingresarPorDevolucion).toHaveBeenCalledTimes(
+        1,
+      );
+      expect(deps.stockService.reingresarPorDevolucion).toHaveBeenCalledWith(
+        expect.anything(),
+        { variantId: 42, cantidad: 2, returnId: result.id, userId: 7 },
+      );
+    });
+
+    it('reingresaStock: false → nunca llama a stockService.reingresarPorDevolucion para esa línea', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        variantId: 42,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 1, reingresaStock: false }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(deps.stockService.reingresarPorDevolucion).not.toHaveBeenCalled();
+    });
+
+    it('dos líneas, una reingresaStock: true y otra false → se llama exactamente una vez, solo para la línea true (nunca agrupado en una sola llamada)', async () => {
+      const item1 = buildSaleItemRow({
+        id: 5,
+        variantId: 11,
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('100.00'),
+      });
+      const item2 = buildSaleItemRow({
+        id: 6,
+        variantId: 22,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('50.00'),
+      });
+      const tx = buildMockTx([item1, item2]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const result = await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [
+            { saleItemId: 5, cantidad: 2, reingresaStock: true },
+            { saleItemId: 6, cantidad: 1, reingresaStock: false },
+          ],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('150.00'),
+            },
+          ],
+        }),
+      );
+
+      expect(deps.stockService.reingresarPorDevolucion).toHaveBeenCalledTimes(
+        1,
+      );
+      expect(deps.stockService.reingresarPorDevolucion).toHaveBeenCalledWith(
+        expect.anything(),
+        { variantId: 11, cantidad: 2, returnId: result.id, userId: 7 },
+      );
+    });
+
+    it('la llamada a stockService.reingresarPorDevolucion ocurre DESPUÉS de tx.return.create (recién ahí existe return.id)', async () => {
+      const saleItem = buildSaleItemRow({
+        id: 1,
+        variantId: 42,
+        cantidad: 1,
+        netoLinea: new Prisma.Decimal('100.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+
+      const createOrder = tx.return.create.mock.invocationCallOrder[0];
+      const reingresoOrder =
+        deps.stockService.reingresarPorDevolucion.mock.invocationCallOrder[0];
+      expect(reingresoOrder).toBeGreaterThan(createOrder);
+    });
+
+    it('si la devolución se rechaza (venta ANULADA, AD-19), nunca llama a stockService.reingresarPorDevolucion', async () => {
+      const saleItem = buildSaleItemRow();
+      const tx = buildMockTx([saleItem], {
+        saleRow: buildSaleRow({ estado: 'ANULADA' }),
+      });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await expect(
+        service.crearDevolucion(asTx(tx), buildInput()),
+      ).rejects.toThrow(/anulada/i);
+
+      expect(deps.stockService.reingresarPorDevolucion).not.toHaveBeenCalled();
     });
   });
 });

@@ -196,6 +196,7 @@ describe('returns (integration, T5.1)', () => {
       prismaService,
       cashRegisterService,
       settingsService,
+      stockService,
     );
 
     const passwordHash = await argon2.hash('password123');
@@ -292,7 +293,7 @@ describe('returns (integration, T5.1)', () => {
   });
 
   describe('ReturnsService.crearDevolucion — camino feliz', () => {
-    it('devolución completa de una línea, reintegro 100% efectivo: return/return_items/return_payments quedan coherentes, la venta original no cambia, y NO hay stock_movements ni cash_movements de tipo RETURN (T5.2/T5.3)', async () => {
+    it('devolución completa de una línea, reintegro 100% efectivo: return/return_items/return_payments quedan coherentes, la venta original no cambia, hay un stock_movement DEVOLUCION (T5.2) pero NO cash_movements de tipo RETURN (T5.3)', async () => {
       const variant = await createVariant({
         precioVenta: '150.00',
         stockActual: 10,
@@ -343,15 +344,20 @@ describe('returns (integration, T5.1)', () => {
       });
       expect(dbSale.estado).toBe('COMPLETADA');
 
-      // T5.2 (reingreso de stock) y T5.3 (movimiento de caja) todavía no
-      // existen: ningún movimiento nuevo con referencia a esta devolución.
+      // T5.2 (reingreso de stock) ya existe — reingresaStock: true en la
+      // única línea de esta devolución tiene que dejar un stock_movement
+      // DEVOLUCION referenciando esta devolución. T5.3 (movimiento de
+      // caja) todavía no existe: sin cash_movement de tipo RETURN.
       const stockMovs = await prisma.stockMovement.findMany({
         where: {
           referenciaTipo: StockMovementReferenciaTipo.RETURN,
           referenciaId: devolucion.id,
         },
       });
-      expect(stockMovs).toHaveLength(0);
+      expect(stockMovs).toHaveLength(1);
+      expect(stockMovs[0].tipo).toBe('DEVOLUCION');
+      expect(stockMovs[0].delta).toBe(2);
+      expect(stockMovs[0].variantId).toBe(variant.id);
 
       const cashMovs = await prisma.cashMovement.findMany({
         where: {
@@ -364,8 +370,9 @@ describe('returns (integration, T5.1)', () => {
       const variantAfter = await prisma.variant.findUniqueOrThrow({
         where: { id: variant.id },
       });
-      // Solo bajó por la venta (10 - 2 = 8); la devolución no la tocó.
-      expect(variantAfter.stockActual).toBe(8);
+      // 10 (inicial) - 2 (vendidas) + 2 (reingresadas por la devolución,
+      // T5.2) = 10.
+      expect(variantAfter.stockActual).toBe(10);
     });
 
     it('reingresaStock: false (prenda fallada): se reintegra el dinero igual, pero el dato queda persistido para que T5.2/resultados lo usen después', async () => {
@@ -692,6 +699,183 @@ describe('returns (integration, T5.1)', () => {
         where: { idempotencyKey: key },
       });
       expect(count).toBe(1);
+    });
+  });
+
+  // Fase 04a (T5.2) — tests NUEVOS de integración contra Postgres real,
+  // agregados sin tocar ninguna aserción de los describes de arriba (T5.1)
+  // salvo las dos ya actualizadas explícitamente en el primer test de
+  // "camino feliz" (comentario ahí mismo explica por qué). Fuente:
+  // `state/reports/modulo-returns-spec.md` sección 5 paso 12 y BLUEPRINT
+  // AD-8/§3.3/§5.4/invariante 6/§9.4.
+  describe('ReturnsService.crearDevolucion — T5.2 reingreso de stock', () => {
+    it('camino feliz, reingresaStock: true: el stock_movement real queda en la base con los campos correctos y variants.stock_actual vuelve a subir la cantidad exacta', async () => {
+      const variant = await createVariant({
+        precioVenta: '90.00',
+        stockActual: 6,
+      });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variant.id,
+        cantidad: 3,
+        precioVenta: '90.00',
+      });
+
+      const variantAfterVenta = await prisma.variant.findUniqueOrThrow({
+        where: { id: variant.id },
+      });
+      expect(variantAfterVenta.stockActual).toBe(3); // 6 - 3
+
+      const devolucion: Return = await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId,
+          items: [{ saleItemId, cantidad: 3, reingresaStock: true }],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('270.00'),
+            },
+          ],
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      const stockMovs = await prisma.stockMovement.findMany({
+        where: {
+          referenciaTipo: StockMovementReferenciaTipo.RETURN,
+          referenciaId: devolucion.id,
+        },
+      });
+      expect(stockMovs).toHaveLength(1);
+      expect(stockMovs[0].tipo).toBe('DEVOLUCION');
+      expect(stockMovs[0].delta).toBe(3);
+      expect(stockMovs[0].variantId).toBe(variant.id);
+      expect(stockMovs[0].userId).toBe(ownerId);
+
+      const variantAfterDevolucion = await prisma.variant.findUniqueOrThrow({
+        where: { id: variant.id },
+      });
+      expect(variantAfterDevolucion.stockActual).toBe(6); // 3 + 3 reingresadas
+    });
+
+    it('devolución con DOS líneas, reingresando solo una: solo esa variante sube de stock, la otra queda igual', async () => {
+      const variantA = await createVariant({
+        precioVenta: '50.00',
+        stockActual: 10,
+      });
+      const variantB = await createVariant({
+        precioVenta: '70.00',
+        stockActual: 10,
+      });
+      await openSession(ownerId);
+
+      const sale = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, {
+          userId: ownerId,
+          esOwner: true,
+          idempotencyKey: randomUUID(),
+          items: [
+            { variantId: variantA.id, cantidad: 2 },
+            { variantId: variantB.id, cantidad: 1 },
+          ],
+          payments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('170.00'),
+            },
+          ],
+        }),
+      );
+      createdSaleIds.push(sale.id);
+
+      const saleWithItems = await prisma.sale.findUniqueOrThrow({
+        where: { id: sale.id },
+        include: { items: true },
+      });
+      const itemA = saleWithItems.items.find(
+        (i) => i.variantId === variantA.id,
+      )!;
+      const itemB = saleWithItems.items.find(
+        (i) => i.variantId === variantB.id,
+      )!;
+
+      await prisma.$transaction((tx) =>
+        returnsService.crearDevolucion(tx, {
+          saleId: sale.id,
+          items: [
+            { saleItemId: itemA.id, cantidad: 2, reingresaStock: true },
+            { saleItemId: itemB.id, cantidad: 1, reingresaStock: false },
+          ],
+          returnPayments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: new Prisma.Decimal('170.00'),
+            },
+          ],
+          userId: ownerId,
+          esOwner: false,
+          idempotencyKey: randomUUID(),
+        }),
+      );
+
+      const variantAAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantA.id },
+      });
+      const variantBAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantB.id },
+      });
+      // A: 10 - 2 (venta) + 2 (reingreso) = 10.
+      expect(variantAAfter.stockActual).toBe(10);
+      // B: 10 - 1 (venta), sin reingreso: queda en 9.
+      expect(variantBAfter.stockActual).toBe(9);
+    });
+
+    it('rollback: si la devolución se rechaza (venta ANULADA), ningún stock_movement de tipo DEVOLUCION queda creado', async () => {
+      const variant = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      await openSession(ownerId);
+      const { saleId, saleItemId } = await createSaleFixture({
+        userId: ownerId,
+        variantId: variant.id,
+        cantidad: 1,
+        precioVenta: '100.00',
+      });
+
+      await prisma.$transaction((tx) =>
+        salesService.anularVenta(tx, {
+          saleId,
+          userId: ownerId,
+          esOwner: true,
+        }),
+      );
+
+      await expect(
+        prisma.$transaction((tx) =>
+          returnsService.crearDevolucion(tx, {
+            saleId,
+            items: [{ saleItemId, cantidad: 1, reingresaStock: true }],
+            returnPayments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('100.00'),
+              },
+            ],
+            userId: ownerId,
+            esOwner: false,
+            idempotencyKey: randomUUID(),
+          }),
+        ),
+      ).rejects.toThrow(/anulada/i);
+
+      const stockMovs = await prisma.stockMovement.findMany({
+        where: { variantId: variant.id, tipo: 'DEVOLUCION' },
+      });
+      expect(stockMovs).toHaveLength(0);
     });
   });
 });

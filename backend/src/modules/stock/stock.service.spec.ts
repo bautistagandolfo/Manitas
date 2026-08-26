@@ -594,6 +594,126 @@ describe('StockService', () => {
     });
   });
 
+  // Fase 04a (T5.2, `returns`) — tests escritos ANTES de la implementación,
+  // en sesión AISLADA. `reingresarPorDevolucion` no existe todavía en
+  // `StockService` (confirmado leyendo el archivo real completo, permitido
+  // explícitamente porque este ticket agrega un método nuevo ahí, mismo
+  // criterio ya usado en T4.7 para `revertirPorAnulacion`, arriba). Fuente
+  // única: `docs/build-protocol/state/reports/modulo-returns-spec.md`
+  // (sección 5, paso 12) y BLUEPRINT AD-8, §3.3, §5.4, invariante 6, §9.4 —
+  // contrato fijado en el prompt de esta sesión, idéntico al de la spec:
+  // `reingresarPorDevolucion(tx, { variantId, cantidad, returnId, userId })`
+  // — `delta = +cantidad` (positivo, la mercadería vuelve al stock
+  // vendible), `tipo = DEVOLUCION`, `referenciaTipo = RETURN`,
+  // `referenciaId = returnId`. Sin lock propio y sin ningún chequeo de
+  // stock mínimo (mismo criterio exacto que `revertirPorAnulacion`: la
+  // variante no se lee para decidir nada, reingresar nunca puede fallar
+  // por "no hay suficiente stock" — a diferencia de `descontarPorVenta`).
+  describe('reingresarPorDevolucion (T5.2, spec de `returns` sección 5 paso 12)', () => {
+    it('camino feliz: crea un stock_movement con delta positivo, tipo DEVOLUCION, referenciaTipo RETURN y referenciaId = returnId, y aumenta stock_actual exactamente en la cantidad reingresada', async () => {
+      const tx = createMockTx(5);
+
+      await service.reingresarPorDevolucion(asTx(tx), {
+        variantId: 1,
+        cantidad: 2,
+        returnId: 777,
+        userId: 9,
+      });
+
+      expect(tx.stockMovement.create).toHaveBeenCalledWith({
+        data: {
+          variantId: 1,
+          delta: 2,
+          tipo: StockMovementTipo.DEVOLUCION,
+          referenciaTipo: StockMovementReferenciaTipo.RETURN,
+          referenciaId: 777,
+          userId: 9,
+        },
+      });
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 2 } },
+      });
+    });
+
+    it('nunca falla por poco stock: con stock_actual bajo, reingresa igual sin lanzar ninguna excepción', async () => {
+      const tx = createMockTx(1);
+
+      await expect(
+        service.reingresarPorDevolucion(asTx(tx), {
+          variantId: 1,
+          cantidad: 5,
+          returnId: 778,
+          userId: 9,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 5 } },
+      });
+    });
+
+    it('nunca falla por poco stock: con stock_actual en 0, reingresa igual sin lanzar ninguna excepción (mismo criterio que revertirPorAnulacion, sin chequeo de umbral)', async () => {
+      const tx = createMockTx(0);
+
+      await expect(
+        service.reingresarPorDevolucion(asTx(tx), {
+          variantId: 1,
+          cantidad: 3,
+          returnId: 779,
+          userId: 9,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tx.stockMovement.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ delta: 3 }) as unknown,
+        }),
+      );
+      expect(tx.variant.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { stockActual: { increment: 3 } },
+      });
+    });
+
+    it('no toma ningún lock propio — incremento atómico, mismo criterio que revertirPorAnulacion/registrarEntrada (la variante no se lee para decidir nada)', async () => {
+      const tx = createMockTx(5);
+
+      await service.reingresarPorDevolucion(asTx(tx), {
+        variantId: 1,
+        cantidad: 2,
+        returnId: 780,
+        userId: 9,
+      });
+
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('dos reingresos de la misma variante (dos return_items de la misma devolución) generan dos stock_movements independientes', async () => {
+      const tx = createMockTx(5);
+
+      await service.reingresarPorDevolucion(asTx(tx), {
+        variantId: 1,
+        cantidad: 2,
+        returnId: 781,
+        userId: 9,
+      });
+      await service.reingresarPorDevolucion(asTx(tx), {
+        variantId: 1,
+        cantidad: 1,
+        returnId: 781,
+        userId: 9,
+      });
+
+      expect(tx.stockMovement.create).toHaveBeenCalledTimes(2);
+      const deltas = tx.stockMovement.create.mock.calls.map(
+        (c: unknown[]) => (c[0] as { data: { delta: number } }).data.delta,
+      );
+      expect(deltas.sort((a: number, b: number) => a - b)).toEqual([1, 2]);
+    });
+  });
+
   describe('reconciliar (T2.8, invariante 1)', () => {
     it('sin variantes, no hay nada que reconciliar: devuelve la lista vacía', async () => {
       prismaMock.variant.findMany.mockResolvedValue([]);
