@@ -9,6 +9,7 @@ import {
   StockMovementTipo,
   StockMovementReferenciaTipo,
   CashRegisterSessionEstado,
+  ReturnTipo,
   UserRole,
   type Sale,
 } from '@prisma/client';
@@ -19,7 +20,51 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { StockService } from '../../src/modules/stock/stock.service';
 import { CashRegisterService } from '../../src/modules/cash-registers/cash-register.service';
 import { SettingsService } from '../../src/common/settings/settings.service';
-import { SalesService } from '../../src/modules/sales/sales.service';
+import {
+  SalesService,
+  type CrearVentaInput,
+  type CrearVentaPaymentInput,
+} from '../../src/modules/sales/sales.service';
+
+// ─── Fase 04a (T5.5, continuación de la sesión aislada anterior) ─────────
+//
+// Esta sesión NO abrió el CUERPO de `sales.service.ts` — solo sus
+// interfaces exportadas (`CrearVentaInput`, `CrearVentaPaymentInput`),
+// permitido por la restricción central de la fase. Fuente única de esta
+// sección: los describes ya escritos por la sesión anterior en
+// `sales.service.spec.ts` ('SalesService.crearVenta — T5.5 crédito de
+// devolución diferido (invariante 14, AMB-16)') y
+// `returns.service.spec.ts`/`returns.integration.spec.ts`
+// ('...T5.5 CAMBIO'), que fijan el contrato exacto: un pago
+// `payments[i] += { returnId?: number }`; `metodo: CREDITO_DEVOLUCION`
+// siempre necesita `returnId`; `crearVenta` toma un lock sobre la fila de
+// `Return` referenciada, suma cuánto crédito de esa devolución ya se gastó
+// (`SUM(payments.monto) WHERE returnId = X AND metodo = CREDITO_DEVOLUCION`,
+// sobre CUALQUIER venta) y rechaza con 400 si el pago nuevo supera
+// `return.totalDevuelto`.
+//
+// Lo único que faltaba y agrega esta sesión: un test de integración
+// (Postgres real) del lado de `sales` que confirme que ese crédito es
+// DIFERIDO — que se puede gastar en una venta separada, sin pasar por el
+// flujo de `CAMBIO` de `returns` (nunca se importa `ReturnsService` acá) —
+// y que el invariante 14 se cumpla también ahí. La `Return` fixture se
+// crea con `prisma.return.create` directo sobre una venta original real
+// (creada con `salesService.crearVenta`, camino ya VERDE), tal como
+// habilitan las instrucciones de esta sesión.
+//
+// Mismo patrón mecánico de tipo-ampliado-por-variable (nunca objeto
+// literal inline) que ya usa `sales.service.spec.ts` para `returnId`, acá
+// aplicado sobre los tipos REALES importados (no reinventados), para que
+// TypeScript no dispare "excess property" contra el tipo real (todavía
+// angosto) y el rojo esperado sea de comportamiento/aserción, no de
+// compilación.
+interface CrearVentaPaymentInputT55 extends CrearVentaPaymentInput {
+  returnId?: number;
+}
+
+interface CrearVentaInputT55 extends Omit<CrearVentaInput, 'payments'> {
+  payments: CrearVentaPaymentInputT55[];
+}
 
 // Fase 04a (T4.1) — tests de integración escritos ANTES de la
 // implementación, contra Postgres real (nunca mockeado, BLUEPRINT §9.8,
@@ -71,6 +116,10 @@ describe('sales (integration, T4.1)', () => {
   const createdVariantIds: number[] = [];
   const createdSessionIds: number[] = [];
   const createdSaleIds: number[] = [];
+  // T5.5 — devoluciones fixture creadas directo con `prisma.return.create`
+  // (nunca vía `ReturnsService`, que no se abrió) para probar el crédito
+  // diferido del lado de `sales`.
+  const createdReturnIds: number[] = [];
 
   async function createVariant(
     overrides: Partial<{
@@ -95,6 +144,32 @@ describe('sales (integration, T4.1)', () => {
     });
     createdVariantIds.push(variant.id);
     return variant;
+  }
+
+  // T5.5 — fixture mínima de `returns`, directo por Prisma (nunca vía
+  // `ReturnsService`, que no se abrió): esta sección no ejercita ninguna
+  // regla de `crearDevolucion` (RN-9/RN-10, ya cubiertas del lado de
+  // `returns` por la sesión anterior), solo necesita una fila real de
+  // `Return` con `total_devuelto` fijo, referenciando una venta real, para
+  // que `crearVenta` (lado `sales`) pueda tomar su lock y leerla.
+  async function createReturnFixture(params: {
+    saleId: number;
+    userId: number;
+    cashRegisterSessionId: number;
+    totalDevuelto: string;
+  }): Promise<{ id: number }> {
+    const ret = await prisma.return.create({
+      data: {
+        saleId: params.saleId,
+        fecha: new Date(),
+        userId: params.userId,
+        cashRegisterSessionId: params.cashRegisterSessionId,
+        tipo: ReturnTipo.DEVOLUCION,
+        totalDevuelto: new Prisma.Decimal(params.totalDevuelto),
+      },
+    });
+    createdReturnIds.push(ret.id);
+    return { id: ret.id };
   }
 
   async function openSession(
@@ -200,6 +275,26 @@ describe('sales (integration, T4.1)', () => {
     // buscan por `cashRegisterSessionId` en vez de filtrar
     // `createdSaleIds` a mano, para no tener que mantener un mapeo
     // venta→sesión aparte.
+    // T5.5 — las devoluciones fixture pueden ser referenciadas por
+    // `payments.return_id` de una venta de OTRA sesión (justamente lo que
+    // el crédito diferido prueba: la venta que gasta el crédito no
+    // depende de la sesión de la devolución original). Se limpian ANTES
+    // del loop por sesión, no dentro de él, para no depender de en qué
+    // sesión cae cada `payment`/`return`: primero los `payments` que
+    // referencian esas devoluciones (`payments.return_id` → `returns.id`,
+    // y también `payments.sale_id` → `sales.id`), después las devoluciones
+    // mismas (`returns.sale_id` → `sales.id`). El resto del `payment`/
+    // `sale_item`/`sale` de cada sesión lo sigue borrando el loop de abajo,
+    // sin cambios.
+    if (createdReturnIds.length > 0) {
+      await prisma.payment.deleteMany({
+        where: { returnId: { in: createdReturnIds } },
+      });
+      await prisma.return.deleteMany({
+        where: { id: { in: createdReturnIds } },
+      });
+    }
+
     for (const id of new Set(createdSessionIds)) {
       await prisma.cashRegisterSession.update({
         where: { id },
@@ -764,6 +859,311 @@ describe('sales (integration, T4.1)', () => {
           );
         }
       }
+    });
+  });
+
+  describe('SalesService.crearVenta — T5.5 crédito de devolución diferido (invariante 14, AMB-16)', () => {
+    it('gastar TODO el crédito de una devolución en una venta nueva, en una sesión de caja completamente distinta: se acepta y el payment real queda con metodo CREDITO_DEVOLUCION y return_id correcto', async () => {
+      const variantOriginal = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      const sessionOriginal = await openSession(ownerId);
+
+      // Pago con tarjeta a propósito: no genera cash_movement, así el
+      // cierre de esta sesión (más abajo) no necesita reconstruir ningún
+      // total de caja.
+      const originalSale = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, {
+          userId: ownerId,
+          esOwner: true,
+          idempotencyKey: randomUUID(),
+          items: [{ variantId: variantOriginal.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.TARJETA_CREDITO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+      createdSaleIds.push(originalSale.id);
+
+      const returnFixture = await createReturnFixture({
+        saleId: originalSale.id,
+        userId: ownerId,
+        cashRegisterSessionId: sessionOriginal.id,
+        totalDevuelto: '100.00',
+      });
+
+      // Cierro la sesión original de punta a punta (mismo helper que ya
+      // usa `afterEach`, bypass directo por Prisma) para abrir una sesión
+      // nueva, completamente distinta, y gastar el crédito ahí — sin
+      // ningún vínculo con el contexto original de la devolución.
+      await closeAnyOpenSessionDirect();
+
+      const variantCredito = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      const sessionCredito = await openSession(ownerId);
+
+      const input: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variantCredito.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('100.00'),
+            returnId: returnFixture.id,
+          },
+        ],
+      };
+
+      const saleConCredito = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, input),
+      );
+      createdSaleIds.push(saleConCredito.id);
+
+      expect(saleConCredito.total.toString()).toBe('100');
+
+      const dbSale = await prisma.sale.findUniqueOrThrow({
+        where: { id: saleConCredito.id },
+        include: { payments: true },
+      });
+      expect(dbSale.cashRegisterSessionId).toBe(sessionCredito.id);
+      expect(dbSale.payments).toHaveLength(1);
+      expect(dbSale.payments[0].metodo).toBe(PaymentMetodo.CREDITO_DEVOLUCION);
+      expect(dbSale.payments[0].returnId).toBe(returnFixture.id);
+      expect(dbSale.payments[0].monto.toString()).toBe('100');
+    });
+
+    it('gastar más crédito del disponible ($150 contra una devolución de $100): 400 real, la venta no queda creada', async () => {
+      const variantOriginal = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+
+      const originalSale = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, {
+          userId: ownerId,
+          esOwner: true,
+          idempotencyKey: randomUUID(),
+          items: [{ variantId: variantOriginal.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.TARJETA_CREDITO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+      createdSaleIds.push(originalSale.id);
+
+      const returnFixture = await createReturnFixture({
+        saleId: originalSale.id,
+        userId: ownerId,
+        cashRegisterSessionId: session.id,
+        totalDevuelto: '100.00',
+      });
+
+      const variantCredito = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 5,
+      });
+
+      const input: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variantCredito.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('150.00'),
+            returnId: returnFixture.id,
+          },
+        ],
+      };
+
+      await expect(
+        prisma.$transaction((tx) => salesService.crearVenta(tx, input)),
+      ).rejects.toThrow(/no alcanza/i);
+
+      // Rollback completo: solo la venta original queda en esta sesión.
+      const salesInSession = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(salesInSession).toHaveLength(1);
+      expect(salesInSession[0].id).toBe(originalSale.id);
+
+      const paymentsDelCredito = await prisma.payment.findMany({
+        where: { returnId: returnFixture.id },
+      });
+      expect(paymentsDelCredito).toHaveLength(0);
+
+      const variantCreditoAfter = await prisma.variant.findUniqueOrThrow({
+        where: { id: variantCredito.id },
+      });
+      expect(variantCreditoAfter.stockActual).toBe(5);
+    });
+
+    it('agotar el crédito de una devolución de $100 en DOS ventas sucesivas ($60 + intento de $50 más): la segunda rechaza con 400 y no se crea, solo el payment de la primera queda en la base', async () => {
+      const variantOriginal = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+
+      const originalSale = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, {
+          userId: ownerId,
+          esOwner: true,
+          idempotencyKey: randomUUID(),
+          items: [{ variantId: variantOriginal.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.TARJETA_CREDITO,
+              monto: new Prisma.Decimal('100.00'),
+            },
+          ],
+        }),
+      );
+      createdSaleIds.push(originalSale.id);
+
+      const returnFixture = await createReturnFixture({
+        saleId: originalSale.id,
+        userId: ownerId,
+        cashRegisterSessionId: session.id,
+        totalDevuelto: '100.00',
+      });
+
+      const variantPrimeraCompra = await createVariant({
+        precioVenta: '60.00',
+        stockActual: 5,
+      });
+      const primeraInput: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variantPrimeraCompra.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('60.00'),
+            returnId: returnFixture.id,
+          },
+        ],
+      };
+      const primeraVenta = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, primeraInput),
+      );
+      createdSaleIds.push(primeraVenta.id);
+
+      const variantSegundaCompra = await createVariant({
+        precioVenta: '50.00',
+        stockActual: 5,
+      });
+      const segundaInput: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variantSegundaCompra.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('50.00'),
+            returnId: returnFixture.id,
+          },
+        ],
+      };
+
+      await expect(
+        prisma.$transaction((tx) => salesService.crearVenta(tx, segundaInput)),
+      ).rejects.toThrow(/no alcanza/i);
+
+      const paymentsDelCredito = await prisma.payment.findMany({
+        where: { returnId: returnFixture.id },
+      });
+      expect(paymentsDelCredito).toHaveLength(1);
+      expect(paymentsDelCredito[0].saleId).toBe(primeraVenta.id);
+      expect(paymentsDelCredito[0].monto.toString()).toBe('60');
+
+      // original (tarjeta) + primera venta con crédito (aceptada) = 2. La
+      // segunda, rechazada, no queda.
+      const salesInSession = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(salesInSession).toHaveLength(2);
+
+      const variantSegundaCompraAfter = await prisma.variant.findUniqueOrThrow(
+        { where: { id: variantSegundaCompra.id } },
+      );
+      expect(variantSegundaCompraAfter.stockActual).toBe(5);
+    });
+
+    it('returnId de una devolución inexistente: 404/400 real, sin crear la venta', async () => {
+      const variant = await createVariant({
+        precioVenta: '50.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+
+      const input: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variant.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('50.00'),
+            returnId: 999999999,
+          },
+        ],
+      };
+
+      await expect(
+        prisma.$transaction((tx) => salesService.crearVenta(tx, input)),
+      ).rejects.toThrow(/devoluci[oó]n no encontrada/i);
+
+      const salesInSession = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(salesInSession).toHaveLength(0);
+    });
+
+    it('pago CREDITO_DEVOLUCION sin returnId: 400 real, sin crear la venta', async () => {
+      const variant = await createVariant({
+        precioVenta: '50.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+
+      const input: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variant.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('50.00'),
+          },
+        ],
+      };
+
+      await expect(
+        prisma.$transaction((tx) => salesService.crearVenta(tx, input)),
+      ).rejects.toThrow(/cr[eé]dito de devoluci[oó]n.*indicar cu[aá]l/i);
+
+      const salesInSession = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(salesInSession).toHaveLength(0);
     });
   });
 });
