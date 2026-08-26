@@ -1426,9 +1426,7 @@ describe('ReturnsService.crearDevolucion', () => {
       const itemA = call.data.items.create.find((i) => i.saleItemId === 1)!;
       const itemB = call.data.items.create.find((i) => i.saleItemId === 2)!;
       expect(new Prisma.Decimal(itemA.costoUnitario).toString()).toBe('30');
-      expect(new Prisma.Decimal(itemB.costoUnitario).toString()).toBe(
-        '55.25',
-      );
+      expect(new Prisma.Decimal(itemB.costoUnitario).toString()).toBe('55.25');
     });
   });
 });
