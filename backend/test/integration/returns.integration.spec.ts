@@ -144,10 +144,12 @@ describe('returns (integration, T5.1)', () => {
     variantId: number;
     cantidad: number;
     precioVenta: string;
-  }): Promise<{ saleId: number; saleItemId: number; netoLinea: Prisma.Decimal }> {
-    const monto = new Prisma.Decimal(params.precioVenta).times(
-      params.cantidad,
-    );
+  }): Promise<{
+    saleId: number;
+    saleItemId: number;
+    netoLinea: Prisma.Decimal;
+  }> {
+    const monto = new Prisma.Decimal(params.precioVenta).times(params.cantidad);
     const sale = await prisma.$transaction((tx) =>
       salesService.crearVenta(tx, {
         userId: params.userId,
@@ -307,9 +309,7 @@ describe('returns (integration, T5.1)', () => {
       const devolucion: Return = await prisma.$transaction((tx) =>
         returnsService.crearDevolucion(tx, {
           saleId,
-          items: [
-            { saleItemId, cantidad: 2, reingresaStock: true },
-          ],
+          items: [{ saleItemId, cantidad: 2, reingresaStock: true }],
           returnPayments: [
             {
               metodo: PaymentMetodo.EFECTIVO,
@@ -384,9 +384,7 @@ describe('returns (integration, T5.1)', () => {
       const devolucion: Return = await prisma.$transaction((tx) =>
         returnsService.crearDevolucion(tx, {
           saleId,
-          items: [
-            { saleItemId, cantidad: 1, reingresaStock: false },
-          ],
+          items: [{ saleItemId, cantidad: 1, reingresaStock: false }],
           returnPayments: [
             {
               metodo: PaymentMetodo.EFECTIVO,
@@ -651,7 +649,9 @@ describe('returns (integration, T5.1)', () => {
     }): Promise<Return> {
       return withIdempotency(
         () =>
-          prisma.$transaction((tx) => returnsService.crearDevolucion(tx, input)),
+          prisma.$transaction((tx) =>
+            returnsService.crearDevolucion(tx, input),
+          ),
         () =>
           prisma.return.findUnique({
             where: { idempotencyKey: input.idempotencyKey },

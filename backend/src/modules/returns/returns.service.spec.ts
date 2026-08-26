@@ -248,6 +248,17 @@ interface MockTx {
     findMany: jest.Mock<Promise<ReturnItemRow[]>, [unknown]>;
   };
   return: {
+    // Fase 04 (implementación): agregado para el chequeo de idempotencia
+    // al principio de `crearDevolucion` (una devolución, a diferencia de
+    // una venta, puede consumir EXACTO lo último disponible de una línea
+    // — un reintento con la misma `idempotencyKey` que revalidara desde
+    // cero vería "0 disponible" y rechazaría antes de llegar al `create`
+    // cuya violación de unicidad es lo único que `withIdempotency`
+    // detecta). Arreglo de infraestructura de test, no debilitamiento:
+    // ningún test ni aserción existente cambia, todos siguen construyendo
+    // su propio `tx` sin pasar esta opción (default `null`, mismo
+    // comportamiento de siempre).
+    findUnique: jest.Mock<Promise<CreatedReturn | null>, [unknown]>;
     create: jest.Mock<Promise<CreatedReturn>, [ReturnCreateCall]>;
   };
   $queryRaw: jest.Mock<
@@ -261,6 +272,7 @@ function buildMockTx(
   options: {
     saleRow?: SaleRow | null;
     previousReturnItems?: ReturnItemRow[];
+    existingReturn?: CreatedReturn | null;
   } = {},
 ): MockTx {
   return {
@@ -283,6 +295,9 @@ function buildMockTx(
         .mockResolvedValue(options.previousReturnItems ?? []),
     },
     return: {
+      findUnique: jest
+        .fn<Promise<CreatedReturn | null>, [unknown]>()
+        .mockResolvedValue(options.existingReturn ?? null),
       create: jest
         .fn<Promise<CreatedReturn>, [ReturnCreateCall]>()
         .mockImplementation((call) =>
@@ -372,9 +387,7 @@ describe('ReturnsService.crearDevolucion', () => {
       expect(call.data.items.create[0].reingresaStock).toBe(true);
       expect(call.data.items.create[0].saleItemId).toBe(1);
       expect(
-        new Prisma.Decimal(
-          call.data.returnPayments.create[0].monto,
-        ).toString(),
+        new Prisma.Decimal(call.data.returnPayments.create[0].monto).toString(),
       ).toBe('200');
       expect(call.data.saleId).toBe(501);
 
@@ -723,9 +736,7 @@ describe('ReturnsService.crearDevolucion', () => {
         cashRegisterService: {
           getSesionAbiertaOrThrow: jest
             .fn<Promise<SessionRow>, [unknown]>()
-            .mockRejectedValue(
-              new Error('No hay una sesión de caja abierta'),
-            ),
+            .mockRejectedValue(new Error('No hay una sesión de caja abierta')),
           registrarMovimiento: jest.fn<
             Promise<{ id: number }>,
             [unknown, unknown]
