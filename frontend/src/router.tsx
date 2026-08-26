@@ -11,6 +11,7 @@ import { NewVariantPage } from './features/catalog/NewVariantPage';
 import { CashRegisterPage } from './features/cash-registers/CashRegisterPage';
 import { SalePage } from './features/sales/SalePage';
 import { CobroPage } from './features/sales/CobroPage';
+import { DevolucionPage } from './features/returns/DevolucionPage';
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -23,6 +24,7 @@ export const router = createBrowserRouter([
           { path: '/', element: <Navigate to="/catalogo" replace /> },
           { path: '/venta', element: <SalePage /> },
           { path: '/venta/cobro', element: <CobroPage /> },
+          { path: '/devoluciones', element: <DevolucionPage /> },
           { path: '/caja', element: <CashRegisterPage /> },
           { path: '/catalogo', element: <CatalogPage /> },
           { path: '/catalogo/productos/nuevo', element: <NewProductPage /> },

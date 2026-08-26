@@ -30,6 +30,9 @@ export function AppLayout() {
             <Button component={Link} to="/venta" variant="subtle">
               Venta
             </Button>
+            <Button component={Link} to="/devoluciones" variant="subtle">
+              Devoluciones
+            </Button>
             <Button component={Link} to="/caja" variant="subtle">
               Caja
             </Button>
