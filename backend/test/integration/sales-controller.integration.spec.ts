@@ -146,12 +146,20 @@ describe('sales-controller (integration, T4.11)', () => {
   // /sales`, ya cerrado) y una devolución simple de esa venta (`POST
   // /returns`, T5.7 ya VERDE) que reintegra el importe completo. Sin
   // insertar nada a mano en la base — mismo criterio que
-  // `crearVentaSimple` de `returns-controller.integration.spec.ts`. La
-  // spec (sección 6, "crédito diferido") es explícita en que el crédito
-  // no depende de que la devolución haya sido un `CAMBIO`: una
-  // `DEVOLUCION` simple sirve igual como origen de un crédito diferido
-  // que se gasta más adelante desde una venta nueva, sin relación con
-  // `returns.service.ts`.
+  // `crearVentaSimple` de `returns-controller.integration.spec.ts`.
+  //
+  // T5.8 — hallazgo real, corregido en esta sesión (ver
+  // `returns.service.ts`, paso 0b): la versión original de este
+  // fixture reintegraba en EFECTIVO (`metodo: EFECTIVO`), no en
+  // `CREDITO_DEVOLUCION` — una devolución con reintegro 100% efectivo
+  // NUNCA generó crédito real (el dinero ya se devolvió en mano), así
+  // que los tests que dependían de este fixture solo pasaban gracias
+  // al mismo bug de techo (`total_devuelto` en vez del crédito
+  // realmente marcado) que se corrigió en esta sesión. Ahora reintegra
+  // en `CREDITO_DEVOLUCION` de verdad — alcanzable recién porque el
+  // paso 0b se amplió para permitir que una `DEVOLUCION` simple (sin
+  // `ventaNueva`) banque un crédito, no solo un `CAMBIO` que lo gasta
+  // en el acto (mismo hallazgo, AMB-16).
   async function crearDevolucionConCredito(
     actor: (req: request.Test) => request.Test,
     opts: { montoTotal: string },
@@ -187,7 +195,7 @@ describe('sales-controller (integration, T4.11)', () => {
         tipo: ReturnTipo.DEVOLUCION,
         items: [{ saleItemId: saleItem.id, cantidad: 1, reingresaStock: true }],
         returnPayments: [
-          { metodo: PaymentMetodo.EFECTIVO, monto: opts.montoTotal },
+          { metodo: PaymentMetodo.CREDITO_DEVOLUCION, monto: opts.montoTotal },
         ],
       })
       .expect(201);

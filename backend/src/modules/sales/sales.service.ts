@@ -443,6 +443,29 @@ export class SalesService {
           throw new NotFoundException('Devolución no encontrada');
         }
 
+        // T5.8 — hallazgo real de esta sesión, corregido antes de dejar
+        // T5.8 exponer `returnId` por HTTP (hasta acá, sin ruta real que
+        // lo aceptara, este código era inalcanzable): el techo NO es
+        // `return.total_devuelto` — ese total puede incluir un
+        // "excedente" ya reintegrado por OTRO medio (efectivo/tarjeta)
+        // cuando un `CAMBIO` es a una prenda más barata (RN-9, sección 6
+        // de la spec: "el excedente se reintegra por los medios
+        // habituales"). Usar `total_devuelto` como techo dejaba ese
+        // excedente disponible OTRA VEZ como si fuera crédito diferido
+        // — un double-spend real, reproducido en vivo durante la
+        // verificación manual de T5.8 (cambio de $1500 a una prenda de
+        // $50: $50 de crédito + $1450 reintegrados en efectivo,
+        // `disponible` mostraba $1450 en vez de $0). El techo real es
+        // la SUMA de los `return_payments` que en su momento se
+        // marcaron como `CREDITO_DEVOLUCION` — la única parte que
+        // efectivamente se convirtió en nota de crédito diferida.
+        const creditoOriginalAgg = await tx.returnPayment.aggregate({
+          where: { returnId, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
+          _sum: { monto: true },
+        });
+        const creditoOriginal =
+          creditoOriginalAgg._sum.monto ?? new Prisma.Decimal(0);
+
         const aggregate = await tx.payment.aggregate({
           where: { returnId, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
           _sum: { monto: true },
@@ -456,7 +479,7 @@ export class SalesService {
             new Prisma.Decimal(0),
           );
 
-        const disponible = returnRow.totalDevuelto.minus(consumidoPrevio);
+        const disponible = creditoOriginal.minus(consumidoPrevio);
         if (pedidoEnEstaVenta.greaterThan(disponible)) {
           throw new BadRequestException(
             `El crédito de la devolución #${returnId} no alcanza — disponible: $${disponible.toFixed(2)}`,

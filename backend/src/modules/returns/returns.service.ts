@@ -118,6 +118,12 @@ export interface BuscarVentaParaDevolucionResult {
 // T5.8 (AMB-16 diferida) — respuesta de lectura pura de cuánto crédito
 // le queda disponible a una devolución para aplicarse a una venta
 // futura, sin relación con el momento ni la sesión que la generó.
+// `totalDevuelto` es informativo (el valor total de la devolución) —
+// NO es el techo de `creditoDisponible`: un `CAMBIO` a una prenda más
+// barata puede reintegrar parte de `totalDevuelto` por otro medio
+// (efectivo/tarjeta), y esa parte nunca fue crédito. El techo real de
+// `creditoDisponible` es cuánto se marcó efectivamente como
+// `CREDITO_DEVOLUCION` en `return_payments` al crear la devolución.
 export interface ConsultarCreditoResult {
   returnId: number;
   numero: number;
@@ -160,12 +166,28 @@ export class ReturnsService {
       return existente;
     }
 
-    // Paso 0b (T5.5, RN-9) — forma de `tipo`/`ventaNueva`/crédito, ANTES
-    // de tocar la base: un `CAMBIO` necesita la venta nueva Y
-    // exactamente un reintegro `CREDITO_DEVOLUCION` (ese es "el crédito
-    // aplicado al cambio", ver paso 14); una `DEVOLUCION` simple no
-    // lleva ninguna de las dos cosas — el método `CREDITO_DEVOLUCION`
-    // solo existe dentro de un cambio.
+    // Paso 0b (T5.5, RN-9; ampliado en T5.8 — hallazgo real, AMB-16) —
+    // forma de `tipo`/`ventaNueva`/crédito, ANTES de tocar la base.
+    //
+    // Hallazgo de esta sesión: la versión original de este paso
+    // rechazaba CUALQUIER reintegro `CREDITO_DEVOLUCION` en una
+    // `DEVOLUCION` simple ("no genera crédito"), pensado para que el
+    // crédito solo existiera como subproducto de un `CAMBIO` — pero
+    // en un `CAMBIO`, el reintegro `CREDITO_DEVOLUCION` se aplica
+    // SIEMPRE, entero, como pago de la `ventaNueva` en la MISMA
+    // operación atómica (paso 14): `SalesService.crearVenta` exige
+    // `SUM(payments) == total` de esa venta, así que ese crédito
+    // nunca puede quedar parcialmente sin gastar. Resultado: con la
+    // versión original, `creditoDisponible` (T5.8) era SIEMPRE $0
+    // apenas creada la devolución — el mecanismo de "nota de crédito
+    // usable en una venta futura y separada" (AMB-16 RESUELTA,
+    // diferido) nunca era alcanzable de verdad por el flujo real.
+    // Una `DEVOLUCION` simple (sin `ventaNueva`, nada que pagar en el
+    // momento) SÍ puede admitir un reintegro `CREDITO_DEVOLUCION` —
+    // ahí el crédito queda genuinamente bancado, sin ninguna venta
+    // que lo consuma en el acto, listo para una venta futura
+    // cualquiera (T5.8, `GET /returns/:numero/credito` +
+    // `SalePaymentDto.returnId`).
     const tipo = input.tipo ?? ReturnTipo.DEVOLUCION;
     const creditoPayments = input.returnPayments.filter(
       (p) => p.metodo === PaymentMetodo.CREDITO_DEVOLUCION,
@@ -188,9 +210,12 @@ export class ReturnsService {
           'Una devolución simple no lleva venta nueva',
         );
       }
-      if (creditoPayments.length > 0) {
+      // A lo sumo UNO (mismo criterio que el cambio) — el resto de
+      // `total_devuelto`, si lo hay, se reintegra por otros medios
+      // reales (EFECTIVO/TARJETA), nunca por dos líneas de crédito.
+      if (creditoPayments.length > 1) {
         throw new BadRequestException(
-          'Una devolución simple no genera crédito',
+          'Una devolución simple admite a lo sumo un reintegro de tipo crédito de devolución',
         );
       }
     }
@@ -513,13 +538,21 @@ export class ReturnsService {
 
   // T5.8 (AMB-16, RN-10) — consulta en vivo de cuánto crédito le queda
   // disponible a una devolución, sin columna de saldo cacheada: se
-  // deriva de `payments` cada vez (mismo criterio que `reconciliar()`
-  // de `sales`/`cash-registers`/`stock`). Suma TODOS los pagos
-  // `CREDITO_DEVOLUCION` que referencian esta devolución, sin importar
-  // en qué venta ni sesión de caja ocurrieron — el crédito es diferido
-  // por diseño (AMB-16 RESUELTA). Lectura pura, sin lock: el lock real
-  // que protege de gastar de más lo toma `SalesService.crearVenta`
+  // deriva de `payments`/`return_payments` cada vez (mismo criterio que
+  // `reconciliar()` de `sales`/`cash-registers`/`stock`). Suma TODOS los
+  // pagos `CREDITO_DEVOLUCION` que referencian esta devolución, sin
+  // importar en qué venta ni sesión de caja ocurrieron — el crédito es
+  // diferido por diseño (AMB-16 RESUELTA). Lectura pura, sin lock: el
+  // lock real que protege de gastar de más lo toma `SalesService.crearVenta`
   // (T5.5) al escribir.
+  //
+  // El TECHO no es `total_devuelto` — mismo hallazgo real que en
+  // `sales.service.ts` (paso 8c), corregido en la misma sesión: un
+  // `CAMBIO` a una prenda más barata reintegra el excedente por OTRO
+  // medio (RN-9), así que `total_devuelto` puede superar lo que
+  // efectivamente se marcó como crédito. El techo real es la SUMA de
+  // `return_payments` con `metodo = CREDITO_DEVOLUCION` — la única
+  // parte que se convirtió en nota de crédito diferida.
   async consultarCredito(numero: number): Promise<ConsultarCreditoResult> {
     const devolucion = await this.prisma.return.findUnique({
       where: { numero },
@@ -527,6 +560,16 @@ export class ReturnsService {
     if (!devolucion) {
       throw new NotFoundException('Devolución no encontrada');
     }
+
+    const creditoOriginalAgg = await this.prisma.returnPayment.aggregate({
+      where: {
+        returnId: devolucion.id,
+        metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+      },
+      _sum: { monto: true },
+    });
+    const creditoOriginal =
+      creditoOriginalAgg._sum.monto ?? new Prisma.Decimal(0);
 
     const consumido = await this.prisma.payment.aggregate({
       where: {
@@ -542,7 +585,7 @@ export class ReturnsService {
       numero: devolucion.numero,
       totalDevuelto: devolucion.totalDevuelto,
       creditoConsumido,
-      creditoDisponible: devolucion.totalDevuelto.minus(creditoConsumido),
+      creditoDisponible: creditoOriginal.minus(creditoConsumido),
       saleId: devolucion.saleId,
     };
   }

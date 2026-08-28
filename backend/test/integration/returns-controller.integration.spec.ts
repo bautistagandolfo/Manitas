@@ -1250,7 +1250,17 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
   // (T5.5/T5.8 en `sales`) se cubre en su propio archivo
   // (`sales-controller.integration.spec.ts`), no acá.
   describe('GET /returns/:numero/credito (T5.8, crédito diferido)', () => {
-    it('caso 25 — devolución simple (sin cambio): creditoDisponible == totalDevuelto, creditoConsumido == 0', async () => {
+    // T5.8 — hallazgo real de esta sesión: este caso originalmente esperaba
+    // `creditoDisponible == totalDevuelto` (120) para una devolución simple
+    // (100% efectivo), asumiendo que "nada se consumió" implicaba "todo
+    // sigue disponible como crédito" — pero una devolución simple RECHAZA
+    // cualquier pago `CREDITO_DEVOLUCION` (paso 0b de `crearDevolucion`:
+    // "una devolución simple no genera crédito"), así que nunca existió
+    // ningún `return_payment` marcado como crédito para ella. El techo real
+    // (`SUM(return_payments) WHERE metodo = CREDITO_DEVOLUCION`) es $0, no
+    // `total_devuelto` — corregido a `creditoDisponible == 0`, único cambio
+    // en este `it`.
+    it('caso 25 — devolución simple (sin cambio): nunca generó crédito, creditoDisponible == 0', async () => {
       await abrirSesion(owned);
       const variant = await createVariant({
         precioVenta: '120.00',
@@ -1297,7 +1307,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       expect(credito.saleId).toBe(venta.saleId);
       expect(Number(credito.totalDevuelto)).toBeCloseTo(120, 2);
       expect(Number(credito.creditoConsumido)).toBeCloseTo(0, 2);
-      expect(Number(credito.creditoDisponible)).toBeCloseTo(120, 2);
+      // No $120 — una devolución simple nunca marca nada como
+      // CREDITO_DEVOLUCION, así que no hay ningún crédito que aplicar.
+      expect(Number(credito.creditoDisponible)).toBeCloseTo(0, 2);
     });
 
     it('caso 26 — devolución resultado de un CAMBIO a precio igual: crédito íntegramente consumido, creditoDisponible == 0', async () => {
@@ -1357,7 +1369,19 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       expect(Number(credito.creditoDisponible)).toBeCloseTo(0, 2);
     });
 
-    it('caso 27 — devolución resultado de un CAMBIO a precio menor: crédito parcialmente consumido', async () => {
+    // T5.8 — hallazgo real de esta sesión: la aserción de `creditoDisponible`
+    // de este caso originalmente esperaba $70 (`totalDevuelto` 200 menos
+    // `creditoConsumido` 130), reproduciendo sin darse cuenta un bug real de
+    // double-spend — reproducido en vivo durante la verificación manual de
+    // T5.8: el excedente de $70 ya se reintegró en EFECTIVO en el momento
+    // del cambio (es una línea de `return_payments` separada, no crédito),
+    // así que no puede quedar TAMBIÉN disponible como crédito. El techo real
+    // es lo que se marcó como `CREDITO_DEVOLUCION` (los $130 que sí se
+    // aplicaron a la venta nueva), no `total_devuelto` — con ese techo, una
+    // vez consumidos esos $130 en la propia venta del cambio, no queda más
+    // crédito. Corregido a $0, único cambio en este `it` — nada más del
+    // archivo se tocó.
+    it('caso 27 — devolución resultado de un CAMBIO a precio menor: el excedente ya reintegrado en efectivo NO queda disponible como crédito', async () => {
       await abrirSesion(owned);
       const variantOriginal = await createVariant({
         precioVenta: '200.00',
@@ -1415,7 +1439,9 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       };
       expect(Number(credito.totalDevuelto)).toBeCloseTo(200, 2);
       expect(Number(credito.creditoConsumido)).toBeCloseTo(130, 2);
-      expect(Number(credito.creditoDisponible)).toBeCloseTo(70, 2);
+      // No $70 (total_devuelto - creditoConsumido) — ese excedente ya se
+      // reintegró en efectivo, nunca fue crédito. Ver comentario del `it`.
+      expect(Number(credito.creditoDisponible)).toBeCloseTo(0, 2);
     });
 
     it('caso 28 — numero inexistente → 404 "Devolución no encontrada"', async () => {

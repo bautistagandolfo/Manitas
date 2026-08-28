@@ -396,6 +396,17 @@ interface MockTx {
       [unknown]
     >;
   };
+  // T5.8 — hallazgo real: el techo del crédito NO es `return.total_devuelto`
+  // (puede incluir un excedente ya reintegrado por otro medio en un CAMBIO
+  // a una prenda más barata, RN-9) — es la SUMA de `return_payments` con
+  // `metodo = CREDITO_DEVOLUCION`, la única parte que efectivamente se
+  // convirtió en nota de crédito diferida.
+  returnPayment: {
+    aggregate: jest.Mock<
+      Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+      [unknown]
+    >;
+  };
   $queryRaw: jest.Mock<
     Promise<unknown[]>,
     [TemplateStringsArray, ...unknown[]]
@@ -437,6 +448,13 @@ function buildMockTx(
     // código nuevo nunca se ejecuta en esos ~150 tests.
     returnRow?: ReturnRow | null;
     creditoConsumidoPrevio?: Prisma.Decimal.Value;
+    // T5.8 — techo real del crédito (`SUM(return_payments.monto) WHERE
+    // metodo = CREDITO_DEVOLUCION`). Default: igual a `returnRow.totalDevuelto`
+    // (preserva el comportamiento de todos los tests preexistentes de T5.5,
+    // que nunca modelaron un excedente reintegrado por otro medio — ahí
+    // `total_devuelto` y "lo marcado como crédito" coinciden). Los tests que
+    // sí necesitan modelar la diferencia lo pasan explícito.
+    creditoOriginalMonto?: Prisma.Decimal.Value;
   } = {},
 ): MockTx {
   return {
@@ -478,6 +496,18 @@ function buildMockTx(
               saleFixture.creditoConsumidoPrevio !== undefined
                 ? new Prisma.Decimal(saleFixture.creditoConsumidoPrevio)
                 : null,
+          },
+        }),
+    },
+    returnPayment: {
+      aggregate: jest
+        .fn<Promise<{ _sum: { monto: Prisma.Decimal | null } }>, [unknown]>()
+        .mockResolvedValue({
+          _sum: {
+            monto:
+              saleFixture.creditoOriginalMonto !== undefined
+                ? new Prisma.Decimal(saleFixture.creditoOriginalMonto)
+                : (saleFixture.returnRow?.totalDevuelto ?? null),
           },
         }),
     },
@@ -4156,6 +4186,16 @@ describe('SalesService.crearVenta — T5.5 crédito de devolución diferido (inv
       const consumido = consumidoById.get(id) ?? '0.00';
       return Promise.resolve({
         _sum: { monto: new Prisma.Decimal(consumido) },
+      });
+    });
+    // T5.8 — techo real del crédito de CADA devolución: acá coincide con
+    // `totalDevuelto` (ninguna de las dos modela un excedente reintegrado
+    // por otro medio), mismo criterio que el default de `buildMockTx`.
+    tx.returnPayment.aggregate.mockImplementation((args: unknown) => {
+      const id = (args as { where: { returnId: number } }).where.returnId;
+      const returnRow = returnsById.get(id);
+      return Promise.resolve({
+        _sum: { monto: returnRow?.totalDevuelto ?? null },
       });
     });
 

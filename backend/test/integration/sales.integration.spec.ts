@@ -152,11 +152,20 @@ describe('sales (integration, T4.1)', () => {
   // `returns` por la sesión anterior), solo necesita una fila real de
   // `Return` con `total_devuelto` fijo, referenciando una venta real, para
   // que `crearVenta` (lado `sales`) pueda tomar su lock y leerla.
+  // T5.8 — `creditoOriginal` (default: igual a `totalDevuelto`, preserva
+  // el comportamiento de los tests preexistentes de T5.5) es lo que
+  // efectivamente se marca como `CREDITO_DEVOLUCION` en `return_payments`
+  // — el techo real que `SalesService.crearVenta` (paso 8c) valida desde
+  // el hallazgo de esta sesión (antes usaba `total_devuelto`, que puede
+  // ser mayor si parte ya se reintegró por otro medio). Pasar un
+  // `creditoOriginal` menor que `totalDevuelto` modela justamente ese
+  // caso: un CAMBIO a una prenda más barata con excedente en efectivo.
   async function createReturnFixture(params: {
     saleId: number;
     userId: number;
     cashRegisterSessionId: number;
     totalDevuelto: string;
+    creditoOriginal?: string;
   }): Promise<{ id: number }> {
     const ret = await prisma.return.create({
       data: {
@@ -166,6 +175,14 @@ describe('sales (integration, T4.1)', () => {
         cashRegisterSessionId: params.cashRegisterSessionId,
         tipo: ReturnTipo.DEVOLUCION,
         totalDevuelto: new Prisma.Decimal(params.totalDevuelto),
+        returnPayments: {
+          create: {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal(
+              params.creditoOriginal ?? params.totalDevuelto,
+            ),
+          },
+        },
       },
     });
     createdReturnIds.push(ret.id);
@@ -288,6 +305,12 @@ describe('sales (integration, T4.1)', () => {
     // sin cambios.
     if (createdReturnIds.length > 0) {
       await prisma.payment.deleteMany({
+        where: { returnId: { in: createdReturnIds } },
+      });
+      // T5.8 — `createReturnFixture` ahora crea una fila real de
+      // `return_payments` (CREDITO_DEVOLUCION) por cada devolución; hay
+      // que borrarla antes que la `Return` que referencia.
+      await prisma.returnPayment.deleteMany({
         where: { returnId: { in: createdReturnIds } },
       });
       await prisma.return.deleteMany({
@@ -1164,6 +1187,111 @@ describe('sales (integration, T4.1)', () => {
         where: { cashRegisterSessionId: session.id },
       });
       expect(salesInSession).toHaveLength(0);
+    });
+
+    // T5.8 — hallazgo real, reproducido en vivo durante la verificación
+    // manual de T5.8: un CAMBIO a una prenda más barata reintegra el
+    // excedente por OTRO medio (RN-9, efectivo/tarjeta), así que
+    // `total_devuelto` de la devolución (que incluye ese excedente) NO es
+    // el techo real del crédito — el techo es solo lo que efectivamente
+    // se marcó como `CREDITO_DEVOLUCION` en `return_payments`. Antes del
+    // fix, este escenario (devolución de $150 con solo $50 marcados como
+    // crédito, $100 ya reintegrados en efectivo) dejaba $100 "disponibles"
+    // fantasma — un double-spend real, nunca alcanzable por HTTP hasta
+    // T5.8 (que recién ahora expone `returnId` en `POST /sales`).
+    it('excedente ya reintegrado en efectivo (cambio a prenda más barata) NO queda disponible como crédito — el techo es lo marcado como CREDITO_DEVOLUCION, no total_devuelto', async () => {
+      const variantOriginal = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 5,
+      });
+      const session = await openSession(ownerId);
+
+      const originalSale = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, {
+          userId: ownerId,
+          esOwner: true,
+          idempotencyKey: randomUUID(),
+          items: [{ variantId: variantOriginal.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.TARJETA_CREDITO,
+              monto: new Prisma.Decimal('150.00'),
+            },
+          ],
+        }),
+      );
+      createdSaleIds.push(originalSale.id);
+
+      // totalDevuelto = 150 (lo que se devolvió), pero solo 50 se marcaron
+      // como CREDITO_DEVOLUCION — los otros 100 ya se reintegraron en
+      // efectivo en el momento del cambio (fixture, no vía POST /returns:
+      // ese flujo completo ya está cubierto por `returns.integration.spec.ts`).
+      const returnFixture = await createReturnFixture({
+        saleId: originalSale.id,
+        userId: ownerId,
+        cashRegisterSessionId: session.id,
+        totalDevuelto: '150.00',
+        creditoOriginal: '50.00',
+      });
+
+      const variantCredito = await createVariant({
+        precioVenta: '60.00',
+        stockActual: 5,
+      });
+
+      // Pedir $60 de crédito contra una devolución cuyo total_devuelto es
+      // $150 pero cuyo crédito real es $50 — con el bug (techo =
+      // total_devuelto) esto pasaba; con el fix, rechaza.
+      const inputExcedeCreditoReal: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variantCredito.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('60.00'),
+            returnId: returnFixture.id,
+          },
+        ],
+      };
+
+      await expect(
+        prisma.$transaction((tx) =>
+          salesService.crearVenta(tx, inputExcedeCreditoReal),
+        ),
+      ).rejects.toThrow(/no alcanza — disponible: \$50\.00/i);
+
+      const salesInSession = await prisma.sale.findMany({
+        where: { cashRegisterSessionId: session.id },
+      });
+      expect(salesInSession).toHaveLength(1);
+      expect(salesInSession[0].id).toBe(originalSale.id);
+
+      // Pedir exactamente los $50 reales de crédito sí funciona — el
+      // límite es el crédito real, no cero.
+      const variantCreditoReal = await createVariant({
+        precioVenta: '50.00',
+        stockActual: 5,
+      });
+      const inputCreditoReal: CrearVentaInputT55 = {
+        userId: ownerId,
+        esOwner: true,
+        idempotencyKey: randomUUID(),
+        items: [{ variantId: variantCreditoReal.id, cantidad: 1 }],
+        payments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('50.00'),
+            returnId: returnFixture.id,
+          },
+        ],
+      };
+      const saleConCreditoReal = await prisma.$transaction((tx) =>
+        salesService.crearVenta(tx, inputCreditoReal),
+      );
+      createdSaleIds.push(saleConCreditoReal.id);
+      expect(saleConCreditoReal.total.toString()).toBe('50');
     });
   });
 });

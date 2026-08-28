@@ -1677,7 +1677,24 @@ describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
       expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
     });
 
-    it('tipo: "DEVOLUCION" con un pago CREDITO_DEVOLUCION en returnPayments: 400', async () => {
+    // T5.8 — hallazgo real de esta sesión: originalmente CUALQUIER
+    // reintegro `CREDITO_DEVOLUCION` en una `DEVOLUCION` simple se
+    // rechazaba con 400, pensado para que el crédito solo existiera
+    // como subproducto de un `CAMBIO` — pero en un `CAMBIO`, ese
+    // crédito se gasta SIEMPRE entero, en el momento, contra la propia
+    // `ventaNueva` (paso 14: `SalesService.crearVenta` exige
+    // `SUM(payments) == total`, así que nunca puede quedar parcial sin
+    // gastar). Resultado: con la regla original, `creditoDisponible`
+    // (T5.8) era SIEMPRE $0 apenas creada la devolución — el mecanismo
+    // de "nota de crédito para una venta futura, separada" (AMB-16
+    // RESUELTA, diferido) nunca era alcanzable de verdad. Corregido:
+    // una `DEVOLUCION` simple (sin `ventaNueva`, nada que pagar en el
+    // momento) SÍ admite UN reintegro `CREDITO_DEVOLUCION` — ahí el
+    // crédito queda genuinamente bancado, listo para una venta futura
+    // cualquiera. Único cambio: la aserción de este `it` pasó de
+    // esperar un rechazo a esperar éxito con el `return_payment`
+    // persistido — el resto del archivo no se tocó.
+    it('tipo: "DEVOLUCION" con UN pago CREDITO_DEVOLUCION en returnPayments: se acepta, el crédito queda bancado (T5.8, AMB-16)', async () => {
       const tx = buildMockTx([buildSaleItemRow()]);
       const deps = buildDeps();
       const service = buildService(deps);
@@ -1691,8 +1708,40 @@ describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
         ],
       });
 
+      const result = await service.crearDevolucion(asTx(tx), input);
+
+      expect(result.tipo).toBe('DEVOLUCION');
+      const createCall = tx.return.create.mock.calls[0][0];
+      const creditoPayment = createCall.data.returnPayments.create.find(
+        (p) => p.metodo === PaymentMetodo.CREDITO_DEVOLUCION,
+      );
+      expect(creditoPayment).toBeDefined();
+      expect(creditoPayment!.monto.toString()).toBe('200');
+      // Sin `ventaNueva` que gastarlo en el acto: nunca se orquesta una
+      // venta nueva para una `DEVOLUCION` simple, tenga o no crédito.
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
+    });
+
+    it('tipo: "DEVOLUCION" con DOS pagos CREDITO_DEVOLUCION en returnPayments: 400 (a lo sumo uno, mismo criterio que el cambio)', async () => {
+      const tx = buildMockTx([buildSaleItemRow()]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const input = buildInputT55({
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('100.00'),
+          },
+          {
+            metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+            monto: new Prisma.Decimal('100.00'),
+          },
+        ],
+      });
+
       await expect(service.crearDevolucion(asTx(tx), input)).rejects.toThrow(
-        /devoluci[oó]n simple no genera cr[eé]dito/i,
+        /devoluci[oó]n simple admite a lo sumo un reintegro/i,
       );
 
       expect(tx.return.create).not.toHaveBeenCalled();
