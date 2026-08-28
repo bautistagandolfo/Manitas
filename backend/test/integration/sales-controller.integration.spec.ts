@@ -8,6 +8,7 @@ import {
   UserRole,
   CashRegisterSessionEstado,
   PaymentMetodo,
+  ReturnTipo,
 } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'node:crypto';
@@ -66,6 +67,7 @@ describe('sales-controller (integration, T4.11)', () => {
   const createdVariantIds: number[] = [];
   const createdSessionIds: number[] = [];
   const createdSaleIds: number[] = [];
+  const createdReturnIds: number[] = [];
 
   function owned(req: request.Test): request.Test {
     return req.set('Cookie', ownerCookie);
@@ -139,6 +141,62 @@ describe('sales-controller (integration, T4.11)', () => {
     return { id: variant.id, stockActual: variant.stockActual };
   }
 
+  // Fase 04a (T5.8, ticket nuevo) — fixture propia para generar un
+  // crédito de devolución GENUINO, vía HTTP real: una venta (`POST
+  // /sales`, ya cerrado) y una devolución simple de esa venta (`POST
+  // /returns`, T5.7 ya VERDE) que reintegra el importe completo. Sin
+  // insertar nada a mano en la base — mismo criterio que
+  // `crearVentaSimple` de `returns-controller.integration.spec.ts`. La
+  // spec (sección 6, "crédito diferido") es explícita en que el crédito
+  // no depende de que la devolución haya sido un `CAMBIO`: una
+  // `DEVOLUCION` simple sirve igual como origen de un crédito diferido
+  // que se gasta más adelante desde una venta nueva, sin relación con
+  // `returns.service.ts`.
+  async function crearDevolucionConCredito(
+    actor: (req: request.Test) => request.Test,
+    opts: { montoTotal: string },
+  ): Promise<{ returnId: number; numero: number }> {
+    const variant = await createVariant({
+      precioVenta: opts.montoTotal,
+      stockActual: 5,
+    });
+
+    const ventaResponse = await actor(
+      request(app.getHttpServer()).post('/sales'),
+    )
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        items: [{ variantId: variant.id, cantidad: 1 }],
+        payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: opts.montoTotal }],
+      })
+      .expect(201);
+    const ventaBody = ventaResponse.body as { id: number };
+    createdSaleIds.push(ventaBody.id);
+
+    const saleItem = await prisma.saleItem.findFirstOrThrow({
+      where: { saleId: ventaBody.id },
+      orderBy: { id: 'asc' },
+    });
+
+    const returnResponse = await actor(
+      request(app.getHttpServer()).post('/returns'),
+    )
+      .set('Idempotency-Key', randomUUID())
+      .send({
+        saleId: ventaBody.id,
+        tipo: ReturnTipo.DEVOLUCION,
+        items: [{ saleItemId: saleItem.id, cantidad: 1, reingresaStock: true }],
+        returnPayments: [
+          { metodo: PaymentMetodo.EFECTIVO, monto: opts.montoTotal },
+        ],
+      })
+      .expect(201);
+    const returnBody = returnResponse.body as { id: number; numero: number };
+    createdReturnIds.push(returnBody.id);
+
+    return { returnId: returnBody.id, numero: returnBody.numero };
+  }
+
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -194,10 +252,37 @@ describe('sales-controller (integration, T4.11)', () => {
   });
 
   afterAll(async () => {
-    if (createdSaleIds.length > 0) {
+    // T5.8 — `payments.return_id` liga un pago (de la venta que gastó el
+    // crédito) a la `Return` que lo generó. Mismo criterio de orden que
+    // `returns-controller.integration.spec.ts`: hay que limpiar por
+    // cualquiera de los dos lados (`saleId` o `returnId`) antes de poder
+    // borrar `sales`/`returns`, y `return_payments`/`return_items`/
+    // `returns` ANTES de `sales` (`returns.sale_id` es FK hacia la venta
+    // original).
+    if (createdSaleIds.length > 0 || createdReturnIds.length > 0) {
       await prisma.payment.deleteMany({
-        where: { saleId: { in: createdSaleIds } },
+        where: {
+          OR: [
+            { saleId: { in: createdSaleIds } },
+            { returnId: { in: createdReturnIds } },
+          ],
+        },
       });
+    }
+
+    if (createdReturnIds.length > 0) {
+      await prisma.returnPayment.deleteMany({
+        where: { returnId: { in: createdReturnIds } },
+      });
+      await prisma.returnItem.deleteMany({
+        where: { returnId: { in: createdReturnIds } },
+      });
+      await prisma.return.deleteMany({
+        where: { id: { in: createdReturnIds } },
+      });
+    }
+
+    if (createdSaleIds.length > 0) {
       await prisma.saleDiscount.deleteMany({
         where: { saleId: { in: createdSaleIds } },
       });
@@ -640,6 +725,219 @@ describe('sales-controller (integration, T4.11)', () => {
 
       const body = response.body as { id: number };
       createdSaleIds.push(body.id);
+    });
+  });
+
+  // Fase 04a (T5.8, ticket nuevo) — `SalePaymentDto` NO tiene campo
+  // `returnId` todavía (confirmado con `grep` sobre
+  // `dto/create-sale.dto.ts`). Como el `ValidationPipe` global usa
+  // `forbidNonWhitelisted: true`, hoy CUALQUIER payload que mande
+  // `returnId` en un pago se rechaza con 400 antes de llegar al
+  // controller/servicio — no es que la validación de negocio (invariante
+  // 14, ya construida y probada en `sales.service.spec.ts`/
+  // `sales.integration.spec.ts` instanciando el servicio DIRECTO) se
+  // ignore, es que el campo ni siquiera existe en el DTO. Este describe
+  // entero confirma esa ausencia por HTTP y deja fijado el contrato final
+  // (sección 4/6/7 de `modulo-returns-spec.md`, invariante 14 de
+  // BLUEPRINT) para cuando el DTO gane el campo.
+  //
+  // Fuente de la forma exacta del rechazo por servicio: la interfaz
+  // EXPORTADA `CrearVentaPaymentInput` (`sales.service.ts`, campo
+  // `returnId?: number` ya presente desde T5.5) y la tabla de errores de
+  // la sección 7 de la spec — nunca el cuerpo de `crearVenta`.
+  describe('POST /sales — pago CREDITO_DEVOLUCION + returnId (T5.8, crédito diferido)', () => {
+    it('caso 17 — camino feliz, crédito exacto solo (sin otro medio de pago) → 201, payment con returnId persistido', async () => {
+      await abrirSesion(owned);
+      const credito = await crearDevolucionConCredito(owned, {
+        montoTotal: '100.00',
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      const idempotencyKey = randomUUID();
+
+      const response = await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          items: [{ variantId: variantNueva.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+              monto: '100.00',
+              returnId: credito.returnId,
+            },
+          ],
+        })
+        .expect(201);
+
+      const body = response.body as { id: number };
+      createdSaleIds.push(body.id);
+
+      const payment = await prisma.payment.findFirst({
+        where: { saleId: body.id, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
+      });
+      expect(payment).not.toBeNull();
+      expect(payment?.returnId).toBe(credito.returnId);
+      expect(payment?.monto.toFixed(2)).toBe('100.00');
+    });
+
+    it('caso 18 — camino feliz, crédito parcial + EFECTIVO cubriendo el resto → 201', async () => {
+      await abrirSesion(owned);
+      const credito = await crearDevolucionConCredito(owned, {
+        montoTotal: '150.00',
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '200.00',
+        stockActual: 5,
+      });
+      const idempotencyKey = randomUUID();
+
+      const response = await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          items: [{ variantId: variantNueva.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+              monto: '150.00',
+              returnId: credito.returnId,
+            },
+            { metodo: PaymentMetodo.EFECTIVO, monto: '50.00' },
+          ],
+        })
+        .expect(201);
+
+      const body = response.body as { id: number };
+      createdSaleIds.push(body.id);
+
+      const sale = await prisma.sale.findUnique({ where: { id: body.id } });
+      expect(sale?.total.toFixed(2)).toBe('200.00');
+
+      const creditPayment = await prisma.payment.findFirst({
+        where: { saleId: body.id, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
+      });
+      expect(creditPayment?.returnId).toBe(credito.returnId);
+      expect(creditPayment?.monto.toFixed(2)).toBe('150.00');
+
+      const cashPayment = await prisma.payment.findFirst({
+        where: { saleId: body.id, metodo: PaymentMetodo.EFECTIVO },
+      });
+      expect(cashPayment?.monto.toFixed(2)).toBe('50.00');
+    });
+
+    it('caso 19 — rechazo por exceso de crédito (invariante 14) → 400, nada persistido', async () => {
+      await abrirSesion(owned);
+      const credito = await crearDevolucionConCredito(owned, {
+        montoTotal: '50.00',
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '100.00',
+        stockActual: 5,
+      });
+      const idempotencyKey = randomUUID();
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          items: [{ variantId: variantNueva.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+              monto: '100.00',
+              returnId: credito.returnId,
+            },
+          ],
+        })
+        .expect(400);
+
+      const sale = await prisma.sale.findUnique({
+        where: { idempotencyKey },
+      });
+      expect(sale).toBeNull();
+    });
+
+    it('caso 20 — rechazo por returnId de una devolución inexistente → 404', async () => {
+      await abrirSesion(owned);
+      const variantNueva = await createVariant({
+        precioVenta: '10.00',
+        stockActual: 5,
+      });
+      const idempotencyKey = randomUUID();
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          items: [{ variantId: variantNueva.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+              monto: '10.00',
+              returnId: 999999999,
+            },
+          ],
+        })
+        .expect(404);
+
+      const sale = await prisma.sale.findUnique({
+        where: { idempotencyKey },
+      });
+      expect(sale).toBeNull();
+    });
+
+    it('caso 21 — rechazo por CREDITO_DEVOLUCION sin returnId → 400', async () => {
+      await abrirSesion(owned);
+      const variantNueva = await createVariant({
+        precioVenta: '10.00',
+        stockActual: 5,
+      });
+      const idempotencyKey = randomUUID();
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          items: [{ variantId: variantNueva.id, cantidad: 1 }],
+          payments: [
+            { metodo: PaymentMetodo.CREDITO_DEVOLUCION, monto: '10.00' },
+          ],
+        })
+        .expect(400);
+
+      const sale = await prisma.sale.findUnique({
+        where: { idempotencyKey },
+      });
+      expect(sale).toBeNull();
+    });
+
+    it('caso 22 — rechazo por returnId en un pago que no es CREDITO_DEVOLUCION → 400', async () => {
+      await abrirSesion(owned);
+      const credito = await crearDevolucionConCredito(owned, {
+        montoTotal: '50.00',
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '50.00',
+        stockActual: 5,
+      });
+      const idempotencyKey = randomUUID();
+
+      await owned(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          items: [{ variantId: variantNueva.id, cantidad: 1 }],
+          payments: [
+            {
+              metodo: PaymentMetodo.EFECTIVO,
+              monto: '50.00',
+              returnId: credito.returnId,
+            },
+          ],
+        })
+        .expect(400);
+
+      const sale = await prisma.sale.findUnique({
+        where: { idempotencyKey },
+      });
+      expect(sale).toBeNull();
     });
   });
 });

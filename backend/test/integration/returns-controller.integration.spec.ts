@@ -1227,4 +1227,243 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       createdReturnIds.push(body.id);
     });
   });
+
+  // Fase 04a (T5.8, ticket nuevo) — `GET /returns/:numero/credito` NO
+  // existe todavía (confirmado: `grep` sobre `returns.controller.ts` no
+  // encuentra ninguna ruta `credito`). Contrato fijado por el prompt de
+  // esta fase, reconciliado con `docs/build-protocol/state/reports/
+  // modulo-returns-spec.md` sección 4 (fila nueva del endpoint) y sección
+  // 6 (edge case literal: una devolución que en realidad fue el resultado
+  // de un CAMBIO responde igual, sin distinción por `tipo`). Cada caso de
+  // este describe debe fallar por 404 (ruta inexistente) hasta que exista
+  // el controller/servicio — no por un error de compilación.
+  //
+  // Fixtures: en vez de insertar `Payment`/`Return` a mano para simular
+  // consumo de crédito por una venta separada (que exigiría reconstruir
+  // una fila `Sale` completa y válida sin tocar el cuerpo de
+  // `crearVenta`), se usa el mecanismo `CAMBIO` real (`POST /returns` ya
+  // VERDE desde T5.5/T5.7) para generar consumo íntegro o parcial del
+  // crédito de una devolución dentro de una misma transacción conocida —
+  // exactamente el camino que sección 6 documenta como equivalente
+  // ("responde igual", sin importar si el origen del crédito fue un
+  // `CAMBIO`). El consumo por una venta HTTP separada con `returnId`
+  // (T5.5/T5.8 en `sales`) se cubre en su propio archivo
+  // (`sales-controller.integration.spec.ts`), no acá.
+  describe('GET /returns/:numero/credito (T5.8, crédito diferido)', () => {
+    it('caso 25 — devolución simple (sin cambio): creditoDisponible == totalDevuelto, creditoConsumido == 0', async () => {
+      await abrirSesion(owned);
+      const variant = await createVariant({
+        precioVenta: '120.00',
+        stockActual: 5,
+      });
+      const venta = await crearVentaSimple(owned, {
+        variantId: variant.id,
+        cantidad: 1,
+        montoTotal: '120.00',
+      });
+
+      const returnResponse = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          saleId: venta.saleId,
+          tipo: ReturnTipo.DEVOLUCION,
+          items: [
+            { saleItemId: venta.saleItemId, cantidad: 1, reingresaStock: true },
+          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '120.00' }],
+        })
+        .expect(201);
+      const returnBody = returnResponse.body as ReturnResponseBody;
+      createdReturnIds.push(returnBody.id);
+
+      const creditoResponse = await owned(
+        request(app.getHttpServer()).get(
+          `/returns/${returnBody.numero}/credito`,
+        ),
+      ).expect(200);
+
+      const credito = creditoResponse.body as {
+        returnId: number;
+        numero: number;
+        totalDevuelto: string | number;
+        creditoConsumido: string | number;
+        creditoDisponible: string | number;
+        saleId: number;
+      };
+      expect(credito.returnId).toBe(returnBody.id);
+      expect(credito.numero).toBe(returnBody.numero);
+      expect(credito.saleId).toBe(venta.saleId);
+      expect(Number(credito.totalDevuelto)).toBeCloseTo(120, 2);
+      expect(Number(credito.creditoConsumido)).toBeCloseTo(0, 2);
+      expect(Number(credito.creditoDisponible)).toBeCloseTo(120, 2);
+    });
+
+    it('caso 26 — devolución resultado de un CAMBIO a precio igual: crédito íntegramente consumido, creditoDisponible == 0', async () => {
+      await abrirSesion(owned);
+      const variantOriginal = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 5,
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '150.00',
+        stockActual: 5,
+      });
+      const venta = await crearVentaSimple(owned, {
+        variantId: variantOriginal.id,
+        cantidad: 1,
+        montoTotal: '150.00',
+      });
+
+      const returnResponse = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          saleId: venta.saleId,
+          tipo: ReturnTipo.CAMBIO,
+          items: [
+            { saleItemId: venta.saleItemId, cantidad: 1, reingresaStock: true },
+          ],
+          returnPayments: [
+            { metodo: PaymentMetodo.CREDITO_DEVOLUCION, monto: '150.00' },
+          ],
+          ventaNueva: {
+            items: [{ variantId: variantNueva.id, cantidad: 1 }],
+            payments: [],
+          },
+        })
+        .expect(201);
+      const returnBody = returnResponse.body as ReturnResponseBody;
+      createdReturnIds.push(returnBody.id);
+      if (returnBody.saleNuevaId) {
+        createdSaleIds.push(returnBody.saleNuevaId);
+      }
+
+      const creditoResponse = await owned(
+        request(app.getHttpServer()).get(
+          `/returns/${returnBody.numero}/credito`,
+        ),
+      ).expect(200);
+
+      const credito = creditoResponse.body as {
+        totalDevuelto: string | number;
+        creditoConsumido: string | number;
+        creditoDisponible: string | number;
+      };
+      expect(Number(credito.totalDevuelto)).toBeCloseTo(150, 2);
+      expect(Number(credito.creditoConsumido)).toBeCloseTo(150, 2);
+      expect(Number(credito.creditoDisponible)).toBeCloseTo(0, 2);
+    });
+
+    it('caso 27 — devolución resultado de un CAMBIO a precio menor: crédito parcialmente consumido', async () => {
+      await abrirSesion(owned);
+      const variantOriginal = await createVariant({
+        precioVenta: '200.00',
+        stockActual: 5,
+      });
+      const variantNueva = await createVariant({
+        precioVenta: '130.00',
+        stockActual: 5,
+      });
+      const venta = await crearVentaSimple(owned, {
+        variantId: variantOriginal.id,
+        cantidad: 1,
+        montoTotal: '200.00',
+      });
+
+      // Cambio con excedente: 200.00 devueltos, solo 130.00 se aplican
+      // como crédito a la venta nueva, los 70.00 restantes se reintegran
+      // por otro medio (sección 6 — "prenda nueva más barata").
+      const returnResponse = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          saleId: venta.saleId,
+          tipo: ReturnTipo.CAMBIO,
+          items: [
+            { saleItemId: venta.saleItemId, cantidad: 1, reingresaStock: true },
+          ],
+          returnPayments: [
+            { metodo: PaymentMetodo.CREDITO_DEVOLUCION, monto: '130.00' },
+            { metodo: PaymentMetodo.EFECTIVO, monto: '70.00' },
+          ],
+          ventaNueva: {
+            items: [{ variantId: variantNueva.id, cantidad: 1 }],
+            payments: [],
+          },
+        })
+        .expect(201);
+      const returnBody = returnResponse.body as ReturnResponseBody;
+      createdReturnIds.push(returnBody.id);
+      if (returnBody.saleNuevaId) {
+        createdSaleIds.push(returnBody.saleNuevaId);
+      }
+
+      const creditoResponse = await owned(
+        request(app.getHttpServer()).get(
+          `/returns/${returnBody.numero}/credito`,
+        ),
+      ).expect(200);
+
+      const credito = creditoResponse.body as {
+        totalDevuelto: string | number;
+        creditoConsumido: string | number;
+        creditoDisponible: string | number;
+      };
+      expect(Number(credito.totalDevuelto)).toBeCloseTo(200, 2);
+      expect(Number(credito.creditoConsumido)).toBeCloseTo(130, 2);
+      expect(Number(credito.creditoDisponible)).toBeCloseTo(70, 2);
+    });
+
+    it('caso 28 — numero inexistente → 404 "Devolución no encontrada"', async () => {
+      const response = await owned(
+        request(app.getHttpServer()).get('/returns/999999999/credito'),
+      ).expect(404);
+      expect(JSON.stringify(response.body)).toContain(
+        'Devolución no encontrada',
+      );
+    });
+
+    it('caso 29 — ambos roles (OWNER/SELLER) pueden consultar, sin restricción (sección 8)', async () => {
+      await abrirSesion(owned);
+      const variant = await createVariant({
+        precioVenta: '90.00',
+        stockActual: 5,
+      });
+      const venta = await crearVentaSimple(owned, {
+        variantId: variant.id,
+        cantidad: 1,
+        montoTotal: '90.00',
+      });
+
+      const returnResponse = await owned(
+        request(app.getHttpServer()).post('/returns'),
+      )
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          saleId: venta.saleId,
+          tipo: ReturnTipo.DEVOLUCION,
+          items: [
+            { saleItemId: venta.saleItemId, cantidad: 1, reingresaStock: true },
+          ],
+          returnPayments: [{ metodo: PaymentMetodo.EFECTIVO, monto: '90.00' }],
+        })
+        .expect(201);
+      const returnBody = returnResponse.body as ReturnResponseBody;
+      createdReturnIds.push(returnBody.id);
+
+      await sold(
+        request(app.getHttpServer()).get(
+          `/returns/${returnBody.numero}/credito`,
+        ),
+      ).expect(200);
+    });
+
+    it('caso 30 — sin autenticación (sin cookie) → 401', async () => {
+      await request(app.getHttpServer()).get('/returns/1/credito').expect(401);
+    });
+  });
 });
