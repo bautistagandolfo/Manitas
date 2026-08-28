@@ -485,7 +485,9 @@ interface BuildRankingTxOptions {
   }>;
 }
 
-function buildRankingMockTx(options: BuildRankingTxOptions = {}): RankingMockTx {
+function buildRankingMockTx(
+  options: BuildRankingTxOptions = {},
+): RankingMockTx {
   return {
     saleItem: {
       findMany: jest
@@ -552,7 +554,9 @@ function buildGastosMockTx(
 
 // Reusa el mismo tipo `TransactionMock` ya definido arriba para
 // `consultar` — genérico sobre cualquier forma de `tx` mockeado.
-function buildServiceWithTx<T extends object>(tx: T): {
+function buildServiceWithTx<T extends object>(
+  tx: T,
+): {
   service: ResultadosService;
   transactionMock: TransactionMock;
 } {
@@ -785,7 +789,7 @@ describe('ResultadosService.rankingProductos (T6.6)', () => {
   it('filtros y AD-13: sale_items filtra por sale.estado COMPLETADA, return_items NO filtra por reingresaStock en el where, y los límites gte/lte salen de argentinaDayRangeToUtc', async () => {
     const tx = buildRankingMockTx();
     const { service } = buildServiceWithTx(tx);
-    const { desde, hasta } = argentinaDayRangeToUtc('2026-02-01');
+    const { desde } = argentinaDayRangeToUtc('2026-02-01');
     const hastaFin = argentinaDayRangeToUtc('2026-02-28').hasta;
 
     await service.rankingProductos(rankingQuery('2026-02-01', '2026-02-28'));

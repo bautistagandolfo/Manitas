@@ -868,9 +868,7 @@ describe('resultados (integration, T6.4)', () => {
 
       it('con SELLER → 403', async () => {
         await sold(
-          request(app.getHttpServer()).get(
-            '/resultados/gastos-por-categoria',
-          ),
+          request(app.getHttpServer()).get('/resultados/gastos-por-categoria'),
         )
           .query({ desde: '2033-02-01', hasta: '2033-02-01' })
           .expect(403);
@@ -880,9 +878,7 @@ describe('resultados (integration, T6.4)', () => {
     describe('validación', () => {
       it('desde > hasta → 400', async () => {
         const response = await owned(
-          request(app.getHttpServer()).get(
-            '/resultados/gastos-por-categoria',
-          ),
+          request(app.getHttpServer()).get('/resultados/gastos-por-categoria'),
         ).query({ desde: '2033-02-15', hasta: '2033-02-01' });
 
         expect(response.status).toBe(400);
@@ -914,9 +910,7 @@ describe('resultados (integration, T6.4)', () => {
         );
 
         const response = await owned(
-          request(app.getHttpServer()).get(
-            '/resultados/gastos-por-categoria',
-          ),
+          request(app.getHttpServer()).get('/resultados/gastos-por-categoria'),
         ).query({ desde: '2033-02-01', hasta: '2033-02-01' });
 
         expect(response.status).toBe(200);
@@ -947,35 +941,44 @@ describe('resultados (integration, T6.4)', () => {
         );
 
         const angosto = await owned(
-          request(app.getHttpServer()).get(
-            '/resultados/gastos-por-categoria',
-          ),
+          request(app.getHttpServer()).get('/resultados/gastos-por-categoria'),
         ).query({ desde: '2033-02-08', hasta: '2033-02-08' });
         expect(angosto.status).toBe(200);
         const bodyAngosto = angosto.body as GastoPorCategoriaItemBody[];
         expect(bodyAngosto).toEqual([
-          { expenseCategoryId: categoria, nombre: expect.any(String), total: '30.00' },
+          {
+            expenseCategoryId: categoria,
+            nombre: expect.any(String) as string,
+            total: '30.00',
+          },
         ]);
 
         const amplio = await owned(
-          request(app.getHttpServer()).get(
-            '/resultados/gastos-por-categoria',
-          ),
+          request(app.getHttpServer()).get('/resultados/gastos-por-categoria'),
         ).query({ desde: '2033-02-01', hasta: '2033-02-28' });
         expect(amplio.status).toBe(200);
         const bodyAmplio = amplio.body as GastoPorCategoriaItemBody[];
-        expect(bodyAmplio).toEqual([
-          { expenseCategoryId: categoria, nombre: expect.any(String), total: '100.00' },
-        ]);
+        // No se afirma que ESTA sea la única categoría del rango: el
+        // describe hermano "camino feliz" también usa fechas de
+        // '2033-02-01' con categorías propias, y un rango amplio real
+        // legítimamente las trae a todas — buscar la categoría propia
+        // en vez de exigir un array de un solo elemento evita que este
+        // test dependa del orden de ejecución de sus vecinos.
+        const propia = bodyAmplio.find(
+          (item) => item.expenseCategoryId === categoria,
+        );
+        expect(propia).toEqual({
+          expenseCategoryId: categoria,
+          nombre: expect.any(String) as string,
+          total: '100.00',
+        });
       });
     });
 
     describe('edge case — período sin datos', () => {
       it('200, array vacío', async () => {
         const response = await owned(
-          request(app.getHttpServer()).get(
-            '/resultados/gastos-por-categoria',
-          ),
+          request(app.getHttpServer()).get('/resultados/gastos-por-categoria'),
         ).query({ desde: '2034-12-26', hasta: '2034-12-26' });
 
         expect(response.status).toBe(200);

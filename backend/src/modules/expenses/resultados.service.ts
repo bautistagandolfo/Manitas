@@ -174,21 +174,176 @@ export class ResultadosService {
     };
   }
 
-  // T6.6 — stub mínimo de esta fase (04a): fija el contrato de tipos e
-  // implementación mínima para que compile y falle correctamente. La
-  // fórmula/queries reales (RN-10, spec del ticket) se implementan en
-  // otra sesión (Fase 04) contra los tests que este mismo commit deja en
-  // rojo — mismo patrón de stub ya usado en T6.2/T6.4.
+  // T6.6, RN-10 — "mismo rango de fechas y mismos filtros de RN-8" que
+  // `/resultados`, por producto: TODA devolución resta unidades/ingresos
+  // (el cliente recuperó la plata pase lo que pase con la prenda), pero
+  // el costo (y por lo tanto el margen) solo se revierte si
+  // `reingresaStock: true` — misma asimetría exacta que ya usa
+  // `consultar` a nivel de todo el período. `sale_items.neto_linea` es
+  // la atribución de ingreso correcta por línea (invariante 12:
+  // `SUM(neto_linea) == sales.total`); `return_items.neto_linea` del
+  // lado de las devoluciones (invariante 11).
   async rankingProductos(
-    _query: RankingProductosQuery,
+    query: RankingProductosQuery,
   ): Promise<RankingProductoItem[]> {
-    return Promise.reject(new Error('T6.6 todavía no implementado'));
+    const desde = argentinaDayRangeToUtc(query.desde).desde;
+    const hasta = argentinaDayRangeToUtc(query.hasta).hasta;
+
+    if (desde.getTime() > hasta.getTime()) {
+      throw new BadRequestException('El rango de fechas no es válido');
+    }
+
+    const rango = { gte: desde, lte: hasta };
+
+    const [saleItems, returnItems] = await this.prisma.$transaction(
+      (tx) =>
+        Promise.all([
+          tx.saleItem.findMany({
+            where: { sale: { estado: SaleEstado.COMPLETADA, fecha: rango } },
+            select: {
+              variantId: true,
+              descripcionSnapshot: true,
+              cantidad: true,
+              netoLinea: true,
+              costoUnitario: true,
+            },
+          }),
+          // Sin filtro `reingresaStock` acá: las unidades y el ingreso
+          // se ajustan por TODAS las devoluciones — el costo, más
+          // abajo, solo se revierte para las que sí reingresaron.
+          tx.returnItem.findMany({
+            where: { return: { fecha: rango } },
+            select: {
+              cantidad: true,
+              netoLinea: true,
+              costoUnitario: true,
+              reingresaStock: true,
+              saleItem: { select: { variantId: true } },
+            },
+          }),
+        ]),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    interface Acumulado {
+      descripcionSnapshot: string;
+      unidades: number;
+      ingresos: Prisma.Decimal;
+      cmv: Prisma.Decimal;
+    }
+    const porVariante = new Map<number, Acumulado>();
+
+    for (const item of saleItems) {
+      const acc = porVariante.get(item.variantId) ?? {
+        descripcionSnapshot: item.descripcionSnapshot,
+        unidades: 0,
+        ingresos: new Prisma.Decimal(0),
+        cmv: new Prisma.Decimal(0),
+      };
+      acc.unidades += item.cantidad;
+      acc.ingresos = acc.ingresos.plus(item.netoLinea);
+      acc.cmv = acc.cmv.plus(item.costoUnitario.times(item.cantidad));
+      porVariante.set(item.variantId, acc);
+    }
+
+    for (const item of returnItems) {
+      const variantId = item.saleItem.variantId;
+      const acc = porVariante.get(variantId);
+      // No debería pasar (una devolución siempre referencia una línea
+      // vendida, que ya generó una entrada arriba) — por robustez, se
+      // ignora en vez de romper todo el ranking por un dato huérfano.
+      if (!acc) {
+        continue;
+      }
+      acc.unidades -= item.cantidad;
+      acc.ingresos = acc.ingresos.minus(item.netoLinea);
+      if (item.reingresaStock) {
+        acc.cmv = acc.cmv.minus(item.costoUnitario.times(item.cantidad));
+      }
+    }
+
+    const items: RankingProductoItem[] = Array.from(porVariante.entries()).map(
+      ([variantId, acc]) => ({
+        variantId,
+        descripcionSnapshot: acc.descripcionSnapshot,
+        unidadesVendidas: acc.unidades,
+        margenTotal: money(acc.ingresos.minus(acc.cmv)),
+      }),
+    );
+
+    const orden = query.orden ?? 'unidades';
+    items.sort((a, b) => {
+      if (orden === 'margen') {
+        const cmp = new Prisma.Decimal(b.margenTotal).comparedTo(a.margenTotal);
+        if (cmp !== 0) {
+          return cmp;
+        }
+      } else if (b.unidadesVendidas !== a.unidadesVendidas) {
+        return b.unidadesVendidas - a.unidadesVendidas;
+      }
+      // Desempate: primer índice — mismo criterio que `prorate()` de
+      // `money.util.ts`, nunca un orden arbitrario.
+      return a.variantId - b.variantId;
+    });
+
+    return items;
   }
 
-  // T6.6 — mismo criterio de stub que `rankingProductos`.
+  // T6.6 — gastos agrupados por categoría, mismo rango/filtro de fecha
+  // de cabecera que `consultar`. `findMany` + reducción en JS con
+  // `Decimal` (no `groupBy`): así se trae también el nombre de la
+  // categoría en la misma consulta, sin un segundo viaje a la base.
   async gastosPorCategoria(
-    _query: GastosPorCategoriaQuery,
+    query: GastosPorCategoriaQuery,
   ): Promise<GastoPorCategoriaItem[]> {
-    return Promise.reject(new Error('T6.6 todavía no implementado'));
+    const desde = argentinaDayRangeToUtc(query.desde).desde;
+    const hasta = argentinaDayRangeToUtc(query.hasta).hasta;
+
+    if (desde.getTime() > hasta.getTime()) {
+      throw new BadRequestException('El rango de fechas no es válido');
+    }
+
+    const expenses = await this.prisma.$transaction(
+      (tx) =>
+        tx.expense.findMany({
+          where: { fecha: { gte: desde, lte: hasta } },
+          select: {
+            expenseCategoryId: true,
+            monto: true,
+            expenseCategory: { select: { nombre: true } },
+          },
+        }),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+
+    interface Acumulado {
+      nombre: string;
+      total: Prisma.Decimal;
+    }
+    const porCategoria = new Map<number, Acumulado>();
+
+    for (const expense of expenses) {
+      const acc = porCategoria.get(expense.expenseCategoryId) ?? {
+        nombre: expense.expenseCategory.nombre,
+        total: new Prisma.Decimal(0),
+      };
+      acc.total = acc.total.plus(expense.monto);
+      porCategoria.set(expense.expenseCategoryId, acc);
+    }
+
+    const items: GastoPorCategoriaItem[] = Array.from(
+      porCategoria.entries(),
+    ).map(([expenseCategoryId, acc]) => ({
+      expenseCategoryId,
+      nombre: acc.nombre,
+      total: money(acc.total),
+    }));
+
+    items.sort((a, b) => {
+      const cmp = new Prisma.Decimal(b.total).comparedTo(a.total);
+      return cmp !== 0 ? cmp : a.nombre.localeCompare(b.nombre);
+    });
+
+    return items;
   }
 }
