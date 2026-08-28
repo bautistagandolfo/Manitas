@@ -1,7 +1,4 @@
-import {
-  BadRequestException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ExpenseMedioPago, Prisma } from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { ExpensesService } from './expenses.service';
@@ -244,17 +241,14 @@ describe('ExpensesService.registrarGasto (T6.2)', () => {
   it('idempotencyKey viaja intacto hasta el create (la mitad de §9.7 que es responsabilidad del servicio — la otra mitad, "un reintento no duplica", es del controller/withIdempotency, ver nota de archivo)', async () => {
     const tx = buildMockTx(buildCategoria());
 
-    await service.registrarGasto(
-      tx as unknown as Prisma.TransactionClient,
-      {
-        expenseCategoryId: 3,
-        descripcion: 'Gasto x',
-        monto: '100.00',
-        medioPago: ExpenseMedioPago.EFECTIVO,
-        userId: 1,
-        idempotencyKey: 'idem-key-repetida',
-      },
-    );
+    await service.registrarGasto(tx as unknown as Prisma.TransactionClient, {
+      expenseCategoryId: 3,
+      descripcion: 'Gasto x',
+      monto: '100.00',
+      medioPago: ExpenseMedioPago.EFECTIVO,
+      userId: 1,
+      idempotencyKey: 'idem-key-repetida',
+    });
 
     expect(tx.expense.create.mock.calls[0][0].data.idempotencyKey).toBe(
       'idem-key-repetida',
@@ -274,5 +268,91 @@ describe('ExpensesService.registrarGasto (T6.2)', () => {
     });
 
     expect(tx.expense.create.mock.calls[0][0].data.userId).toBe(777);
+  });
+});
+
+// Cobertura agregada en la Fase 04 (implementación): `findAll` no forma
+// parte del contrato mínimo que exigió la Fase04a (esa fase solo probó
+// `GET /expenses` de punta a punta contra Postgres real, sin fijar el
+// detalle interno) — se testea acá a nivel unitario porque es código
+// nuevo de este mismo ticket (CLAUDE.md regla 8: los tests se escriben
+// en el mismo ticket que el código).
+describe('ExpensesService.findAll (T6.2)', () => {
+  interface FindManyArgs {
+    where: { fecha?: { gte?: Date; lte?: Date } };
+    orderBy: { fecha: 'desc' };
+    skip: number;
+    take: number;
+  }
+
+  interface MockPrisma {
+    expense: {
+      findMany: jest.Mock<Promise<ExpenseRow[]>, [FindManyArgs]>;
+      count: jest.Mock<Promise<number>, [{ where: FindManyArgs['where'] }]>;
+    };
+  }
+
+  function buildMockPrisma(): MockPrisma {
+    return {
+      expense: {
+        findMany: jest
+          .fn<Promise<ExpenseRow[]>, [FindManyArgs]>()
+          .mockResolvedValue([]),
+        count: jest
+          .fn<Promise<number>, [{ where: FindManyArgs['where'] }]>()
+          .mockResolvedValue(0),
+      },
+    };
+  }
+
+  it('pagina con skip/take derivados de page/pageSize, ordena por fecha descendente', async () => {
+    const prisma = buildMockPrisma();
+    const service = new ExpensesService(prisma as unknown as PrismaService);
+
+    await service.findAll({ page: 3, pageSize: 10 });
+
+    expect(prisma.expense.findMany).toHaveBeenCalledWith({
+      where: {},
+      orderBy: { fecha: 'desc' },
+      skip: 20,
+      take: 10,
+    });
+  });
+
+  it('sin desde/hasta, el where no filtra por fecha', async () => {
+    const prisma = buildMockPrisma();
+    const service = new ExpensesService(prisma as unknown as PrismaService);
+
+    await service.findAll({ page: 1, pageSize: 20 });
+
+    const call = prisma.expense.findMany.mock.calls[0][0];
+    expect(call.where).toEqual({});
+  });
+
+  it('con desde y hasta, filtra fecha con gte/lte', async () => {
+    const prisma = buildMockPrisma();
+    const service = new ExpensesService(prisma as unknown as PrismaService);
+    const desde = new Date('2026-01-01T00:00:00Z');
+    const hasta = new Date('2026-01-31T23:59:59Z');
+
+    await service.findAll({ page: 1, pageSize: 20, desde, hasta });
+
+    const call = prisma.expense.findMany.mock.calls[0][0];
+    expect(call.where.fecha).toEqual({ gte: desde, lte: hasta });
+  });
+
+  it('devuelve items/itemCount/page/pageSize', async () => {
+    const prisma = buildMockPrisma();
+    prisma.expense.count.mockResolvedValue(42);
+    const service = new ExpensesService(prisma as unknown as PrismaService);
+
+    const result = await service.findAll({ page: 2, pageSize: 15 });
+
+    expect(result).toEqual({
+      items: [],
+      itemCount: 42,
+      page: 2,
+      pageSize: 15,
+    });
   });
 });

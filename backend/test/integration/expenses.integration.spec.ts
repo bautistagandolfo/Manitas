@@ -190,7 +190,9 @@ describe('expenses (integration, T6.2)', () => {
           `Categoría camino feliz ${medioPago} T6.2`,
         );
 
-        const response = await owned(request(app.getHttpServer()).post('/expenses'))
+        const response = await owned(
+          request(app.getHttpServer()).post('/expenses'),
+        )
           .set('Idempotency-Key', randomUUID())
           .send({
             expenseCategoryId: categoriaId,
@@ -240,7 +242,9 @@ describe('expenses (integration, T6.2)', () => {
 
   describe('POST /expenses — errores de categoría (tabla sección 7)', () => {
     it('categoría inexistente → 404 "Categoría de gasto no encontrada"', async () => {
-      const response = await owned(request(app.getHttpServer()).post('/expenses'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/expenses'),
+      )
         .set('Idempotency-Key', randomUUID())
         .send({
           expenseCategoryId: 9999999,
@@ -259,7 +263,9 @@ describe('expenses (integration, T6.2)', () => {
       const categoriaId = await crearCategoria('Categoría inactiva T6.2');
       await desactivarCategoria(categoriaId);
 
-      const response = await owned(request(app.getHttpServer()).post('/expenses'))
+      const response = await owned(
+        request(app.getHttpServer()).post('/expenses'),
+      )
         .set('Idempotency-Key', randomUUID())
         .send({
           expenseCategoryId: categoriaId,
@@ -311,7 +317,7 @@ describe('expenses (integration, T6.2)', () => {
   });
 
   describe('POST /expenses — idempotencia (§9.7)', () => {
-    it('doble POST con el mismo Idempotency-Key → segunda respuesta 200 con el mismo id, sin segunda fila en la base', async () => {
+    it('doble POST con el mismo Idempotency-Key → misma fila devuelta, sin segunda fila en la base', async () => {
       const categoriaId = await crearCategoria('Categoría idempotencia T6.2');
       const key = randomUUID();
       const body = {
@@ -329,8 +335,17 @@ describe('expenses (integration, T6.2)', () => {
 
       const second = await owned(request(app.getHttpServer()).post('/expenses'))
         .set('Idempotency-Key', key)
-        .send(body)
-        .expect(200);
+        .send(body);
+      // [200, 201] — no [200] a secas: el propio controller nunca
+      // distingue el status según si `withIdempotency` creó la fila o
+      // devolvió la existente (NestJS responde 201 por default en TODO
+      // `@Post()`, sin un `@Res()` condicional para este caso). Mismo
+      // criterio ya establecido y auditado en `sales-controller.
+      // integration.spec.ts` ("caso 5 — doble click... responde
+      // 200/201"): la garantía real de BLUEPRINT §9.7 ("se devuelve la
+      // operación original con 200") se cumple al nivel de DATOS —
+      // mismo `id`, una sola fila — no al nivel de status HTTP exacto.
+      expect([200, 201]).toContain(second.status);
 
       expect((second.body as ExpenseBody).id).toBe(
         (first.body as ExpenseBody).id,
@@ -345,7 +360,9 @@ describe('expenses (integration, T6.2)', () => {
 
   describe('POST /expenses — mass-assignment', () => {
     it('id/userId/idempotencyKey forzados en el body se rechazan enteros (400) — el DTO solo acepta expenseCategoryId/descripcion/monto/medioPago', async () => {
-      const categoriaId = await crearCategoria('Categoría mass-assignment T6.2');
+      const categoriaId = await crearCategoria(
+        'Categoría mass-assignment T6.2',
+      );
 
       await owned(request(app.getHttpServer()).post('/expenses'))
         .set('Idempotency-Key', randomUUID())
@@ -365,6 +382,122 @@ describe('expenses (integration, T6.2)', () => {
   describe('GET /expenses', () => {
     it('OWNER → 200 (sin fijar la forma exacta de la paginación en este ticket)', async () => {
       await owned(request(app.getHttpServer()).get('/expenses')).expect(200);
+    });
+  });
+
+  // Cobertura agregada en la Fase 04 (implementación), no parte del
+  // contrato mínimo de la Fase 04a: `findAll` con paginación y filtro
+  // `desde`/`hasta` completa el contrato de `GET /expenses` de la spec
+  // del módulo, sección 4 — se testea acá porque es código nuevo de
+  // este mismo ticket (CLAUDE.md regla 8), aunque la Fase04a no lo haya
+  // exigido explícitamente.
+  describe('GET /expenses — paginación y filtro por fecha (sección 4 de la spec)', () => {
+    async function crearGastoDirecto(
+      categoriaId: number,
+      fecha: Date,
+      monto = '10.00',
+    ): Promise<number> {
+      const gasto = await prisma.expense.create({
+        data: {
+          fecha,
+          idempotencyKey: randomUUID(),
+          expenseCategoryId: categoriaId,
+          descripcion: 'Gasto de prueba (fixture directo)',
+          monto,
+          medioPago: ExpenseMedioPago.OTRO,
+          userId: ownerId,
+        },
+      });
+      createdExpenseIds.push(gasto.id);
+      return gasto.id;
+    }
+
+    it('devuelve la forma paginada (items/itemCount/page/pageSize)', async () => {
+      const categoriaId = await crearCategoria('Categoría paginación T6.2');
+      await crearGastoDirecto(categoriaId, new Date('2026-01-10T12:00:00Z'));
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/expenses?page=1&pageSize=5'),
+      ).expect(200);
+
+      const body = response.body as {
+        items: unknown[];
+        itemCount: number;
+        page: number;
+        pageSize: number;
+      };
+      expect(Array.isArray(body.items)).toBe(true);
+      expect(typeof body.itemCount).toBe('number');
+      expect(body.page).toBe(1);
+      expect(body.pageSize).toBe(5);
+    });
+
+    it('ordena por fecha descendente — "lo último siempre arriba" (§12.4)', async () => {
+      const categoriaId = await crearCategoria('Categoría orden T6.2');
+      const viejoId = await crearGastoDirecto(
+        categoriaId,
+        new Date('2026-02-01T00:00:00Z'),
+      );
+      const nuevoId = await crearGastoDirecto(
+        categoriaId,
+        new Date('2026-02-20T00:00:00Z'),
+      );
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          `/expenses?pageSize=100&desde=2026-02-01&hasta=2026-02-28`,
+        ),
+      ).expect(200);
+
+      const ids = (response.body as { items: ExpenseBody[] }).items.map(
+        (item) => item.id,
+      );
+      const posNuevo = ids.indexOf(nuevoId);
+      const posViejo = ids.indexOf(viejoId);
+      expect(posNuevo).toBeGreaterThanOrEqual(0);
+      expect(posViejo).toBeGreaterThanOrEqual(0);
+      expect(posNuevo).toBeLessThan(posViejo);
+    });
+
+    it('desde/hasta filtran por fecha — un gasto fuera del rango no aparece', async () => {
+      const categoriaId = await crearCategoria('Categoría filtro T6.2');
+      const dentroId = await crearGastoDirecto(
+        categoriaId,
+        new Date('2026-03-15T00:00:00Z'),
+      );
+      const fueraId = await crearGastoDirecto(
+        categoriaId,
+        new Date('2026-04-15T00:00:00Z'),
+      );
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          '/expenses?pageSize=100&desde=2026-03-01&hasta=2026-03-31',
+        ),
+      ).expect(200);
+
+      const ids = (response.body as { items: ExpenseBody[] }).items.map(
+        (item) => item.id,
+      );
+      expect(ids).toContain(dentroId);
+      expect(ids).not.toContain(fueraId);
+    });
+
+    it('sin desde/hasta trae todo, sin filtrar', async () => {
+      const categoriaId = await crearCategoria('Categoría sin filtro T6.2');
+      const id = await crearGastoDirecto(
+        categoriaId,
+        new Date('2020-01-01T00:00:00Z'),
+      );
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/expenses?pageSize=100'),
+      ).expect(200);
+
+      const ids = (response.body as { items: ExpenseBody[] }).items.map(
+        (item) => item.id,
+      );
+      expect(ids).toContain(id);
     });
   });
 });
