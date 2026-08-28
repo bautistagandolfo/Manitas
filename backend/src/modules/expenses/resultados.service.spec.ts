@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { Prisma, SaleEstado } from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { ResultadosService, ResultadosQuery } from './resultados.service';
+import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 
 // Fase 04a (T6.4) — tests escritos ANTES de la implementación, contra
 // Prisma completamente mockeado (nunca `tx` recibido de un controller:
@@ -40,10 +41,15 @@ import { ResultadosService, ResultadosQuery } from './resultados.service';
 //     filtro 3 estructural).
 //   - `tx.expense.aggregate({ where: { fecha: {gte,lte} },
 //     _sum: { monto: true } })` — gastos del período.
-// Los límites `gte`/`lte` son SIEMPRE `desde 00:00:00.000Z` / `hasta
-// 23:59:59.999Z`, UTC ingenuo, sin ajuste de hora argentina (AD-13 es
-// T6.5/T0.7, explícitamente fuera de alcance acá — mismo criterio ya
-// documentado en `ExpensesService.findAll`, T6.2→T6.3).
+// Los límites `gte`/`lte` salían, hasta T6.4, de `desde 00:00:00.000Z` /
+// `hasta 23:59:59.999Z` (UTC ingenuo) — esa fue la interpretación
+// deliberadamente provisional de T6.4 (AD-13 quedaba fuera de alcance,
+// a la espera de T0.7). **T6.5 (esta fase) conecta la conversión real**:
+// los límites ahora salen de `argentinaDayRangeToUtc` (T0.7, ya VERDE) —
+// medianoche a medianoche EN HORA ARGENTINA, convertida a UTC. Los tres
+// tests que fijaban el cálculo ingenuo como contrato (filtros 1/2/3, más
+// abajo) se actualizaron para reflejar esto — mismo criterio ya usado
+// para actualizar tests heredados de un ticket anterior (T6.2 → T6.3).
 //
 // Todos los importes de la respuesta son `string` de 2 decimales
 // (BLUEPRINT §9.3) — `margenBrutoPct` también, aunque sea un porcentaje,
@@ -212,8 +218,16 @@ describe('ResultadosService.consultar (T6.4)', () => {
   it('filtro 1: la query de ventas (ingresos) Y la de sale_items (CMV) filtran por estado: COMPLETADA — where exacto', async () => {
     const tx = buildMockTx();
     const { service } = buildService(tx);
-    const desde = new Date('2026-02-01T00:00:00.000Z');
-    const hasta = new Date('2026-02-28T23:59:59.999Z');
+    // T6.5 (AD-13): este test fijaba a propósito los límites UTC ingenuos
+    // como contrato ("sin ajuste de hora argentina — eso es T6.5", T6.4).
+    // Con T6.5 conectando `argentinaDayRangeToUtc` (T0.7, ya VERDE, sin
+    // mockear — es la fuente real), el servicio ahora manda límites
+    // distintos: medianoche a medianoche EN HORA ARGENTINA, ya convertida
+    // a UTC. No es un debilitamiento — es la expectativa provisional que
+    // el propio T6.4 avisó que iba a cambiar, corregida a la real (mismo
+    // criterio ya usado para actualizar el `it.each` de T6.2 → T6.3).
+    const desde = argentinaDayRangeToUtc('2026-02-01').desde;
+    const hasta = argentinaDayRangeToUtc('2026-02-28').hasta;
 
     await service.consultar(query('2026-02-01', '2026-02-28'));
 
@@ -238,8 +252,10 @@ describe('ResultadosService.consultar (T6.4)', () => {
   it('filtro 2: la query de return_items (reversión del CMV) filtra por reingresaStock: true — where exacto', async () => {
     const tx = buildMockTx();
     const { service } = buildService(tx);
-    const desde = new Date('2026-03-01T00:00:00.000Z');
-    const hasta = new Date('2026-03-31T23:59:59.999Z');
+    // T6.5 (AD-13): mismo cambio que en el test de filtro 1 — los límites
+    // ya no son UTC ingenuo, salen de `argentinaDayRangeToUtc` (T0.7).
+    const desde = argentinaDayRangeToUtc('2026-03-01').desde;
+    const hasta = argentinaDayRangeToUtc('2026-03-31').hasta;
 
     await service.consultar(query('2026-03-01', '2026-03-31'));
 
@@ -252,14 +268,47 @@ describe('ResultadosService.consultar (T6.4)', () => {
     });
   });
 
-  it('filtro 3, mitad estructural (sin ajuste de hora argentina — eso es T6.5): desde/hasta se interpretan como límites UTC ingenuos, desde 00:00:00.000Z hasta hasta 23:59:59.999Z, y así llegan también a la query de gastos y de devoluciones', async () => {
+  it('filtro 3, completo: fecha de cabecera + hora argentina (AD-13, T6.5): los límites gte/lte que llegan a la query de gastos y de devoluciones salen de argentinaDayRangeToUtc, no de UTC ingenuo', async () => {
     const tx = buildMockTx();
     const { service } = buildService(tx);
-    const desde = new Date('2026-05-10T00:00:00.000Z');
-    const hasta = new Date('2026-05-10T23:59:59.999Z');
+    // T6.5: este test se llamaba "mitad estructural (sin ajuste de hora
+    // argentina — eso es T6.5)" en T6.4 — ahora que T6.5 conecta la
+    // conversión real, queda "completo": la fecha de cabecera SIGUE
+    // siendo la que se filtra (eso no cambia), pero además con el ajuste
+    // de hora argentina ya aplicado.
+    const { desde, hasta } = argentinaDayRangeToUtc('2026-05-10');
 
     await service.consultar(query('2026-05-10', '2026-05-10'));
 
+    expect(tx.return.aggregate).toHaveBeenCalledWith({
+      where: { fecha: { gte: desde, lte: hasta } },
+      _sum: { totalDevuelto: true },
+    });
+    expect(tx.expense.aggregate).toHaveBeenCalledWith({
+      where: { fecha: { gte: desde, lte: hasta } },
+      _sum: { monto: true },
+    });
+  });
+
+  it('filtro 3, rango de más de un día (AD-13, T6.5): gte sale del INICIO del primer día en hora argentina, lte sale del FIN del último día — nunca los límites de un solo día aplicados a todo el rango', async () => {
+    const tx = buildMockTx();
+    const { service } = buildService(tx);
+    // Distinto de los tests de arriba: acá `desde` y `hasta` son DÍAS
+    // DISTINTOS ('2026-04-01' a '2026-04-05') — el `gte` esperado tiene
+    // que salir del rango del PRIMER día y el `lte` del rango del
+    // ÚLTIMO, no ambos del mismo cálculo de un solo día.
+    const desde = argentinaDayRangeToUtc('2026-04-01').desde;
+    const hasta = argentinaDayRangeToUtc('2026-04-05').hasta;
+
+    await service.consultar(query('2026-04-01', '2026-04-05'));
+
+    expect(tx.sale.aggregate).toHaveBeenCalledWith({
+      where: {
+        estado: SaleEstado.COMPLETADA,
+        fecha: { gte: desde, lte: hasta },
+      },
+      _sum: { total: true },
+    });
     expect(tx.return.aggregate).toHaveBeenCalledWith({
       where: { fecha: { gte: desde, lte: hasta } },
       _sum: { totalDevuelto: true },

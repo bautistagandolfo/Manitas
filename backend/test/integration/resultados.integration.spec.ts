@@ -540,6 +540,92 @@ describe('resultados (integration, T6.4)', () => {
     });
   });
 
+  // T6.5 (AD-13) — el test obligatorio de BLUEPRINT §5.6, textual: "Un
+  // test debe verificar que una venta de las 23:30 pertenece al día
+  // correcto." 23:30 hora argentina de un día D es UTC 02:30 del día
+  // D+1 (23:30 + 3h cruza la medianoche) — sin la conversión a hora
+  // argentina (el bug que T6.4 dejó pendiente a propósito), esa venta
+  // caería en el `/resultados` del día D+1 (el día UTC), cuando en
+  // realidad pertenece al día D (el día argentino real en que se
+  // vendió). Variante/producto exclusivos de este describe (creados por
+  // `createVariant`, `helpers` ya existentes) para que el rango quede
+  // limpio sin depender de ningún otro fixture del archivo.
+  describe('agrupación temporal en hora argentina (AD-13, T6.5) — venta de las 23:30', () => {
+    it('venta a las 23:30 hora argentina del día D (UTC D+1 02:30:00) pertenece al /resultados del día D, no del día D+1 (UTC ingenuo)', async () => {
+      await abrirSesion();
+      const variant = await createVariant({
+        precioVenta: '150.00',
+        costoActual: '90.00',
+        stockActual: 10,
+      });
+      const venta = await crearVentaCompletada({
+        variantId: variant.id,
+        cantidad: 1,
+        montoTotal: '150.00',
+      });
+      // D = '2026-07-10'. 23:30 hora argentina de D = UTC 02:30 de D+1
+      // ('2026-07-11'), porque Argentina es UTC-3 (23:30 + 3h = 02:30
+      // del día siguiente).
+      await fijarFechaVenta(venta.saleId, new Date('2026-07-11T02:30:00.000Z'));
+
+      // El día ARGENTINO real (D) — la venta SÍ tiene que aportar.
+      const diaArgentino = await owned(
+        request(app.getHttpServer()).get('/resultados'),
+      ).query({ desde: '2026-07-10', hasta: '2026-07-10' });
+      expect(diaArgentino.status).toBe(200);
+      const bodyArgentino = diaArgentino.body as ResultadosBody;
+      expect(bodyArgentino.ingresos).toBe('150.00');
+      const cmvEsperado = venta.costoUnitario.toFixed(2);
+      expect(bodyArgentino.cmv).toBe(cmvEsperado);
+
+      // El día UTC "ingenuo" (D+1) — el que un cálculo sin AD-13 usaría
+      // por error. La venta NO tiene que aparecer acá.
+      const diaUtcIngenuo = await owned(
+        request(app.getHttpServer()).get('/resultados'),
+      ).query({ desde: '2026-07-11', hasta: '2026-07-11' });
+      expect(diaUtcIngenuo.status).toBe(200);
+      const bodyUtcIngenuo = diaUtcIngenuo.body as ResultadosBody;
+      expect(bodyUtcIngenuo.ingresos).toBe('0.00');
+      expect(bodyUtcIngenuo.cmv).toBe('0.00');
+    });
+
+    it('caso de control simétrico: venta a las 00:30 hora argentina del día D (UTC D 03:30:00) pertenece a D, no a D-1', async () => {
+      await abrirSesion();
+      const variant = await createVariant({
+        precioVenta: '75.00',
+        costoActual: '40.00',
+        stockActual: 10,
+      });
+      const venta = await crearVentaCompletada({
+        variantId: variant.id,
+        cantidad: 1,
+        montoTotal: '75.00',
+      });
+      // D = '2026-07-15'. 00:30 hora argentina de D = UTC 03:30 del
+      // MISMO día D (00:30 + 3h = 03:30, sin cruzar la medianoche hacia
+      // atrás) — este es el lado "sin sorpresa" de la conversión, el
+      // mismo criterio que el test unitario de T0.7 ("00:30 hora
+      // argentina pertenece al día que arrancó").
+      await fijarFechaVenta(venta.saleId, new Date('2026-07-15T03:30:00.000Z'));
+
+      const diaD = await owned(
+        request(app.getHttpServer()).get('/resultados'),
+      ).query({ desde: '2026-07-15', hasta: '2026-07-15' });
+      expect(diaD.status).toBe(200);
+      const bodyD = diaD.body as ResultadosBody;
+      expect(bodyD.ingresos).toBe('75.00');
+      expect(bodyD.cmv).toBe(venta.costoUnitario.toFixed(2));
+
+      const diaDMenos1 = await owned(
+        request(app.getHttpServer()).get('/resultados'),
+      ).query({ desde: '2026-07-14', hasta: '2026-07-14' });
+      expect(diaDMenos1.status).toBe(200);
+      const bodyDMenos1 = diaDMenos1.body as ResultadosBody;
+      expect(bodyDMenos1.ingresos).toBe('0.00');
+      expect(bodyDMenos1.cmv).toBe('0.00');
+    });
+  });
+
   describe('edge case — período sin ningún dato', () => {
     it('200, todos los campos en "0.00"', async () => {
       const response = await owned(
