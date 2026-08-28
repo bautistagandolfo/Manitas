@@ -1998,3 +1998,615 @@ describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
     });
   });
 });
+
+// Fase 08 (QA adversarial) — testing de mutación (Stryker, obligatorio,
+// BLUEPRINT §9.8 lista `returns` literal, umbral 80%). Primera corrida:
+// 59.72% — la gran mayoría de los mutantes sin cobertura estaban en
+// `buscarVentaParaDevolucion` (T5.7) y `consultarCredito` (T5.8), que
+// hasta esta fase solo tenían cobertura de integración (Postgres real),
+// nunca unitaria con Prisma mockeado — Stryker solo corre la suite
+// unitaria (`stryker.conf.json`, mismo criterio que `sales`/`stock`/
+// `cash-registers`). El resto son mutantes "Survived" reales dentro de
+// `crearDevolucion`: argumentos de queries no verificados con precisión
+// (`where` exactos), el orden ascendente del lock de `sale_items`
+// (BLUEPRINT §9.4) nunca comprobado con datos fuera de orden, el borde
+// exacto del plazo de devolución (`diasTranscurridos === diasPlazo`
+// debe ACEPTAR, no solo el caso claramente vencido), el retorno
+// temprano de idempotencia nunca comprobado a nivel unitario (solo
+// integración), y `referencia ?? null` nunca comprobado explícitamente
+// con `referencia` ausente.
+
+interface PrismaMock {
+  $transaction: jest.Mock<Promise<unknown>, [unknown, unknown?]>;
+  sale: { findUnique: jest.Mock<Promise<unknown>, [unknown]> };
+  saleItem: { findMany: jest.Mock<Promise<unknown[]>, [unknown]> };
+  returnItem: { findMany: jest.Mock<Promise<unknown[]>, [unknown]> };
+  payment: {
+    findMany: jest.Mock<Promise<unknown[]>, [unknown]>;
+    aggregate: jest.Mock<
+      Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+      [unknown]
+    >;
+  };
+  return: { findUnique: jest.Mock<Promise<unknown>, [unknown]> };
+  returnPayment: {
+    aggregate: jest.Mock<
+      Promise<{ _sum: { monto: Prisma.Decimal | null } }>,
+      [unknown]
+    >;
+  };
+}
+
+// `buscarVentaParaDevolucion`/`consultarCredito` usan `this.prisma`
+// directamente (nunca el `tx` que recibe `crearDevolucion` como
+// parámetro) — necesitan su propio mock de `PrismaService`, distinto
+// del `MockTx` de arriba. `$transaction` ejecuta el callback pasándole
+// el mismo mock (simula que dentro de la transacción se ve el mismo
+// `tx`, suficiente para estos tests: no hay concurrencia real que
+// probar acá, eso ya lo cubre T5.6 con Postgres real).
+function buildPrismaMock(
+  overrides: {
+    saleRow?: {
+      id: number;
+      numero: number;
+      fecha: Date;
+      estado: string;
+    } | null;
+    saleItemRows?: Array<{
+      id: number;
+      variantId: number;
+      descripcionSnapshot: string;
+      cantidad: number;
+      netoLinea: Prisma.Decimal;
+      costoUnitario: Prisma.Decimal;
+    }>;
+    previousReturnItemRows?: Array<{
+      saleItemId: number;
+      cantidad: number;
+      netoLinea: Prisma.Decimal;
+    }>;
+    saleQueryPaymentRows?: Array<{
+      metodo: PaymentMetodo;
+      monto: Prisma.Decimal;
+    }>;
+    returnRow?: {
+      id: number;
+      numero: number;
+      totalDevuelto: Prisma.Decimal;
+      saleId: number;
+    } | null;
+    creditoOriginalMonto?: Prisma.Decimal | null;
+    creditoConsumidoMonto?: Prisma.Decimal | null;
+  } = {},
+): PrismaMock {
+  const mock: PrismaMock = {
+    $transaction: jest.fn<Promise<unknown>, [unknown, unknown?]>(),
+    sale: {
+      findUnique: jest
+        .fn<Promise<unknown>, [unknown]>()
+        .mockResolvedValue(overrides.saleRow ?? null),
+    },
+    saleItem: {
+      findMany: jest
+        .fn<Promise<unknown[]>, [unknown]>()
+        .mockResolvedValue(overrides.saleItemRows ?? []),
+    },
+    returnItem: {
+      findMany: jest
+        .fn<Promise<unknown[]>, [unknown]>()
+        .mockResolvedValue(overrides.previousReturnItemRows ?? []),
+    },
+    payment: {
+      findMany: jest
+        .fn<Promise<unknown[]>, [unknown]>()
+        .mockResolvedValue(overrides.saleQueryPaymentRows ?? []),
+      aggregate: jest
+        .fn<Promise<{ _sum: { monto: Prisma.Decimal | null } }>, [unknown]>()
+        .mockResolvedValue({
+          _sum: { monto: overrides.creditoConsumidoMonto ?? null },
+        }),
+    },
+    return: {
+      findUnique: jest
+        .fn<Promise<unknown>, [unknown]>()
+        .mockResolvedValue(overrides.returnRow ?? null),
+    },
+    returnPayment: {
+      aggregate: jest
+        .fn<Promise<{ _sum: { monto: Prisma.Decimal | null } }>, [unknown]>()
+        .mockResolvedValue({
+          _sum: { monto: overrides.creditoOriginalMonto ?? null },
+        }),
+    },
+  };
+  // `$transaction` ejecuta el callback pasándole el mismo mock ya
+  // construido (referencia circular resuelta armando el objeto en dos
+  // pasos: primero todo salvo `$transaction`, después su
+  // implementación real, que sí puede referenciar `mock`).
+  mock.$transaction.mockImplementation((callback: unknown) =>
+    (callback as (tx: unknown) => Promise<unknown>)(mock),
+  );
+  return mock;
+}
+
+function buildServiceWithPrisma(prisma: PrismaMock): ReturnsService {
+  const deps = buildDeps();
+  return new ReturnsService(
+    prisma as unknown as PrismaService,
+    deps.cashRegisterService as unknown as CashRegisterService,
+    deps.settingsService as unknown as SettingsService,
+    deps.stockService as unknown as StockService,
+    deps.salesService as unknown as SalesService,
+  );
+}
+
+describe('ReturnsService.buscarVentaParaDevolucion (T5.7 backend)', () => {
+  it('venta sin devoluciones previas: cantidadDisponible == cantidadVendida, netoLineaDisponible == netoLineaOriginal', async () => {
+    const fecha = new Date();
+    const prisma = buildPrismaMock({
+      saleRow: { id: 501, numero: 501, fecha, estado: 'COMPLETADA' },
+      saleItemRows: [
+        {
+          id: 1,
+          variantId: 10,
+          descripcionSnapshot: 'Campera talle M',
+          cantidad: 3,
+          netoLinea: new Prisma.Decimal('300.00'),
+          costoUnitario: new Prisma.Decimal('120.00'),
+        },
+      ],
+      saleQueryPaymentRows: [
+        { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('300.00') },
+      ],
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.buscarVentaParaDevolucion(501, {
+      incluirCosto: false,
+    });
+
+    expect(result.saleId).toBe(501);
+    expect(result.numero).toBe(501);
+    expect(result.estado).toBe('COMPLETADA');
+    expect(result.dentroDePlazo).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].cantidadVendida).toBe(3);
+    expect(result.items[0].cantidadDisponible).toBe(3);
+    expect(result.items[0].netoLineaOriginal.toString()).toBe('300');
+    expect(result.items[0].netoLineaDisponible.toString()).toBe('300');
+    expect(result.items[0].costoUnitario).toBeUndefined();
+    expect(result.payments).toEqual([
+      { metodo: PaymentMetodo.EFECTIVO, monto: new Prisma.Decimal('300.00') },
+    ]);
+
+    // Fase 08 — argumentos exactos de cada query, no solo el resultado
+    // final: mata mutantes que reemplazan el `where`/`orderBy` por un
+    // objeto vacío o cambian qué se filtra.
+    expect(prisma.sale.findUnique).toHaveBeenCalledWith({
+      where: { numero: 501 },
+    });
+    expect(prisma.saleItem.findMany).toHaveBeenCalledWith({
+      where: { saleId: 501 },
+      orderBy: { id: 'asc' },
+    });
+    expect(prisma.returnItem.findMany).toHaveBeenCalledWith({
+      where: { saleItemId: { in: [1] } },
+    });
+    expect(prisma.payment.findMany).toHaveBeenCalledWith({
+      where: { saleId: 501 },
+    });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.anything(), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+  });
+
+  it('con una devolución previa parcial: cantidadDisponible y netoLineaDisponible descontados correctamente', async () => {
+    const prisma = buildPrismaMock({
+      saleRow: {
+        id: 501,
+        numero: 501,
+        fecha: new Date(),
+        estado: 'COMPLETADA',
+      },
+      saleItemRows: [
+        {
+          id: 1,
+          variantId: 10,
+          descripcionSnapshot: 'Campera talle M',
+          cantidad: 5,
+          netoLinea: new Prisma.Decimal('500.00'),
+          costoUnitario: new Prisma.Decimal('200.00'),
+        },
+      ],
+      previousReturnItemRows: [
+        {
+          saleItemId: 1,
+          cantidad: 2,
+          netoLinea: new Prisma.Decimal('200.00'),
+        },
+      ],
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.buscarVentaParaDevolucion(501, {
+      incluirCosto: false,
+    });
+
+    expect(result.items[0].cantidadDisponible).toBe(3);
+    expect(result.items[0].netoLineaDisponible.toString()).toBe('300');
+  });
+
+  it('OWNER (incluirCosto: true) ve costoUnitario; SELLER (incluirCosto: false) no lo ve en absoluto (RN-10 de sales)', async () => {
+    const fixture = {
+      saleRow: {
+        id: 501,
+        numero: 501,
+        fecha: new Date(),
+        estado: 'COMPLETADA',
+      },
+      saleItemRows: [
+        {
+          id: 1,
+          variantId: 10,
+          descripcionSnapshot: 'Campera talle M',
+          cantidad: 1,
+          netoLinea: new Prisma.Decimal('100.00'),
+          costoUnitario: new Prisma.Decimal('60.00'),
+        },
+      ],
+    };
+
+    const serviceOwner = buildServiceWithPrisma(buildPrismaMock(fixture));
+    const resultOwner = await serviceOwner.buscarVentaParaDevolucion(501, {
+      incluirCosto: true,
+    });
+    expect(resultOwner.items[0].costoUnitario?.toString()).toBe('60');
+
+    const serviceSeller = buildServiceWithPrisma(buildPrismaMock(fixture));
+    const resultSeller = await serviceSeller.buscarVentaParaDevolucion(501, {
+      incluirCosto: false,
+    });
+    expect(resultSeller.items[0].costoUnitario).toBeUndefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        resultSeller.items[0],
+        'costoUnitario',
+      ),
+    ).toBe(false);
+  });
+
+  it('venta inexistente: rechaza con "Venta no encontrada"', async () => {
+    const prisma = buildPrismaMock({ saleRow: null });
+    const service = buildServiceWithPrisma(prisma);
+
+    await expect(
+      service.buscarVentaParaDevolucion(999999, { incluirCosto: false }),
+    ).rejects.toThrow(/venta no encontrada/i);
+  });
+
+  it('fuera del plazo de devolución: dentroDePlazo == false', async () => {
+    const fechaVieja = new Date();
+    fechaVieja.setDate(fechaVieja.getDate() - 45); // plazo default del mock: 30
+    const prisma = buildPrismaMock({
+      saleRow: {
+        id: 501,
+        numero: 501,
+        fecha: fechaVieja,
+        estado: 'COMPLETADA',
+      },
+      saleItemRows: [
+        {
+          id: 1,
+          variantId: 10,
+          descripcionSnapshot: 'Campera talle M',
+          cantidad: 1,
+          netoLinea: new Prisma.Decimal('100.00'),
+          costoUnitario: new Prisma.Decimal('60.00'),
+        },
+      ],
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.buscarVentaParaDevolucion(501, {
+      incluirCosto: false,
+    });
+
+    expect(result.dentroDePlazo).toBe(false);
+  });
+
+  // Fase 08 — mata los mutantes de la fórmula de conversión ms→días
+  // (`1000 * 60 * 60 * 24`): con una fecha reciente y muy alejada del
+  // borde (1 día, contra un plazo de 30), cualquier alteración del
+  // divisor da un resultado muchísimo más grande y cruza el umbral —
+  // a diferencia del caso de borde exacto (30 vs 30), acá no hace
+  // falta cronometrar milisegundos para distinguir el comportamiento.
+  it('venta muy reciente (1 día atrás, contra un plazo de 30): dentroDePlazo == true', async () => {
+    const fechaReciente = new Date();
+    fechaReciente.setDate(fechaReciente.getDate() - 1);
+    const prisma = buildPrismaMock({
+      saleRow: {
+        id: 501,
+        numero: 501,
+        fecha: fechaReciente,
+        estado: 'COMPLETADA',
+      },
+      saleItemRows: [
+        {
+          id: 1,
+          variantId: 10,
+          descripcionSnapshot: 'Campera talle M',
+          cantidad: 1,
+          netoLinea: new Prisma.Decimal('100.00'),
+          costoUnitario: new Prisma.Decimal('60.00'),
+        },
+      ],
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.buscarVentaParaDevolucion(501, {
+      incluirCosto: false,
+    });
+
+    expect(result.dentroDePlazo).toBe(true);
+  });
+});
+
+describe('ReturnsService.consultarCredito (T5.8, AMB-16 diferido)', () => {
+  it('crédito íntegro, sin consumo: creditoDisponible == creditoOriginal, creditoConsumido == 0', async () => {
+    const prisma = buildPrismaMock({
+      returnRow: {
+        id: 900,
+        numero: 900,
+        totalDevuelto: new Prisma.Decimal('200.00'),
+        saleId: 501,
+      },
+      creditoOriginalMonto: new Prisma.Decimal('200.00'),
+      creditoConsumidoMonto: null,
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.consultarCredito(900);
+
+    expect(result.returnId).toBe(900);
+    expect(result.numero).toBe(900);
+    expect(result.saleId).toBe(501);
+    expect(result.totalDevuelto.toString()).toBe('200');
+    expect(result.creditoConsumido.toString()).toBe('0');
+    expect(result.creditoDisponible.toString()).toBe('200');
+
+    // Fase 08 — argumentos exactos de cada query.
+    expect(prisma.return.findUnique).toHaveBeenCalledWith({
+      where: { numero: 900 },
+    });
+    expect(prisma.returnPayment.aggregate).toHaveBeenCalledWith({
+      where: { returnId: 900, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
+      _sum: { monto: true },
+    });
+    expect(prisma.payment.aggregate).toHaveBeenCalledWith({
+      where: { returnId: 900, metodo: PaymentMetodo.CREDITO_DEVOLUCION },
+      _sum: { monto: true },
+    });
+  });
+
+  it('crédito parcialmente consumido: creditoDisponible == creditoOriginal - creditoConsumido', async () => {
+    const prisma = buildPrismaMock({
+      returnRow: {
+        id: 900,
+        numero: 900,
+        totalDevuelto: new Prisma.Decimal('200.00'),
+        saleId: 501,
+      },
+      creditoOriginalMonto: new Prisma.Decimal('200.00'),
+      creditoConsumidoMonto: new Prisma.Decimal('80.00'),
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.consultarCredito(900);
+
+    expect(result.creditoConsumido.toString()).toBe('80');
+    expect(result.creditoDisponible.toString()).toBe('120');
+  });
+
+  // Fase 08 — mismo hallazgo que motivó el fix del techo (ver comentario
+  // de `consultarCredito` en `returns.service.ts`): el techo NUNCA es
+  // `totalDevuelto` — es la suma de `return_payments` marcados
+  // `CREDITO_DEVOLUCION`. Este caso lo comprueba explícitamente: una
+  // devolución con `totalDevuelto` alto pero SIN ningún reintegro de
+  // crédito (todo se devolvió por otro medio) tiene que dar
+  // `creditoDisponible == 0`, nunca `totalDevuelto`.
+  it('totalDevuelto alto pero sin ningún reintegro CREDITO_DEVOLUCION marcado: creditoDisponible == 0, no totalDevuelto', async () => {
+    const prisma = buildPrismaMock({
+      returnRow: {
+        id: 900,
+        numero: 900,
+        totalDevuelto: new Prisma.Decimal('1500.00'),
+        saleId: 501,
+      },
+      creditoOriginalMonto: null,
+      creditoConsumidoMonto: null,
+    });
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.consultarCredito(900);
+
+    expect(result.totalDevuelto.toString()).toBe('1500');
+    expect(result.creditoDisponible.toString()).toBe('0');
+  });
+
+  it('número inexistente: rechaza con "Devolución no encontrada"', async () => {
+    const prisma = buildPrismaMock({ returnRow: null });
+    const service = buildServiceWithPrisma(prisma);
+
+    await expect(service.consultarCredito(999999)).rejects.toThrow(
+      /devoluci[oó]n no encontrada/i,
+    );
+  });
+});
+
+describe('ReturnsService.crearDevolucion — mutantes adicionales (Fase 08)', () => {
+  it('idempotencia: si ya existe una devolución con esa clave, la devuelve tal cual y NO llama a return.create ni a ningún colaborador', async () => {
+    const existente = { id: 777, idempotencyKey: 'ya-existe' };
+    const tx = buildMockTx([buildSaleItemRow()]);
+    tx.return.findUnique.mockResolvedValue(
+      existente as unknown as CreatedReturn,
+    );
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const result = await service.crearDevolucion(
+      asTx(tx),
+      buildInput({ idempotencyKey: 'ya-existe' }),
+    );
+
+    expect(result).toBe(existente);
+    expect(tx.return.findUnique).toHaveBeenCalledWith({
+      where: { idempotencyKey: 'ya-existe' },
+    });
+    expect(tx.return.create).not.toHaveBeenCalled();
+    expect(
+      deps.cashRegisterService.getSesionAbiertaOrThrow,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('lee la venta por el saleId exacto del input (no un objeto vacío ni otro id)', async () => {
+    const tx = buildMockTx([buildSaleItemRow()]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    await service.crearDevolucion(asTx(tx), buildInput({ saleId: 4242 }));
+
+    expect(tx.sale.findUnique).toHaveBeenCalledWith({ where: { id: 4242 } });
+  });
+
+  it('lockea y lee sale_items ORDENADOS ASCENDENTE por id, sin importar el orden en que vengan en items (BLUEPRINT §9.4)', async () => {
+    const itemA = buildSaleItemRow({
+      id: 3,
+      cantidad: 1,
+      netoLinea: new Prisma.Decimal('10.00'),
+    });
+    const itemB = buildSaleItemRow({
+      id: 1,
+      cantidad: 1,
+      netoLinea: new Prisma.Decimal('20.00'),
+    });
+    const tx = buildMockTx([itemA, itemB]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    // Mandados en orden DESCENDENTE (3, luego 1) a propósito.
+    await service.crearDevolucion(
+      asTx(tx),
+      buildInput({
+        items: [
+          { saleItemId: 3, cantidad: 1, reingresaStock: false },
+          { saleItemId: 1, cantidad: 1, reingresaStock: false },
+        ],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('30.00'),
+          },
+        ],
+      }),
+    );
+
+    const lockCall = tx.$queryRaw.mock.calls.find((call) =>
+      sqlText(call).includes('sale_items'),
+    );
+    expect(lockCall).toBeDefined();
+
+    const findManyCall = tx.saleItem.findMany.mock.calls[0][0] as {
+      where: { id: { in: number[] }; saleId: number };
+    };
+    expect(findManyCall.where.id.in).toEqual([1, 3]);
+    expect(findManyCall.where.saleId).toBe(501);
+
+    // Fase 08 — mismo orden ascendente para el acumulado de devoluciones
+    // previas (`previousReturnItems`), argumento nunca antes verificado.
+    expect(tx.returnItem.findMany).toHaveBeenCalledWith({
+      where: { saleItemId: { in: [1, 3] } },
+    });
+  });
+
+  it('borde exacto del plazo (diasTranscurridos === diasPlazo): ACEPTA sin pedir autorización, no lo trata como vencido', async () => {
+    const saleItem = buildSaleItemRow({
+      id: 1,
+      cantidad: 1,
+      netoLinea: new Prisma.Decimal('100.00'),
+    });
+    // Exactamente 30 días (el plazo default del mock de settingsService),
+    // con un margen de milisegundos hacia el pasado para no depender de
+    // cuándo corre el test dentro del mismo día.
+    const fechaExacta = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000 + 5000);
+    const tx = buildMockTx([saleItem], {
+      saleRow: buildSaleRow({ fecha: fechaExacta }),
+    });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const result = await service.crearDevolucion(
+      asTx(tx),
+      buildInput({
+        esOwner: false,
+        items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
+        ],
+      }),
+    );
+
+    expect(result.autorizadoPorUserId).toBeNull();
+    expect(tx.return.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('saleItemId que no aparece entre las filas leídas (ajeno a la venta, o directamente inexistente): rechaza con "no existe en esta venta" — cobertura unitaria del hallazgo de manipulación de IDs', async () => {
+    // El mock devuelve solo las filas que se le pasaron a `buildMockTx`
+    // — pedir un `saleItemId` que no está entre ellas reproduce, a
+    // nivel unitario, el mismo resultado que el filtro real
+    // `saleId: input.saleId` (fix de esta fase) produce en producción:
+    // la línea ajena simplemente no aparece en `saleItemRows`.
+    const tx = buildMockTx([buildSaleItemRow({ id: 1 })]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    await expect(
+      service.crearDevolucion(
+        asTx(tx),
+        buildInput({
+          items: [{ saleItemId: 999, cantidad: 1, reingresaStock: false }],
+        }),
+      ),
+    ).rejects.toThrow(/no existe en esta venta/i);
+    expect(tx.return.create).not.toHaveBeenCalled();
+  });
+
+  it('return_payment sin referencia: persiste referencia null explícito (no undefined) — ?? no &&', async () => {
+    const saleItem = buildSaleItemRow({
+      id: 1,
+      cantidad: 1,
+      netoLinea: new Prisma.Decimal('100.00'),
+    });
+    const tx = buildMockTx([saleItem]);
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    await service.crearDevolucion(
+      asTx(tx),
+      buildInput({
+        items: [{ saleItemId: 1, cantidad: 1, reingresaStock: true }],
+        returnPayments: [
+          {
+            metodo: PaymentMetodo.EFECTIVO,
+            monto: new Prisma.Decimal('100.00'),
+          },
+        ],
+      }),
+    );
+
+    const call = tx.return.create.mock.calls[0][0];
+    expect(call.data.returnPayments.create[0].referencia).toBeNull();
+  });
+});

@@ -653,6 +653,79 @@ describe('returns (integration, T5.1)', () => {
       const returns = await prisma.return.findMany({ where: { saleId } });
       expect(returns).toHaveLength(0);
     });
+
+    // Fase 08 (QA adversarial) — hallazgo real: `crearDevolucion` nunca
+    // validaba que los `saleItemId` mandados pertenecieran a la `saleId`
+    // declarada — buscaba `sale_items` solo por su propio `id`, sin
+    // `where: { saleId }`. Un `saleItemId` de una venta COMPLETAMENTE
+    // DISTINTA pasaba igual: se leían `netoLinea`/`costoUnitario` de esa
+    // línea ajena, se validaba el tope contra su propio acumulado (sin
+    // relación con `saleId`), y la `Return` quedaba creada con
+    // `sale_id` apuntando a una venta que en realidad no tiene esa
+    // línea — integridad de datos rota, no explotable para robar plata
+    // directamente (el importe sigue siendo el de la línea real), pero
+    // corrompe la trazabilidad venta↔devolución y podría distorsionar
+    // el CMV de `resultados` (Etapa 6, que filtra por `reingresa_stock`
+    // asumiendo que la línea realmente pertenece a esa venta).
+    it('saleItemId de OTRA venta (manipulación de IDs): rechaza con "no existe en esta venta", no crea nada', async () => {
+      const variantA = await createVariant({ precioVenta: '100.00' });
+      const variantB = await createVariant({ precioVenta: '250.00' });
+      await openSession(ownerId);
+      const ventaA = await createSaleFixture({
+        userId: ownerId,
+        variantId: variantA.id,
+        cantidad: 1,
+        precioVenta: '100.00',
+      });
+      const ventaB = await createSaleFixture({
+        userId: ownerId,
+        variantId: variantB.id,
+        cantidad: 1,
+        precioVenta: '250.00',
+      });
+
+      // saleId de la venta A, pero saleItemId de la línea de la venta B
+      // — completamente ajena.
+      await expect(
+        prisma.$transaction((tx) =>
+          returnsService.crearDevolucion(tx, {
+            saleId: ventaA.saleId,
+            items: [
+              {
+                saleItemId: ventaB.saleItemId,
+                cantidad: 1,
+                reingresaStock: true,
+              },
+            ],
+            returnPayments: [
+              {
+                metodo: PaymentMetodo.EFECTIVO,
+                monto: new Prisma.Decimal('250.00'),
+              },
+            ],
+            userId: ownerId,
+            esOwner: false,
+            idempotencyKey: randomUUID(),
+          }),
+        ),
+      ).rejects.toThrow(/no existe en esta venta/i);
+
+      const returnsA = await prisma.return.findMany({
+        where: { saleId: ventaA.saleId },
+      });
+      expect(returnsA).toHaveLength(0);
+      const returnsB = await prisma.return.findMany({
+        where: { saleId: ventaB.saleId },
+      });
+      expect(returnsB).toHaveLength(0);
+
+      // La línea real de la venta B tampoco quedó afectada — ninguna
+      // devolución "fantasma" contra ella.
+      const returnItemsDeB = await prisma.returnItem.findMany({
+        where: { saleItemId: ventaB.saleItemId },
+      });
+      expect(returnItemsDeB).toHaveLength(0);
+    });
   });
 
   describe('ReturnsService.crearDevolucion — idempotencia (RN-9, §9.7)', () => {

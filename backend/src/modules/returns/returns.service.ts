@@ -252,8 +252,20 @@ export class ReturnsService {
     // Paso 5: con el lock tomado, leer las líneas originales y el
     // acumulado ya devuelto de cada una (puede venir de devoluciones
     // distintas, previas).
+    //
+    // Fase 08 (QA adversarial) — hallazgo real: `saleId: input.saleId`
+    // en el filtro no es opcional, es lo que impide que un
+    // `saleItemId` de una venta AJENA (manipulación de IDs, o un bug
+    // de UI) pase como si perteneciera a la venta declarada — sin
+    // esto, `saleItemById.get()` encontraba igual la fila (por id
+    // puro), y la devolución quedaba creada con `sale_id` apuntando a
+    // una venta que en realidad no tiene esa línea, mezclando datos de
+    // dos ventas distintas. Con el filtro, una línea ajena simplemente
+    // no aparece en `saleItemRows`, y el chequeo ya existente más abajo
+    // ("La línea X no existe en esta venta") la rechaza con el mensaje
+    // correcto, sin necesitar ningún chequeo nuevo.
     const saleItemRows = await tx.saleItem.findMany({
-      where: { id: { in: saleItemIds } },
+      where: { id: { in: saleItemIds }, saleId: input.saleId },
     });
     const saleItemById = new Map(saleItemRows.map((row) => [row.id, row]));
 
