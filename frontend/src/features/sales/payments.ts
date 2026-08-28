@@ -10,6 +10,9 @@ export interface DraftPayment {
   id: string;
   metodo: PaymentMetodo;
   monto: string;
+  // T5.8 — presente solo cuando `metodo === 'CREDITO_DEVOLUCION'`.
+  returnId?: number;
+  referencia?: string;
 }
 
 export function sumPaymentsCents(payments: DraftPayment[]): number {

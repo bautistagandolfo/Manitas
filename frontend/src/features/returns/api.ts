@@ -1,10 +1,23 @@
 import { httpClient } from '../../lib/http-client';
-import type { PaymentMetodo, ReturnResult, SaleReturnInfo } from './types';
+import type {
+  CreditoDevolucionInfo,
+  PaymentMetodo,
+  ReturnResult,
+  SaleReturnInfo,
+} from './types';
 
 export function buscarVentaParaDevolucion(
   numero: number,
 ): Promise<SaleReturnInfo> {
   return httpClient.get<SaleReturnInfo>(`/returns/sales/${numero}`);
+}
+
+// T5.8 — usado desde `CobroPage.tsx` (`sales`) para la quinta opción de
+// medio de pago, "Aplicar crédito de devolución".
+export function consultarCredito(
+  numero: number,
+): Promise<CreditoDevolucionInfo> {
+  return httpClient.get<CreditoDevolucionInfo>(`/returns/${numero}/credito`);
 }
 
 export interface CreateReturnItemData {

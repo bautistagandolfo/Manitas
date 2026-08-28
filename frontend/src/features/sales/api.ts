@@ -16,6 +16,11 @@ export interface CreateSalePaymentData {
   metodo: PaymentMetodo;
   monto: string;
   referencia?: string;
+  // T5.8 (AMB-16 diferida) — obligatorio junto con
+  // `metodo: 'CREDITO_DEVOLUCION'`, ausente en cualquier otro caso. El
+  // backend vuelve a validar el límite real (invariante 14); esta
+  // pantalla solo arma el payload.
+  returnId?: number;
 }
 
 export interface CreateSaleData {

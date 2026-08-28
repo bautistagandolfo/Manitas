@@ -18,6 +18,8 @@ import { ApiError } from '../../lib/http-client';
 import { formatCurrency } from '../../lib/format';
 import { parseNumberInputValue } from '../../lib/number-input';
 import { useIdempotencyKey } from '../../lib/idempotency';
+import { consultarCredito } from '../returns/api';
+import type { CreditoDevolucionInfo } from '../returns/types';
 import { createSale } from './api';
 import {
   centsToAmountString,
@@ -37,7 +39,7 @@ import type { DraftPayment } from './payments';
 import type { PaymentMetodo } from './types';
 
 const METODOS: Array<{
-  key: '1' | '2' | '3' | '4';
+  key: '1' | '2' | '3' | '4' | '5';
   metodo: PaymentMetodo;
   label: string;
 }> = [
@@ -45,6 +47,11 @@ const METODOS: Array<{
   { key: '2', metodo: 'TARJETA_DEBITO', label: 'Débito' },
   { key: '3', metodo: 'TARJETA_CREDITO', label: 'Crédito' },
   { key: '4', metodo: 'TRANSFERENCIA', label: 'Transferencia' },
+  // T5.8 (AMB-16 diferida) — a diferencia de los otros 4, este medio no
+  // puede precargar el importe apenas se elige: primero hace falta
+  // buscar la devolución (`buscarCredito`) para saber cuánto crédito
+  // tiene disponible.
+  { key: '5', metodo: 'CREDITO_DEVOLUCION', label: 'Crédito devolución' },
 ];
 
 // T4.11 (BLUEPRINT §12.1, "Pantalla de cobro") — lee el borrador armado
@@ -70,6 +77,17 @@ export function CobroPage() {
   const [importeValue, setImporteValue] = useState<number | ''>('');
   const [entregadoValue, setEntregadoValue] = useState<number | ''>('');
   const [lineError, setLineError] = useState<string | null>(null);
+
+  // T5.8 (AMB-16 diferida) — estado propio de la búsqueda de crédito,
+  // separado del resto: es el único medio de pago que necesita un paso
+  // previo (consultar `GET /returns/:numero/credito`) antes de poder
+  // cargar un importe.
+  const [creditoNumeroValue, setCreditoNumeroValue] = useState<number | ''>('');
+  const [creditoInfo, setCreditoInfo] = useState<CreditoDevolucionInfo | null>(
+    null,
+  );
+  const [creditoLoading, setCreditoLoading] = useState(false);
+  const [creditoError, setCreditoError] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -108,13 +126,22 @@ export function CobroPage() {
   // Elegir un medio ya deja el importe precargado con el saldo
   // pendiente (§12.1) — así el mouse (un solo click) y el teclado (1-4 +
   // Enter/Tab, que solo mueve el foco) llegan al mismo estado.
+  //
+  // T5.8: "Crédito devolución" es la excepción — no hay ningún saldo
+  // conocido hasta buscar la devolución, así que el importe queda
+  // vacío hasta que `buscarCredito` lo precargue.
   function elegirMetodo(metodo: PaymentMetodo): void {
     setSelectedMetodo(metodo);
     setImporteValue(
-      saldoCents > 0 ? Number(centsToAmountString(saldoCents)) : '',
+      metodo !== 'CREDITO_DEVOLUCION' && saldoCents > 0
+        ? Number(centsToAmountString(saldoCents))
+        : '',
     );
     setEntregadoValue('');
     setLineError(null);
+    setCreditoNumeroValue('');
+    setCreditoInfo(null);
+    setCreditoError(null);
   }
 
   function irAImporte(): void {
@@ -122,8 +149,50 @@ export function CobroPage() {
     importeRef.current?.focus();
   }
 
+  // T5.8 — busca la devolución por su propio número (el comprobante que
+  // la clienta presenta, no el de la venta original) y precarga el
+  // importe con el menor entre "saldo pendiente de esta venta" y
+  // "crédito disponible de esa devolución" — mismo criterio de UX que
+  // los atajos 1-4 ya construidos en T4.11. El backend vuelve a validar
+  // el límite real al confirmar (invariante 14); esto es una previsión
+  // de pantalla, nunca la última palabra.
+  async function buscarCredito(): Promise<void> {
+    if (typeof creditoNumeroValue !== 'number' || creditoNumeroValue <= 0) {
+      setCreditoError('Ingresá el número de devolución');
+      return;
+    }
+    setCreditoLoading(true);
+    setCreditoError(null);
+    try {
+      const info = await consultarCredito(creditoNumeroValue);
+      setCreditoInfo(info);
+      const disponibleCents = toCents(info.creditoDisponible);
+      const aplicarCents = Math.min(saldoCents, disponibleCents);
+      setImporteValue(
+        aplicarCents > 0 ? Number(centsToAmountString(aplicarCents)) : '',
+      );
+      if (disponibleCents <= 0) {
+        setCreditoError('Esta devolución no tiene crédito disponible');
+      }
+    } catch (err) {
+      setCreditoInfo(null);
+      setImporteValue('');
+      setCreditoError(
+        err instanceof ApiError
+          ? err.message
+          : 'No se pudo consultar el crédito. Probá de nuevo.',
+      );
+    } finally {
+      setCreditoLoading(false);
+    }
+  }
+
   function confirmarLineaDePago(): void {
     if (!selectedMetodo) return;
+    if (selectedMetodo === 'CREDITO_DEVOLUCION' && !creditoInfo) {
+      setLineError('Buscá la devolución antes de confirmar');
+      return;
+    }
     if (typeof importeValue !== 'number' || importeValue <= 0) {
       setLineError('Ingresá un importe mayor a 0');
       return;
@@ -135,6 +204,16 @@ export function CobroPage() {
       );
       return;
     }
+    if (
+      selectedMetodo === 'CREDITO_DEVOLUCION' &&
+      creditoInfo &&
+      montoCents > toCents(creditoInfo.creditoDisponible)
+    ) {
+      setLineError(
+        `El importe no puede superar el crédito disponible (${formatCurrency(creditoInfo.creditoDisponible)})`,
+      );
+      return;
+    }
 
     setPayments((prev) => [
       ...prev,
@@ -142,12 +221,21 @@ export function CobroPage() {
         id: crypto.randomUUID(),
         metodo: selectedMetodo,
         monto: importeValue.toFixed(2),
+        ...(selectedMetodo === 'CREDITO_DEVOLUCION' && creditoInfo
+          ? {
+              returnId: creditoInfo.returnId,
+              referencia: `Devolución #${creditoInfo.numero}`,
+            }
+          : {}),
       },
     ]);
     setSelectedMetodo(null);
     setImporteValue('');
     setEntregadoValue('');
     setLineError(null);
+    setCreditoNumeroValue('');
+    setCreditoInfo(null);
+    setCreditoError(null);
     focusSelector();
   }
 
@@ -189,7 +277,12 @@ export function CobroPage() {
             variantId: line.variantId,
             cantidad: line.cantidad,
           })),
-          payments: payments.map((p) => ({ metodo: p.metodo, monto: p.monto })),
+          payments: payments.map((p) => ({
+            metodo: p.metodo,
+            monto: p.monto,
+            ...(p.returnId !== undefined ? { returnId: p.returnId } : {}),
+            ...(p.referencia !== undefined ? { referencia: p.referencia } : {}),
+          })),
           discounts:
             draft.discounts.length > 0
               ? draft.discounts.map((d) => ({
@@ -294,6 +387,7 @@ export function CobroPage() {
                   {METODOS.find((m) => m.metodo === p.metodo)?.label ??
                     p.metodo}{' '}
                   — {formatCurrency(p.monto)}
+                  {p.referencia ? ` (${p.referencia})` : ''}
                 </Text>
                 <Button
                   variant="subtle"
@@ -320,7 +414,7 @@ export function CobroPage() {
             </Group>
 
             <Text size="sm" c="dimmed">
-              Elegí el medio de pago (1-4) y confirmá con Enter para pasar al
+              Elegí el medio de pago (1-5) y confirmá con Enter para pasar al
               importe.
             </Text>
             <Group
@@ -361,44 +455,78 @@ export function CobroPage() {
               ))}
             </Group>
 
-            {selectedMetodo && (
+            {selectedMetodo === 'CREDITO_DEVOLUCION' && (
               <Group align="flex-end">
                 <NumberInput
-                  ref={importeRef}
-                  label="Importe"
-                  description="Enter confirma este pago"
-                  decimalScale={2}
-                  fixedDecimalScale
-                  decimalSeparator=","
-                  thousandSeparator="."
-                  min={0.01}
-                  prefix="$ "
-                  value={importeValue}
+                  label="Número de devolución"
+                  description="El comprobante que presenta la clienta"
+                  min={1}
+                  value={creditoNumeroValue}
                   onChange={(value) =>
-                    setImporteValue(parseNumberInputValue(value))
+                    setCreditoNumeroValue(parseNumberInputValue(value))
                   }
-                  onKeyDown={handleImporteKeyDown}
-                  error={lineError}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      void buscarCredito();
+                    }
+                  }}
+                  error={creditoError}
                 />
-                {selectedMetodo === 'EFECTIVO' && (
+                <Button
+                  variant="default"
+                  loading={creditoLoading}
+                  onClick={() => void buscarCredito()}
+                >
+                  Buscar crédito
+                </Button>
+                {creditoInfo && (
+                  <Text size="sm" c="dimmed">
+                    Disponible: {formatCurrency(creditoInfo.creditoDisponible)}
+                  </Text>
+                )}
+              </Group>
+            )}
+
+            {selectedMetodo &&
+              (selectedMetodo !== 'CREDITO_DEVOLUCION' || creditoInfo) && (
+                <Group align="flex-end">
                   <NumberInput
-                    label="¿Cuánto entregó?"
-                    description="Solo para calcular el vuelto — no se guarda"
+                    ref={importeRef}
+                    label="Importe"
+                    description="Enter confirma este pago"
                     decimalScale={2}
                     fixedDecimalScale
                     decimalSeparator=","
                     thousandSeparator="."
-                    min={0}
+                    min={0.01}
                     prefix="$ "
-                    value={entregadoValue}
+                    value={importeValue}
                     onChange={(value) =>
-                      setEntregadoValue(parseNumberInputValue(value))
+                      setImporteValue(parseNumberInputValue(value))
                     }
+                    onKeyDown={handleImporteKeyDown}
+                    error={lineError}
                   />
-                )}
-                <Button onClick={confirmarLineaDePago}>Confirmar pago</Button>
-              </Group>
-            )}
+                  {selectedMetodo === 'EFECTIVO' && (
+                    <NumberInput
+                      label="¿Cuánto entregó?"
+                      description="Solo para calcular el vuelto — no se guarda"
+                      decimalScale={2}
+                      fixedDecimalScale
+                      decimalSeparator=","
+                      thousandSeparator="."
+                      min={0}
+                      prefix="$ "
+                      value={entregadoValue}
+                      onChange={(value) =>
+                        setEntregadoValue(parseNumberInputValue(value))
+                      }
+                    />
+                  )}
+                  <Button onClick={confirmarLineaDePago}>Confirmar pago</Button>
+                </Group>
+              )}
 
             {vuelto !== null && vuelto > 0 && (
               <Alert color="blue" title="Vuelto">

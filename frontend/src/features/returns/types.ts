@@ -40,3 +40,16 @@ export interface ReturnResult {
   idempotencyKey: string | null;
   autorizadoPorUserId: number | null;
 }
+
+// `GET /returns/:numero/credito` (T5.8, AMB-16 diferida) — cuánto
+// crédito le queda disponible a una devolución para aplicarse en una
+// venta futura, calculado en vivo por el backend (sin saldo cacheado
+// acá tampoco: se vuelve a consultar cada vez que hace falta).
+export interface CreditoDevolucionInfo {
+  returnId: number;
+  numero: number;
+  totalDevuelto: string;
+  creditoConsumido: string;
+  creditoDisponible: string;
+  saleId: number;
+}

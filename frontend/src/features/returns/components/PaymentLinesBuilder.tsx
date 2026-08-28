@@ -15,12 +15,26 @@ const METODO_LABELS: Record<string, string> = {
   TARJETA_DEBITO: 'Débito',
   TARJETA_CREDITO: 'Crédito',
   TRANSFERENCIA: 'Transferencia',
+  // T5.8 (AMB-16 diferida) — solo se ofrece cuando `allowCredito` está
+  // activo (ver abajo): tiene sentido como reintegro de una devolución
+  // simple (banca un crédito real, usable en una venta futura y
+  // separada), pero NUNCA como excedente a reintegrar o diferencia a
+  // cobrar de un cambio — ahí el crédito ya se está gastando en el
+  // acto, no tiene sentido pagarlo con crédito.
+  CREDITO_DEVOLUCION: 'Crédito de devolución',
 };
 
-const METODO_OPTIONS = Object.entries(METODO_LABELS).map(([value, label]) => ({
-  value,
-  label,
-}));
+const METODO_OPTIONS_BASE = [
+  'EFECTIVO',
+  'TARJETA_DEBITO',
+  'TARJETA_CREDITO',
+  'TRANSFERENCIA',
+].map((value) => ({ value, label: METODO_LABELS[value] }));
+
+const METODO_OPTIONS_CON_CREDITO = [
+  ...METODO_OPTIONS_BASE,
+  { value: 'CREDITO_DEVOLUCION', label: METODO_LABELS.CREDITO_DEVOLUCION },
+];
 
 // T5.7 — constructor de líneas "medio + importe" reusado en tres
 // contextos de la pantalla de devolución/cambio: el reintegro de una
@@ -38,12 +52,19 @@ export function PaymentLinesBuilder({
   lines,
   onChange,
   label,
+  allowCredito = false,
 }: {
   baseCents: number;
   lines: DraftReintegro[];
   onChange: (lines: DraftReintegro[]) => void;
   label: string;
+  // T5.8 (AMB-16 diferida) — default `false`: solo la "Reintegro" de una
+  // devolución simple lo activa. Ver comentario de `METODO_LABELS`.
+  allowCredito?: boolean;
 }) {
+  const metodoOptions = allowCredito
+    ? METODO_OPTIONS_CON_CREDITO
+    : METODO_OPTIONS_BASE;
   const [metodo, setMetodo] = useState<string | null>('EFECTIVO');
   const [importe, setImporte] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
@@ -114,7 +135,7 @@ export function PaymentLinesBuilder({
         <Group align="flex-end">
           <Select
             label="Medio"
-            data={METODO_OPTIONS}
+            data={metodoOptions}
             value={metodo}
             onChange={setMetodo}
             allowDeselect={false}

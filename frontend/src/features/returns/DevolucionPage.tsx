@@ -497,6 +497,14 @@ export function DevolucionPage() {
                     baseCents={totalCents}
                     lines={reintegroLines}
                     onChange={setReintegroLines}
+                    // T5.8 (AMB-16 diferida) — solo acá: una devolución
+                    // simple puede reintegrar (parte de) su total como
+                    // crédito bancado, usable después en una venta
+                    // futura y separada (`GET /returns/:numero/credito`
+                    // + `CobroPage.tsx`). Nunca en la diferencia a
+                    // cobrar ni en el excedente de un cambio — ahí no
+                    // tiene sentido.
+                    allowCredito
                   />
                 </Card>
               )}
