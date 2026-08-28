@@ -115,6 +115,18 @@ export interface BuscarVentaParaDevolucionResult {
   payments: Array<{ metodo: PaymentMetodo; monto: Prisma.Decimal }>;
 }
 
+// T5.8 (AMB-16 diferida) — respuesta de lectura pura de cuánto crédito
+// le queda disponible a una devolución para aplicarse a una venta
+// futura, sin relación con el momento ni la sesión que la generó.
+export interface ConsultarCreditoResult {
+  returnId: number;
+  numero: number;
+  totalDevuelto: Prisma.Decimal;
+  creditoConsumido: Prisma.Decimal;
+  creditoDisponible: Prisma.Decimal;
+  saleId: number;
+}
+
 @Injectable()
 export class ReturnsService {
   constructor(
@@ -496,6 +508,42 @@ export class ReturnsService {
         return base;
       }),
       payments: payments.map((p) => ({ metodo: p.metodo, monto: p.monto })),
+    };
+  }
+
+  // T5.8 (AMB-16, RN-10) — consulta en vivo de cuánto crédito le queda
+  // disponible a una devolución, sin columna de saldo cacheada: se
+  // deriva de `payments` cada vez (mismo criterio que `reconciliar()`
+  // de `sales`/`cash-registers`/`stock`). Suma TODOS los pagos
+  // `CREDITO_DEVOLUCION` que referencian esta devolución, sin importar
+  // en qué venta ni sesión de caja ocurrieron — el crédito es diferido
+  // por diseño (AMB-16 RESUELTA). Lectura pura, sin lock: el lock real
+  // que protege de gastar de más lo toma `SalesService.crearVenta`
+  // (T5.5) al escribir.
+  async consultarCredito(numero: number): Promise<ConsultarCreditoResult> {
+    const devolucion = await this.prisma.return.findUnique({
+      where: { numero },
+    });
+    if (!devolucion) {
+      throw new NotFoundException('Devolución no encontrada');
+    }
+
+    const consumido = await this.prisma.payment.aggregate({
+      where: {
+        returnId: devolucion.id,
+        metodo: PaymentMetodo.CREDITO_DEVOLUCION,
+      },
+      _sum: { monto: true },
+    });
+    const creditoConsumido = consumido._sum.monto ?? new Prisma.Decimal(0);
+
+    return {
+      returnId: devolucion.id,
+      numero: devolucion.numero,
+      totalDevuelto: devolucion.totalDevuelto,
+      creditoConsumido,
+      creditoDisponible: devolucion.totalDevuelto.minus(creditoConsumido),
+      saleId: devolucion.saleId,
     };
   }
 }

@@ -64,6 +64,16 @@ export class SalePaymentDto {
   @IsString()
   @MaxLength(500)
   referencia?: string;
+
+  // T5.8 (AMB-16 diferida) — solo tiene sentido junto con
+  // `metodo: CREDITO_DEVOLUCION`. Sin validación de negocio acá: la
+  // combinación exacta (obligatorio con ese método, prohibido con
+  // cualquier otro, límite contra el crédito disponible) ya la valida
+  // `SalesService.crearVenta` (T5.5, pasos 8b/8c), con sus propios
+  // mensajes — este DTO solo deja pasar el campo.
+  @IsOptional()
+  @IsInt()
+  returnId?: number;
 }
 
 // RN-1 (spec sección 4.1): `esOwner` deliberadamente NO es un campo de

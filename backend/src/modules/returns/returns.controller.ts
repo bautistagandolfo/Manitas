@@ -11,6 +11,7 @@ import { Return, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   BuscarVentaParaDevolucionResult,
+  ConsultarCreditoResult,
   ReturnsService,
 } from './returns.service';
 import { CreateReturnDto } from './dto/create-return.dto';
@@ -39,6 +40,18 @@ export class ReturnsController {
     return this.returnsService.buscarVentaParaDevolucion(numero, {
       incluirCosto: user.rol === UserRole.OWNER,
     });
+  }
+
+  // T5.8 (AMB-16, RN-10) — cualquiera autenticado (sección 8: sin dato
+  // de costo/margen de por medio, nada que ocultar por rol). `:numero`
+  // es el `Return.numero` (el comprobante de LA DEVOLUCIÓN, no el de
+  // la venta original). Lectura pura, sin idempotencia ni transacción
+  // propia.
+  @Get(':numero/credito')
+  async consultarCredito(
+    @Param('numero', ParseIntPipe) numero: number,
+  ): Promise<ConsultarCreditoResult> {
+    return this.returnsService.consultarCredito(numero);
   }
 
   // RN-1 (spec sección 4): "cualquiera autenticado, es el trabajo del
