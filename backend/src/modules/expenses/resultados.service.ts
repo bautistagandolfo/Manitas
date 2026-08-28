@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, SaleEstado } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 
 // Forma de la respuesta de `GET /resultados` — spec del módulo,
 // sección 4. Todos los importes viajan como `string` (`Decimal`,
@@ -34,31 +35,31 @@ function money(value: Prisma.Decimal): string {
   return round2(value).toFixed(2);
 }
 
-// T6.4 — BLUEPRINT §5.6: ingresos, CMV, margen bruto (y su %), gastos y
-// resultado neto de un rango de fechas. Lectura pura, sin `tx` recibido
-// de ningún controller — abre su PROPIA transacción `RepeatableRead`
-// (mismo contrato que `SalesService.reconciliar()`/`ReturnsService.
-// consultarCredito()`: no compone con la transacción de nadie más, y
-// sin `RepeatableRead` una escritura real entre dos lecturas del cálculo
-// podría dar un número que nunca existió en ningún instante consistente).
+// T6.4 (BLUEPRINT §5.6) + T6.5 (AD-13) — ingresos, CMV, margen bruto (y
+// su %), gastos y resultado neto de un rango de fechas. Lectura pura,
+// sin `tx` recibido de ningún controller — abre su PROPIA transacción
+// `RepeatableRead` (mismo contrato que `SalesService.reconciliar()`/
+// `ReturnsService.consultarCredito()`: no compone con la transacción de
+// nadie más, y sin `RepeatableRead` una escritura real entre dos
+// lecturas del cálculo podría dar un número que nunca existió en ningún
+// instante consistente).
 //
-// Alcance de T6.4, explícitamente acotado (ver ROADMAP.md — T6.5,
-// "Agrupación temporal en hora argentina (AD-13)", es un ticket
-// SEPARADO que depende de T0.7, todavía inexistente): `desde`/`hasta`
-// se interpretan como límites UTC ingenuos (`desde 00:00:00.000Z` a
-// `hasta 23:59:59.999Z`), sin ningún ajuste de zona horaria — mismo
-// criterio ya usado en `ExpensesService.findAll` (T6.2). La estructura
-// SÍ es correcta ya (filtra por la fecha de la CABECERA — `sales.fecha`/
-// `returns.fecha`/`expenses.fecha` — nunca por `created_at` de las
-// tablas de ítems); lo que falta para T6.5 es solo la conversión de esos
-// límites a hora argentina antes de llegar acá.
+// T6.5: `desde`/`hasta` se interpretan en hora argentina (AD-13, vía
+// `argentinaDayRangeToUtc`, T0.7) — el `gte` es la medianoche del día
+// `desde` en Argentina, el `lte` es el 23:59:59.999 del día `hasta` en
+// Argentina, ambos ya convertidos a UTC (dos cálculos independientes,
+// no el mismo día aplicado a los dos extremos, para que un rango de
+// varios días tome el inicio del primero y el fin del último). Filtra
+// siempre por la fecha de la CABECERA (`sales.fecha`/`returns.fecha`/
+// `expenses.fecha`), nunca por `created_at` de las tablas de ítems —
+// esa parte ya era correcta desde T6.4.
 @Injectable()
 export class ResultadosService {
   constructor(private readonly prisma: PrismaService) {}
 
   async consultar(query: ResultadosQuery): Promise<ResultadosResponse> {
-    const desde = new Date(`${query.desde}T00:00:00.000Z`);
-    const hasta = new Date(`${query.hasta}T23:59:59.999Z`);
+    const desde = argentinaDayRangeToUtc(query.desde).desde;
+    const hasta = argentinaDayRangeToUtc(query.hasta).hasta;
 
     if (desde.getTime() > hasta.getTime()) {
       throw new BadRequestException('El rango de fechas no es válido');
