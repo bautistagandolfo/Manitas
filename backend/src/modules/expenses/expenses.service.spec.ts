@@ -372,20 +372,28 @@ describe('ExpensesService.registrarGasto — T6.3 (efectivo → movimiento de ca
     expect(tx.expense.create).toHaveBeenCalledTimes(1);
 
     expect(cashRegisterService.registrarMovimiento).toHaveBeenCalledTimes(1);
-    expect(cashRegisterService.registrarMovimiento).toHaveBeenCalledWith(tx, {
-      sessionId: 55,
-      tipo: CashMovementTipo.GASTO,
-      monto: expect.anything(),
-      referenciaTipo: CashMovementReferenciaTipo.EXPENSE,
-      referenciaId: result.id,
-      descripcion: 'Pago de luz en efectivo',
-      userId: 42,
-    });
-    const call =
-      cashRegisterService.registrarMovimiento.mock.calls[0][1];
-    expect(new Prisma.Decimal((call as { monto: Prisma.Decimal.Value }).monto).toString()).toBe(
-      '850',
+    // `monto` no va en este `objectContaining` — se verifica aparte,
+    // abajo, con el valor exacto (evita `expect.anything()` anidado
+    // dentro del objeto, que dispara `no-unsafe-assignment`: mismo
+    // criterio que ya usa `returns.service.spec.ts` con
+    // `expect.objectContaining` para no fijar cada campo).
+    expect(cashRegisterService.registrarMovimiento).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        sessionId: 55,
+        tipo: CashMovementTipo.GASTO,
+        referenciaTipo: CashMovementReferenciaTipo.EXPENSE,
+        referenciaId: result.id,
+        descripcion: 'Pago de luz en efectivo',
+        userId: 42,
+      }),
     );
+    const call = cashRegisterService.registrarMovimiento.mock.calls[0][1];
+    expect(
+      new Prisma.Decimal(
+        (call as { monto: Prisma.Decimal.Value }).monto,
+      ).toString(),
+    ).toBe('850');
   });
 
   it('medioPago EFECTIVO, sin sesión abierta (getSesionAbiertaOrThrow rechaza con 409): el método propaga el rechazo, tx.expense.create NUNCA se llama, registrarMovimiento NUNCA se llama', async () => {
