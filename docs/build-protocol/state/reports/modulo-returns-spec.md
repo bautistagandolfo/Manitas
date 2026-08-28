@@ -605,3 +605,46 @@ mismo criterio que T4.10/T4.11.
 **Sin bloqueos pendientes** — los 8 tickets de la etapa pueden
 construirse siguiendo el orden de dependencias ya declarado
 (`ROADMAP.md`).
+
+## 12. Addendum — corrección post-implementación (T5.8, 2026-08-28)
+
+La verificación manual de T5.8 (con Postgres real) encontró dos gaps
+reales en el mecanismo descripto arriba, ambos confirmados con el PO
+antes de corregir. Este addendum documenta la corrección; el texto de
+las secciones 2/5/6/7 arriba **queda como constancia histórica de lo
+que se especificó originalmente**, no se reescribe.
+
+**Corrección 1 — el techo del crédito NO es `total_devuelto`.** La
+sección 5 (mecanismo compartido de `SalesService.crearVenta`, paso 3)
+describe el chequeo como `consumido_previo + monto_de_este_pago >
+return.totalDevuelto`. Es incorrecto: `total_devuelto` puede incluir un
+excedente ya reintegrado por OTRO medio (RN-9, "cambio a prenda más
+barata" — el propio edge case de la sección 6 lo describe: "el
+excedente se reintegra por los medios habituales"). Usar
+`total_devuelto` como techo dejaba ese excedente disponible OTRA VEZ
+como si fuera crédito — reproducido en vivo: un cambio de $1500 a un
+ítem de $50 dejaba $1450 "disponibles" cuando ya se habían entregado en
+efectivo en el mostrador. **Techo real:** la SUMA de `return_payments`
+marcados `CREDITO_DEVOLUCION` — la única parte que efectivamente se
+convirtió en nota de crédito. Corregido en `SalesService.crearVenta`
+(paso 8c) y en `ReturnsService.consultarCredito` (T5.8).
+
+**Corrección 2 — una `DEVOLUCION` simple SÍ puede generar crédito.**
+La sección 2 (RN-9, implementada en T5.5) hacía que el único origen de
+crédito fuera un `CAMBIO` — pero el crédito de un `CAMBIO` se gasta
+SIEMPRE entero, en el momento, contra su propia `ventaNueva`
+(invariante 3 de esa venta exige `SUM(payments) == total`, así que no
+puede quedar remanente). Consecuencia: `creditoDisponible` (T5.8) era
+**siempre $0** apenas creada cualquier devolución — la nota de crédito
+"para una venta futura y separada" que RN-10/AMB-16 describe nunca era
+alcanzable por el flujo real, solo insertando filas a mano (como,
+sin darse cuenta del problema, hacían los propios tests de T5.5).
+**Corregido:** una `DEVOLUCION` simple (sin `ventaNueva`, nada que
+gastar en el acto) ahora admite UN reintegro `CREDITO_DEVOLUCION` —
+mismo tope que un `CAMBIO` (a lo sumo uno), validado en el paso 0b de
+`crearDevolucion`. El resto del mecanismo (RN-7, invariante 11) no
+cambia: `SUM(return_payments) == total_devuelto` sigue siendo
+obligatorio, la línea de crédito es una más.
+
+Detalle completo, repro y decisión del PO: `state/STATUS.md`, fila de
+T5.8 (commit `f078e32`).
