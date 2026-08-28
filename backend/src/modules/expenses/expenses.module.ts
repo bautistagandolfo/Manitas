@@ -3,6 +3,8 @@ import { ExpenseCategoriesController } from './expense-categories.controller';
 import { ExpenseCategoriesService } from './expense-categories.service';
 import { ExpensesController } from './expenses.controller';
 import { ExpensesService } from './expenses.service';
+import { ResultadosController } from './resultados.controller';
+import { ResultadosService } from './resultados.service';
 import { CashRegistersModule } from '../cash-registers/cash-registers.module';
 
 // T6.1 — ABM de categorías de gasto. Gana `ExpensesController`/
@@ -18,10 +20,19 @@ import { CashRegistersModule } from '../cash-registers/cash-registers.module';
 // T6.3 (Fase 04a, cambio estructural mínimo): `CashRegistersModule` en
 // `imports` — mismo patrón que `ReturnsModule` ya usa para poder
 // inyectar `CashRegisterService` en su propio servicio.
+//
+// T6.4 (Fase 04a, stub): agrega `ResultadosController`/
+// `ResultadosService` a los arrays existentes, sin tocar lo de
+// T6.1–T6.3 — mismo módulo, tal como avisaba este comentario desde
+// T6.1.
 @Module({
   imports: [CashRegistersModule],
-  controllers: [ExpenseCategoriesController, ExpensesController],
-  providers: [ExpenseCategoriesService, ExpensesService],
-  exports: [ExpenseCategoriesService, ExpensesService],
+  controllers: [
+    ExpenseCategoriesController,
+    ExpensesController,
+    ResultadosController,
+  ],
+  providers: [ExpenseCategoriesService, ExpensesService, ResultadosService],
+  exports: [ExpenseCategoriesService, ExpensesService, ResultadosService],
 })
 export class ExpensesModule {}
