@@ -45,7 +45,7 @@ Sin módulos de negocio. Es la base sobre la que se apoya todo.
 | T0.9 | `seed:dev` con datos realistas para desarrollo (nunca en producción) | T0.4 | PENDIENTE |
 | T0.10 | **Stryker** (testing de mutación) + umbral de cobertura 80% en servicios, en CI | T0.1 | PENDIENTE |
 | T0.6 | Backup diario: GitHub Action con `pg_dump` cifrado a almacenamiento externo | T0.3 | PENDIENTE |
-| T0.7 | Zona horaria: helper de agrupación en hora argentina + test (AD-13) | T0.3 | PENDIENTE |
+| T0.7 | Zona horaria: helper de agrupación en hora argentina + test (AD-13) | T0.3 | VERDE |
 | T0.8 | Regla de lint que prohíba `number` para importes (AD-14) | T0.1 | VERDE |
 | T0.11 | Helpers de formato es-AR (§12.3): moneda, fecha, número — prohibido formatear a mano en un componente | T0.5 | VERDE |
 | T0.12 | Helpers de `Decimal` y redondeo comercial (AD-14): prorrateo a líneas, los dos tests obligatorios de §9.3 | T0.1 | VERDE |
