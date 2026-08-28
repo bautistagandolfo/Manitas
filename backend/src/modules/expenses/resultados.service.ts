@@ -22,6 +22,34 @@ export interface ResultadosResponse {
   periodo: { desde: string; hasta: string };
 }
 
+// T6.6 — `GET /resultados/ranking-productos`. `orden` opcional: default
+// 'unidades' cuando se omite (decisión de esta fase, la spec no lo marca
+// obligatorio explícitamente).
+export interface RankingProductosQuery {
+  desde: string;
+  hasta: string;
+  orden?: 'unidades' | 'margen';
+}
+
+export interface RankingProductoItem {
+  variantId: number;
+  descripcionSnapshot: string;
+  unidadesVendidas: number;
+  margenTotal: string;
+}
+
+// T6.6 — `GET /resultados/gastos-por-categoria`.
+export interface GastosPorCategoriaQuery {
+  desde: string;
+  hasta: string;
+}
+
+export interface GastoPorCategoriaItem {
+  expenseCategoryId: number;
+  nombre: string;
+  total: string;
+}
+
 // Redondeo comercial (medio hacia arriba) a 2 decimales — mismo criterio
 // que `roundCurrency` de `common/money/money.util.ts`. No se reusa esa
 // función tal cual porque acá también se aplica a `margenBrutoPct`, que
@@ -144,5 +172,23 @@ export class ResultadosService {
       calculadoEn: new Date(),
       periodo: { desde: query.desde, hasta: query.hasta },
     };
+  }
+
+  // T6.6 — stub mínimo de esta fase (04a): fija el contrato de tipos e
+  // implementación mínima para que compile y falle correctamente. La
+  // fórmula/queries reales (RN-10, spec del ticket) se implementan en
+  // otra sesión (Fase 04) contra los tests que este mismo commit deja en
+  // rojo — mismo patrón de stub ya usado en T6.2/T6.4.
+  async rankingProductos(
+    _query: RankingProductosQuery,
+  ): Promise<RankingProductoItem[]> {
+    return Promise.reject(new Error('T6.6 todavía no implementado'));
+  }
+
+  // T6.6 — mismo criterio de stub que `rankingProductos`.
+  async gastosPorCategoria(
+    _query: GastosPorCategoriaQuery,
+  ): Promise<GastoPorCategoriaItem[]> {
+    return Promise.reject(new Error('T6.6 todavía no implementado'));
   }
 }

@@ -1,7 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma, SaleEstado } from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
-import { ResultadosService, ResultadosQuery } from './resultados.service';
+import {
+  ResultadosService,
+  ResultadosQuery,
+  RankingProductosQuery,
+  GastosPorCategoriaQuery,
+} from './resultados.service';
 import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 
 // Fase 04a (T6.4) — tests escritos ANTES de la implementación, contra
@@ -399,5 +404,536 @@ describe('ResultadosService.consultar (T6.4)', () => {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
       },
     );
+  });
+});
+
+// ─── T6.6 — Fase 04a: tests primero, en sesión aislada ───────────────────
+// Fuente única: el ticket T6.6 pasado en el prompt de esta fase (derivado
+// de `ROADMAP.md`, la fórmula RN-10 dada textualmente en el prompt, e
+// invariantes 11/12). `resultados.service.ts`/`resultados.controller.ts`
+// se leyeron tal como existían al cierre de T6.5 — como contrato ya
+// cerrado sobre el que este ticket agrega dos métodos nuevos, nunca como
+// fuente de SU lógica. `argentinaDayRangeToUtc` (T0.7, ya VERDE) se usa
+// real, sin mockear, igual que el resto de este archivo desde T6.5.
+//
+// ─── Diseño de queries que este bloque fija como contrato ────────────────
+// (a implementar en la Fase 04, otra sesión — acá solo se pinnea la FORMA
+// exacta que la Fase 04a puede verificar con `toHaveBeenCalledWith`, nunca
+// el cálculo interno):
+//   `rankingProductos`:
+//   - `tx.saleItem.findMany({ where: { sale: { estado: COMPLETADA,
+//     fecha: {gte,lte} } }, select: { variantId, descripcionSnapshot,
+//     cantidad, netoLinea, costoUnitario } })` — base de unidades/ingresos
+//     por producto (mismo filtro 1 que `consultar`).
+//   - `tx.returnItem.findMany({ where: { return: { fecha: {gte,lte} } },
+//     select: { cantidad, netoLinea, costoUnitario, reingresaStock,
+//     saleItem: { select: { variantId } } } })` — TODAS las devoluciones,
+//     SIN filtrar por `reingresaStock` en el `where` (a diferencia de
+//     `consultar`, que sí lo filtraba para el CMV): acá la condición se
+//     aplica en JS, línea por línea, porque afecta el costo pero no las
+//     unidades/ingresos (asimetría RN-10). El JOIN a `variantId` pasa por
+//     `saleItem.variantId` (`return_items` no tiene `variant_id` propio).
+//   `gastosPorCategoria`:
+//   - `tx.expense.findMany({ where: { fecha: {gte,lte} }, select: {
+//     expenseCategoryId, monto, expenseCategory: { select: { nombre } } } })`.
+//
+// Ambos abren su PROPIA transacción `RepeatableRead`, mismo contrato que
+// `consultar` — no se repiten acá los tests de esa forma estructural para
+// no duplicar lo que ya cubre el describe de `consultar` con la misma
+// clase; el foco de este bloque es la fórmula/orden/desempate propios de
+// T6.6.
+
+interface RankingSaleItemRow {
+  variantId: number;
+  descripcionSnapshot: string;
+  cantidad: number;
+  netoLinea: Prisma.Decimal;
+  costoUnitario: Prisma.Decimal;
+}
+
+interface RankingReturnItemRow {
+  cantidad: number;
+  netoLinea: Prisma.Decimal;
+  costoUnitario: Prisma.Decimal;
+  reingresaStock: boolean;
+  saleItem: { variantId: number };
+}
+
+interface RankingMockTx {
+  saleItem: {
+    findMany: jest.Mock<Promise<RankingSaleItemRow[]>, [unknown]>;
+  };
+  returnItem: {
+    findMany: jest.Mock<Promise<RankingReturnItemRow[]>, [unknown]>;
+  };
+}
+
+interface BuildRankingTxOptions {
+  saleItems?: Array<{
+    variantId: number;
+    descripcionSnapshot: string;
+    cantidad: number;
+    netoLinea: string;
+    costoUnitario: string;
+  }>;
+  returnItems?: Array<{
+    variantId: number;
+    cantidad: number;
+    netoLinea: string;
+    costoUnitario: string;
+    reingresaStock: boolean;
+  }>;
+}
+
+function buildRankingMockTx(options: BuildRankingTxOptions = {}): RankingMockTx {
+  return {
+    saleItem: {
+      findMany: jest
+        .fn<Promise<RankingSaleItemRow[]>, [unknown]>()
+        .mockResolvedValue(
+          (options.saleItems ?? []).map((i) => ({
+            variantId: i.variantId,
+            descripcionSnapshot: i.descripcionSnapshot,
+            cantidad: i.cantidad,
+            netoLinea: new Prisma.Decimal(i.netoLinea),
+            costoUnitario: new Prisma.Decimal(i.costoUnitario),
+          })),
+        ),
+    },
+    returnItem: {
+      findMany: jest
+        .fn<Promise<RankingReturnItemRow[]>, [unknown]>()
+        .mockResolvedValue(
+          (options.returnItems ?? []).map((i) => ({
+            cantidad: i.cantidad,
+            netoLinea: new Prisma.Decimal(i.netoLinea),
+            costoUnitario: new Prisma.Decimal(i.costoUnitario),
+            reingresaStock: i.reingresaStock,
+            saleItem: { variantId: i.variantId },
+          })),
+        ),
+    },
+  };
+}
+
+interface GastosExpenseRow {
+  expenseCategoryId: number;
+  monto: Prisma.Decimal;
+  expenseCategory: { nombre: string };
+}
+
+interface GastosMockTx {
+  expense: {
+    findMany: jest.Mock<Promise<GastosExpenseRow[]>, [unknown]>;
+  };
+}
+
+function buildGastosMockTx(
+  expenses: Array<{
+    expenseCategoryId: number;
+    monto: string;
+    nombre: string;
+  }> = [],
+): GastosMockTx {
+  return {
+    expense: {
+      findMany: jest
+        .fn<Promise<GastosExpenseRow[]>, [unknown]>()
+        .mockResolvedValue(
+          expenses.map((e) => ({
+            expenseCategoryId: e.expenseCategoryId,
+            monto: new Prisma.Decimal(e.monto),
+            expenseCategory: { nombre: e.nombre },
+          })),
+        ),
+    },
+  };
+}
+
+// Reusa el mismo tipo `TransactionMock` ya definido arriba para
+// `consultar` — genérico sobre cualquier forma de `tx` mockeado.
+function buildServiceWithTx<T extends object>(tx: T): {
+  service: ResultadosService;
+  transactionMock: TransactionMock;
+} {
+  const transactionMock: TransactionMock = jest
+    .fn<
+      Promise<unknown>,
+      [
+        (t: Prisma.TransactionClient) => unknown,
+        { isolationLevel?: Prisma.TransactionIsolationLevel }?,
+      ]
+    >()
+    .mockImplementation((callback) =>
+      Promise.resolve(callback(tx as unknown as Prisma.TransactionClient)),
+    );
+  const prisma = { $transaction: transactionMock } as unknown as PrismaService;
+  return { service: new ResultadosService(prisma), transactionMock };
+}
+
+function rankingQuery(
+  desde: string,
+  hasta: string,
+  orden?: 'unidades' | 'margen',
+): RankingProductosQuery {
+  return { desde, hasta, orden };
+}
+
+function gastosQuery(desde: string, hasta: string): GastosPorCategoriaQuery {
+  return { desde, hasta };
+}
+
+describe('ResultadosService.rankingProductos (T6.6)', () => {
+  it('camino feliz, orden por unidades (default): dos variantes, calculadas a mano — A (5 unidades) antes que B (2 unidades)', async () => {
+    // Variante A (id 10): 1 línea, cantidad 5, netoLinea 250.00,
+    //   costoUnitario 20.00 → cmv = 5×20.00 = 100.00 → margen = 150.00.
+    // Variante B (id 20): 1 línea, cantidad 2, netoLinea 300.00,
+    //   costoUnitario 30.00 → cmv = 2×30.00 = 60.00 → margen = 240.00.
+    // Sin devoluciones. Por unidades: A(5) > B(2) → [A, B]. Por margen
+    // hubiera dado el orden inverso — B(240) > A(150) — a propósito,
+    // para que el siguiente test confirme que el parámetro sí cambia el
+    // orden.
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 10,
+          descripcionSnapshot: 'Remera Azul M',
+          cantidad: 5,
+          netoLinea: '250.00',
+          costoUnitario: '20.00',
+        },
+        {
+          variantId: 20,
+          descripcionSnapshot: 'Pantalón Negro L',
+          cantidad: 2,
+          netoLinea: '300.00',
+          costoUnitario: '30.00',
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31', 'unidades'),
+    );
+
+    expect(result).toEqual([
+      {
+        variantId: 10,
+        descripcionSnapshot: 'Remera Azul M',
+        unidadesVendidas: 5,
+        margenTotal: '150.00',
+      },
+      {
+        variantId: 20,
+        descripcionSnapshot: 'Pantalón Negro L',
+        unidadesVendidas: 2,
+        margenTotal: '240.00',
+      },
+    ]);
+  });
+
+  it('camino feliz, orden por margen: mismos datos que el test anterior — el orden se invierte (B antes que A)', async () => {
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 10,
+          descripcionSnapshot: 'Remera Azul M',
+          cantidad: 5,
+          netoLinea: '250.00',
+          costoUnitario: '20.00',
+        },
+        {
+          variantId: 20,
+          descripcionSnapshot: 'Pantalón Negro L',
+          cantidad: 2,
+          netoLinea: '300.00',
+          costoUnitario: '30.00',
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31', 'margen'),
+    );
+
+    expect(result).toEqual([
+      {
+        variantId: 20,
+        descripcionSnapshot: 'Pantalón Negro L',
+        unidadesVendidas: 2,
+        margenTotal: '240.00',
+      },
+      {
+        variantId: 10,
+        descripcionSnapshot: 'Remera Azul M',
+        unidadesVendidas: 5,
+        margenTotal: '150.00',
+      },
+    ]);
+  });
+
+  it('orden se omite → default "unidades" (decisión de esta fase, sin marcarlo obligatorio)', async () => {
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 10,
+          descripcionSnapshot: 'Remera Azul M',
+          cantidad: 5,
+          netoLinea: '250.00',
+          costoUnitario: '20.00',
+        },
+        {
+          variantId: 20,
+          descripcionSnapshot: 'Pantalón Negro L',
+          cantidad: 2,
+          netoLinea: '300.00',
+          costoUnitario: '30.00',
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos({
+      desde: '2026-01-01',
+      hasta: '2026-01-31',
+    });
+
+    // Mismo orden que el test explícito de "unidades" — A(5) antes que
+    // B(2) — porque el default, sin pasar `orden`, es "unidades".
+    expect(result.map((r) => r.variantId)).toEqual([10, 20]);
+  });
+
+  it('devolución reingresaStock: false: baja unidades e ingresos de esa variante, pero el costo (y por lo tanto el margen) NO se ajusta por esa devolución', async () => {
+    // Variante C (id 30): 1 línea, cantidad 4, netoLinea 400.00,
+    //   costoUnitario 50.00 → cmv base = 4×50.00 = 200.00.
+    // Devolución de 1 unidad de esa línea, reingresaStock: false,
+    //   netoLinea 100.00, costoUnitario 50.00.
+    //   unidadesVendidas = 4 − 1 = 3
+    //   ingresos = 400.00 − 100.00 = 300.00
+    //   cmv = 200.00 − 0 (NO se revierte: reingresaStock false) = 200.00
+    //   margenTotal = 300.00 − 200.00 = 100.00
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 30,
+          descripcionSnapshot: 'Campera Roja S',
+          cantidad: 4,
+          netoLinea: '400.00',
+          costoUnitario: '50.00',
+        },
+      ],
+      returnItems: [
+        {
+          variantId: 30,
+          cantidad: 1,
+          netoLinea: '100.00',
+          costoUnitario: '50.00',
+          reingresaStock: false,
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31'),
+    );
+
+    expect(result).toEqual([
+      {
+        variantId: 30,
+        descripcionSnapshot: 'Campera Roja S',
+        unidadesVendidas: 3,
+        margenTotal: '100.00',
+      },
+    ]);
+  });
+
+  it('desempate por variantId ascendente cuando dos variantes empatan en el criterio de orden (unidades)', async () => {
+    // Variante D (id 1) y variante E (id 2): ambas con 5 unidades
+    // vendidas (empate exacto en "unidades"), márgenes distintos a
+    // propósito (450.00 vs 949.00) para confirmar que el desempate es
+    // por `variantId`, no por margen ni por ningún otro campo.
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 1,
+          descripcionSnapshot: 'Producto D',
+          cantidad: 5,
+          netoLinea: '500.00',
+          costoUnitario: '10.00',
+        },
+        {
+          variantId: 2,
+          descripcionSnapshot: 'Producto E',
+          cantidad: 5,
+          netoLinea: '999.00',
+          costoUnitario: '10.00',
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31', 'unidades'),
+    );
+
+    expect(result.map((r) => r.variantId)).toEqual([1, 2]);
+  });
+
+  it('filtros y AD-13: sale_items filtra por sale.estado COMPLETADA, return_items NO filtra por reingresaStock en el where, y los límites gte/lte salen de argentinaDayRangeToUtc', async () => {
+    const tx = buildRankingMockTx();
+    const { service } = buildServiceWithTx(tx);
+    const { desde, hasta } = argentinaDayRangeToUtc('2026-02-01');
+    const hastaFin = argentinaDayRangeToUtc('2026-02-28').hasta;
+
+    await service.rankingProductos(rankingQuery('2026-02-01', '2026-02-28'));
+
+    expect(tx.saleItem.findMany).toHaveBeenCalledWith({
+      where: {
+        sale: {
+          estado: SaleEstado.COMPLETADA,
+          fecha: { gte: desde, lte: hastaFin },
+        },
+      },
+      select: {
+        variantId: true,
+        descripcionSnapshot: true,
+        cantidad: true,
+        netoLinea: true,
+        costoUnitario: true,
+      },
+    });
+    expect(tx.returnItem.findMany).toHaveBeenCalledWith({
+      where: {
+        return: { fecha: { gte: desde, lte: hastaFin } },
+      },
+      select: {
+        cantidad: true,
+        netoLinea: true,
+        costoUnitario: true,
+        reingresaStock: true,
+        saleItem: { select: { variantId: true } },
+      },
+    });
+  });
+
+  it('desde > hasta → rechaza con BadRequestException "El rango de fechas no es válido", sin ejecutar ninguna query', async () => {
+    const tx = buildRankingMockTx();
+    const { service, transactionMock } = buildServiceWithTx(tx);
+
+    const call = service.rankingProductos(
+      rankingQuery('2026-02-15', '2026-01-01'),
+    );
+
+    await expect(call).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.rankingProductos(rankingQuery('2026-02-15', '2026-01-01')),
+    ).rejects.toThrow('El rango de fechas no es válido');
+    expect(transactionMock).not.toHaveBeenCalled();
+    expect(tx.saleItem.findMany).not.toHaveBeenCalled();
+    expect(tx.returnItem.findMany).not.toHaveBeenCalled();
+  });
+
+  it('período sin ventas: array vacío, 200 (sin excepción)', async () => {
+    const tx = buildRankingMockTx();
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31'),
+    );
+
+    expect(result).toEqual([]);
+  });
+});
+
+describe('ResultadosService.gastosPorCategoria (T6.6)', () => {
+  it('camino feliz: dos categorías, calculadas a mano — ordenado descendente por total', async () => {
+    // Categoría A (id 100, "Alquiler"): dos gastos, 500.00 + 300.00 =
+    //   800.00.
+    // Categoría B (id 200, "Servicios"): un gasto, 1000.00.
+    // Orden esperado por total descendente: B (1000.00) antes que A
+    //   (800.00).
+    const tx = buildGastosMockTx([
+      { expenseCategoryId: 100, monto: '500.00', nombre: 'Alquiler' },
+      { expenseCategoryId: 100, monto: '300.00', nombre: 'Alquiler' },
+      { expenseCategoryId: 200, monto: '1000.00', nombre: 'Servicios' },
+    ]);
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.gastosPorCategoria(
+      gastosQuery('2026-01-01', '2026-01-31'),
+    );
+
+    expect(result).toEqual([
+      { expenseCategoryId: 200, nombre: 'Servicios', total: '1000.00' },
+      { expenseCategoryId: 100, nombre: 'Alquiler', total: '800.00' },
+    ]);
+  });
+
+  it('desempate por nombre ascendente cuando dos categorías empatan en total', async () => {
+    // Categoría "Impuestos" (id 1) y categoría "Alquiler" (id 2): mismo
+    // total (500.00 cada una) — el desempate es por `nombre` ascendente,
+    // "Alquiler" antes que "Impuestos", sin importar el id.
+    const tx = buildGastosMockTx([
+      { expenseCategoryId: 1, monto: '500.00', nombre: 'Impuestos' },
+      { expenseCategoryId: 2, monto: '500.00', nombre: 'Alquiler' },
+    ]);
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.gastosPorCategoria(
+      gastosQuery('2026-01-01', '2026-01-31'),
+    );
+
+    expect(result).toEqual([
+      { expenseCategoryId: 2, nombre: 'Alquiler', total: '500.00' },
+      { expenseCategoryId: 1, nombre: 'Impuestos', total: '500.00' },
+    ]);
+  });
+
+  it('filtro y AD-13: los límites gte/lte que llegan a la query de gastos salen de argentinaDayRangeToUtc', async () => {
+    const tx = buildGastosMockTx();
+    const { service } = buildServiceWithTx(tx);
+    const desde = argentinaDayRangeToUtc('2026-03-01').desde;
+    const hasta = argentinaDayRangeToUtc('2026-03-31').hasta;
+
+    await service.gastosPorCategoria(gastosQuery('2026-03-01', '2026-03-31'));
+
+    expect(tx.expense.findMany).toHaveBeenCalledWith({
+      where: { fecha: { gte: desde, lte: hasta } },
+      select: {
+        expenseCategoryId: true,
+        monto: true,
+        expenseCategory: { select: { nombre: true } },
+      },
+    });
+  });
+
+  it('desde > hasta → rechaza con BadRequestException "El rango de fechas no es válido", sin ejecutar ninguna query', async () => {
+    const tx = buildGastosMockTx();
+    const { service, transactionMock } = buildServiceWithTx(tx);
+
+    const call = service.gastosPorCategoria(
+      gastosQuery('2026-02-15', '2026-01-01'),
+    );
+
+    await expect(call).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.gastosPorCategoria(gastosQuery('2026-02-15', '2026-01-01')),
+    ).rejects.toThrow('El rango de fechas no es válido');
+    expect(transactionMock).not.toHaveBeenCalled();
+    expect(tx.expense.findMany).not.toHaveBeenCalled();
+  });
+
+  it('período sin gastos: array vacío, 200 (sin excepción)', async () => {
+    const tx = buildGastosMockTx();
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.gastosPorCategoria(
+      gastosQuery('2026-01-01', '2026-01-31'),
+    );
+
+    expect(result).toEqual([]);
   });
 });

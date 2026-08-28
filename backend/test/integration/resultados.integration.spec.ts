@@ -59,6 +59,19 @@ function extractCookie(setCookieHeader: unknown): string {
   return cookies[0].split(';')[0];
 }
 
+interface RankingProductoItemBody {
+  variantId: number;
+  descripcionSnapshot: string;
+  unidadesVendidas: number;
+  margenTotal: string;
+}
+
+interface GastoPorCategoriaItemBody {
+  expenseCategoryId: number;
+  nombre: string;
+  total: string;
+}
+
 interface ResultadosBody {
   ingresos: string;
   cmv: string;
@@ -640,6 +653,334 @@ describe('resultados (integration, T6.4)', () => {
       expect(body.margenBrutoPct).toBe('0.00');
       expect(body.gastos).toBe('0.00');
       expect(body.resultadoNeto).toBe('0.00');
+    });
+  });
+
+  // ─── T6.6 — Fase 04a: tests primero, en sesión aislada ─────────────────
+  // Fuente única: el ticket T6.6 pasado en el prompt de esta fase.
+  // `ResultadosController`/`ResultadosService` YA registran las rutas
+  // nuevas (stub de esta misma fase, `rankingProductos`/
+  // `gastosPorCategoria` siempre rechazan con un Error genérico ("T6.6
+  // todavía no implementado") — este bloque entero debe quedar en rojo
+  // por eso (probablemente 500 en los casos que hoy deberían dar
+  // 200/400), nunca por compilación. Reusa los helpers ya existentes de
+  // este archivo (`abrirSesion`, `createVariant`, `crearVentaCompletada`,
+  // `fijarFechaVenta`, `fijarFechaDevolucion`, `crearCategoria`,
+  // `crearGastoDirect`, `owned`, `sold`) — misma estrategia
+  // anti-contaminación (fechas fijas, exclusivas de cada escenario, años
+  // 2033/2034 para no superponer con el resto del archivo).
+  describe('GET /resultados/ranking-productos (T6.6)', () => {
+    describe('autenticación y rol (RN-11 — OWNER-only)', () => {
+      it('sin sesión → 401', async () => {
+        await request(app.getHttpServer())
+          .get('/resultados/ranking-productos')
+          .query({ desde: '2033-01-01', hasta: '2033-01-01' })
+          .expect(401);
+      });
+
+      it('con SELLER → 403', async () => {
+        await sold(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        )
+          .query({ desde: '2033-01-01', hasta: '2033-01-01' })
+          .expect(403);
+      });
+    });
+
+    describe('validación', () => {
+      it('desde > hasta → 400', async () => {
+        const response = await owned(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        ).query({ desde: '2033-02-15', hasta: '2033-01-01' });
+
+        expect(response.status).toBe(400);
+      });
+
+      it('orden con un valor inválido → 400', async () => {
+        const response = await owned(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        ).query({
+          desde: '2033-01-01',
+          hasta: '2033-01-01',
+          orden: 'no-existe',
+        });
+
+        expect(response.status).toBe(400);
+      });
+    });
+
+    describe('camino feliz', () => {
+      it('dos variantes con ventas reales: orden por unidades y por margen dan resultados distintos', async () => {
+        await abrirSesion();
+        // Variante A: 5 unidades vendidas, margen bajo (150.00).
+        // Variante B: 2 unidades vendidas, margen alto (240.00) — a
+        // propósito, para que el orden por "unidades" y por "margen" NO
+        // coincidan.
+        const variantA = await createVariant({
+          precioVenta: '50.00',
+          costoActual: '20.00',
+          stockActual: 10,
+        });
+        const variantB = await createVariant({
+          precioVenta: '150.00',
+          costoActual: '30.00',
+          stockActual: 10,
+        });
+        const ventaA = await crearVentaCompletada({
+          variantId: variantA.id,
+          cantidad: 5,
+          montoTotal: '250.00',
+        });
+        const ventaB = await crearVentaCompletada({
+          variantId: variantB.id,
+          cantidad: 2,
+          montoTotal: '300.00',
+        });
+        await fijarFechaVenta(
+          ventaA.saleId,
+          new Date('2033-01-05T10:00:00.000Z'),
+        );
+        await fijarFechaVenta(
+          ventaB.saleId,
+          new Date('2033-01-05T11:00:00.000Z'),
+        );
+
+        const margenA = new Prisma.Decimal('250.00')
+          .minus(ventaA.costoUnitario.times(5))
+          .toFixed(2);
+        const margenB = new Prisma.Decimal('300.00')
+          .minus(ventaB.costoUnitario.times(2))
+          .toFixed(2);
+
+        const porUnidades = await owned(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        ).query({
+          desde: '2033-01-05',
+          hasta: '2033-01-05',
+          orden: 'unidades',
+        });
+        expect(porUnidades.status).toBe(200);
+        const bodyUnidades = porUnidades.body as RankingProductoItemBody[];
+        expect(bodyUnidades.map((r) => r.variantId)).toEqual([
+          variantA.id,
+          variantB.id,
+        ]);
+        expect(bodyUnidades[0].unidadesVendidas).toBe(5);
+        expect(bodyUnidades[0].margenTotal).toBe(margenA);
+        expect(bodyUnidades[1].unidadesVendidas).toBe(2);
+        expect(bodyUnidades[1].margenTotal).toBe(margenB);
+
+        const porMargen = await owned(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        ).query({ desde: '2033-01-05', hasta: '2033-01-05', orden: 'margen' });
+        expect(porMargen.status).toBe(200);
+        const bodyMargen = porMargen.body as RankingProductoItemBody[];
+        expect(bodyMargen.map((r) => r.variantId)).toEqual([
+          variantB.id,
+          variantA.id,
+        ]);
+      });
+    });
+
+    describe('devolución reingresaStock: false', () => {
+      it('baja unidades e ingresos (y por lo tanto el margen) de esa variante, sin tocar su costo', async () => {
+        await abrirSesion();
+        const variant = await createVariant({
+          precioVenta: '100.00',
+          costoActual: '50.00',
+          stockActual: 10,
+        });
+        const venta = await crearVentaCompletada({
+          variantId: variant.id,
+          cantidad: 4,
+          montoTotal: '400.00',
+        });
+        await fijarFechaVenta(
+          venta.saleId,
+          new Date('2033-01-06T10:00:00.000Z'),
+        );
+
+        const returnResponse = await owned(
+          request(app.getHttpServer()).post('/returns'),
+        )
+          .set('Idempotency-Key', randomUUID())
+          .send({
+            saleId: venta.saleId,
+            tipo: ReturnTipo.DEVOLUCION,
+            items: [
+              {
+                saleItemId: venta.saleItemId,
+                cantidad: 1,
+                reingresaStock: false,
+              },
+            ],
+            returnPayments: [
+              { metodo: PaymentMetodo.EFECTIVO, monto: '100.00' },
+            ],
+          })
+          .expect(201);
+        const returnId = (returnResponse.body as { id: number }).id;
+        createdReturnIds.push(returnId);
+        await fijarFechaDevolucion(
+          returnId,
+          new Date('2033-01-06T11:00:00.000Z'),
+        );
+
+        const response = await owned(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        ).query({ desde: '2033-01-06', hasta: '2033-01-06' });
+
+        expect(response.status).toBe(200);
+        const body = response.body as RankingProductoItemBody[];
+        const item = body.find((r) => r.variantId === variant.id);
+        expect(item).toBeDefined();
+        // unidadesVendidas = 4 − 1 = 3.
+        expect(item?.unidadesVendidas).toBe(3);
+        // margenTotal = (400.00 − 100.00) − 4×costoUnitario — el costo
+        // NO se revierte por la devolución (reingresaStock: false).
+        const margenEsperado = new Prisma.Decimal('300.00')
+          .minus(venta.costoUnitario.times(4))
+          .toFixed(2);
+        expect(item?.margenTotal).toBe(margenEsperado);
+      });
+    });
+
+    describe('edge case — período sin datos', () => {
+      it('200, array vacío', async () => {
+        const response = await owned(
+          request(app.getHttpServer()).get('/resultados/ranking-productos'),
+        ).query({ desde: '2034-12-25', hasta: '2034-12-25' });
+
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual([]);
+      });
+    });
+  });
+
+  describe('GET /resultados/gastos-por-categoria (T6.6)', () => {
+    describe('autenticación y rol (RN-11 — OWNER-only)', () => {
+      it('sin sesión → 401', async () => {
+        await request(app.getHttpServer())
+          .get('/resultados/gastos-por-categoria')
+          .query({ desde: '2033-02-01', hasta: '2033-02-01' })
+          .expect(401);
+      });
+
+      it('con SELLER → 403', async () => {
+        await sold(
+          request(app.getHttpServer()).get(
+            '/resultados/gastos-por-categoria',
+          ),
+        )
+          .query({ desde: '2033-02-01', hasta: '2033-02-01' })
+          .expect(403);
+      });
+    });
+
+    describe('validación', () => {
+      it('desde > hasta → 400', async () => {
+        const response = await owned(
+          request(app.getHttpServer()).get(
+            '/resultados/gastos-por-categoria',
+          ),
+        ).query({ desde: '2033-02-15', hasta: '2033-02-01' });
+
+        expect(response.status).toBe(400);
+      });
+    });
+
+    describe('camino feliz', () => {
+      it('dos categorías con gastos reales: ordenado descendente por total', async () => {
+        const categoriaA = await crearCategoria(
+          `Categoría T6.6 A ${randomUUID()}`,
+        );
+        const categoriaB = await crearCategoria(
+          `Categoría T6.6 B ${randomUUID()}`,
+        );
+        await crearGastoDirect(
+          categoriaA,
+          '500.00',
+          new Date('2033-02-01T10:00:00.000Z'),
+        );
+        await crearGastoDirect(
+          categoriaA,
+          '300.00',
+          new Date('2033-02-01T11:00:00.000Z'),
+        );
+        await crearGastoDirect(
+          categoriaB,
+          '1000.00',
+          new Date('2033-02-01T12:00:00.000Z'),
+        );
+
+        const response = await owned(
+          request(app.getHttpServer()).get(
+            '/resultados/gastos-por-categoria',
+          ),
+        ).query({ desde: '2033-02-01', hasta: '2033-02-01' });
+
+        expect(response.status).toBe(200);
+        const body = response.body as GastoPorCategoriaItemBody[];
+        expect(body.map((c) => c.expenseCategoryId)).toEqual([
+          categoriaB,
+          categoriaA,
+        ]);
+        expect(body[0].total).toBe('1000.00');
+        expect(body[1].total).toBe('800.00');
+      });
+    });
+
+    describe('filtro — fecha de cabecera', () => {
+      it('un gasto fuera del rango consultado no aporta al total de su categoría (aunque sí en un rango más amplio)', async () => {
+        const categoria = await crearCategoria(
+          `Categoría T6.6 filtro ${randomUUID()}`,
+        );
+        await crearGastoDirect(
+          categoria,
+          '30.00',
+          new Date('2033-02-08T12:00:00.000Z'),
+        );
+        await crearGastoDirect(
+          categoria,
+          '70.00',
+          new Date('2033-02-20T12:00:00.000Z'),
+        );
+
+        const angosto = await owned(
+          request(app.getHttpServer()).get(
+            '/resultados/gastos-por-categoria',
+          ),
+        ).query({ desde: '2033-02-08', hasta: '2033-02-08' });
+        expect(angosto.status).toBe(200);
+        const bodyAngosto = angosto.body as GastoPorCategoriaItemBody[];
+        expect(bodyAngosto).toEqual([
+          { expenseCategoryId: categoria, nombre: expect.any(String), total: '30.00' },
+        ]);
+
+        const amplio = await owned(
+          request(app.getHttpServer()).get(
+            '/resultados/gastos-por-categoria',
+          ),
+        ).query({ desde: '2033-02-01', hasta: '2033-02-28' });
+        expect(amplio.status).toBe(200);
+        const bodyAmplio = amplio.body as GastoPorCategoriaItemBody[];
+        expect(bodyAmplio).toEqual([
+          { expenseCategoryId: categoria, nombre: expect.any(String), total: '100.00' },
+        ]);
+      });
+    });
+
+    describe('edge case — período sin datos', () => {
+      it('200, array vacío', async () => {
+        const response = await owned(
+          request(app.getHttpServer()).get(
+            '/resultados/gastos-por-categoria',
+          ),
+        ).query({ desde: '2034-12-26', hasta: '2034-12-26' });
+
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual([]);
+      });
     });
   });
 });
