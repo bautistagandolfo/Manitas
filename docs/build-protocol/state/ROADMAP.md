@@ -442,7 +442,7 @@ completa en la sección 12.1 del blueprint.
 
 | ID | Objetivo | Depende de | Estado |
 |---|---|---|---|
-| T6.1 | ABM de categorías de gasto (sin "Mercadería" — AD-7) | T1.3 | PENDIENTE |
+| T6.1 | ABM de categorías de gasto (sin "Mercadería" — AD-7) | T1.3 | VERDE |
 | T6.2 | Registro de gastos con medio de pago, idempotente (§9.7) | T6.1, T0.14 | PENDIENTE |
 | T6.3 | Gasto en efectivo → movimiento de caja vinculado | T6.2, T3.2 | PENDIENTE |
 | T6.4 | Consulta de resultados: ingresos, CMV, margen, gastos, resultado neto | T4.4, T5.4, T6.2 | PENDIENTE |
