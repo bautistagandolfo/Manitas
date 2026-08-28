@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ExpenseCategoriesController } from './expense-categories.controller';
 import { ExpenseCategoriesService } from './expense-categories.service';
+import { ExpensesController } from './expenses.controller';
+import { ExpensesService } from './expenses.service';
 
 // T6.1 — ABM de categorías de gasto. Gana `ExpensesController`/
 // `ExpensesService` (T6.2/T6.3) y los endpoints de `resultados`
@@ -8,9 +10,12 @@ import { ExpenseCategoriesService } from './expense-categories.service';
 // `products` agrupa marcas/categorías/talles/colores/variantes/
 // precios/import bajo un solo `ProductsModule`, todos parte de la
 // misma Etapa/frontera de negocio.
+//
+// T6.2 (Fase 04a, stub): agrega `ExpensesController`/`ExpensesService`
+// a los arrays existentes, sin tocar lo de T6.1.
 @Module({
-  controllers: [ExpenseCategoriesController],
-  providers: [ExpenseCategoriesService],
-  exports: [ExpenseCategoriesService],
+  controllers: [ExpenseCategoriesController, ExpensesController],
+  providers: [ExpenseCategoriesService, ExpensesService],
+  exports: [ExpenseCategoriesService, ExpensesService],
 })
 export class ExpensesModule {}
