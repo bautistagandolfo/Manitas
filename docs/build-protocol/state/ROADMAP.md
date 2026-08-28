@@ -378,7 +378,7 @@ completa en la sección 12.1 del blueprint.
 | T5.5 | Cambio: devolución + venta nueva ligadas | T5.3 | VERDE |
 | T5.6 | Test del invariante 8 (no devolver más de lo vendido) | T5.1 | VERDE |
 | T5.7 | Pantallas de devolución y cambio | T5.5 | VERDE |
-| T5.8 | Aplicar crédito de una devolución a una venta posterior (nota de crédito diferida, AMB-16) | T5.5, T5.1 | PENDIENTE |
+| T5.8 | Aplicar crédito de una devolución a una venta posterior (nota de crédito diferida, AMB-16) | T5.5, T5.1 | VERDE |
 
 **Cierre:** Fases 07 → 08 → 09 → 10 → 11 → 12.
 
@@ -411,6 +411,27 @@ completa en la sección 12.1 del blueprint.
 > (dueño `sales`, ya cerrado en su Fase 12 — extensión aditiva) — sin
 > tocar `sales.service.ts` de nuevo, solo el frontend y el nuevo
 > endpoint de lectura.
+>
+> **Corrección post-implementación (2026-08-28):** la nota de arriba
+> resultó incompleta — T5.8 SÍ terminó tocando `sales.service.ts`, dos
+> veces: (1) `SalePaymentDto` necesitaba el campo `returnId?` que la
+> nota daba por hecho que ya existía a nivel HTTP (T5.5 solo lo había
+> agregado a la interfaz de `crearVenta`, nunca al DTO — sin eso,
+> `forbidNonWhitelisted` rechazaba cualquier intento real); (2) un
+> hallazgo real de money-integrity, encontrado en la verificación
+> manual: el techo del crédito (paso 8c) usaba `total_devuelto` en vez
+> de la suma real de `return_payments` marcados `CREDITO_DEVOLUCION`,
+> dejando un excedente ya reintegrado en efectivo disponible OTRA VEZ
+> como crédito fantasma. Un segundo hallazgo, más profundo, también
+> apareció ahí: el mecanismo tal como estaba especificado dejaba
+> `creditoDisponible` en $0 SIEMPRE (el crédito de un `CAMBIO` se gasta
+> entero, en el acto, contra su propia venta nueva) — la nota de
+> crédito "para una venta futura y separada" nunca era alcanzable de
+> verdad. Se amplió el paso 0b de `crearDevolucion` para que una
+> `DEVOLUCION` simple también pueda bancar un crédito (no solo un
+> `CAMBIO`, que lo consume de inmediato). Los dos hallazgos, confirmados
+> con el PO antes de tocar código, están documentados en detalle en
+> `state/STATUS.md` (fila de T5.8, commit `f078e32`).
 >
 > **Sin bloqueos pendientes** — los 8 tickets de la etapa pueden
 > arrancar siguiendo el orden de dependencias de la tabla de arriba.
