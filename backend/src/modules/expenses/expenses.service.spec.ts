@@ -1,6 +1,16 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ExpenseMedioPago, Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  CashMovementReferenciaTipo,
+  CashMovementTipo,
+  ExpenseMedioPago,
+  Prisma,
+} from '@prisma/client';
 import type { PrismaService } from '../../prisma/prisma.service';
+import type { CashRegisterService } from '../cash-registers/cash-register.service';
 import { ExpensesService } from './expenses.service';
 
 // Fase 04a (T6.2) — tests escritos ANTES de la implementación, contra
@@ -30,6 +40,18 @@ import { ExpensesService } from './expenses.service';
 // comportamiento de "un reintento no duplica" completo (P2002 → devolver
 // la fila existente) se prueba de punta a punta contra Postgres real en
 // `expenses.integration.spec.ts`.
+//
+// ─── T6.3 (Fase 04a) ────────────────────────────────────────────────────
+// Extensión de este archivo: NO se leyó ningún cambio de
+// `expenses.service.ts` más allá del cambio ESTRUCTURAL ya cerrado en
+// esta misma fase (segundo parámetro del constructor,
+// `cashRegisterService: CashRegisterService`, cuerpo de `registrarGasto`
+// SIN TOCAR). Fuente única de la lógica nueva: el ticket T6.3 pasado en
+// el prompt de esta fase (ROADMAP.md, BLUEPRINT invariantes 7 y 10). El
+// patrón MECÁNICO de mock de `cashRegisterService` (forma de
+// `SessionRow`/`buildSessionRow`, mock tipado de
+// `getSesionAbiertaOrThrow`/`registrarMovimiento`) sigue
+// `returns.service.spec.ts` (T5.3) — nunca su lógica de negocio.
 
 interface ExpenseCategoryRow {
   id: number;
@@ -108,11 +130,56 @@ function buildMockTx(categoria: ExpenseCategoryRow | null): MockTx {
   };
 }
 
+// T6.3 — mismo shape mínimo que `SessionRow` de
+// `returns.service.spec.ts`: solo lo que `ExpensesService` necesitaría
+// leer de la sesión abierta (su `id`, para `sessionId` del movimiento).
+interface SessionRow {
+  id: number;
+  estado: 'ABIERTA' | 'CERRADA';
+}
+
+function buildSessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
+  return { id: 55, estado: 'ABIERTA', ...overrides };
+}
+
+interface CashMovementRow {
+  id: number;
+}
+
+interface MockCashRegisterService {
+  getSesionAbiertaOrThrow: jest.Mock<Promise<SessionRow>, [unknown]>;
+  registrarMovimiento: jest.Mock<Promise<CashMovementRow>, [unknown, unknown]>;
+}
+
+// Por default resuelve con una sesión abierta — mismo criterio que
+// `buildDeps()` en `returns.service.spec.ts` (el "camino feliz" es el
+// default; los tests que necesitan el rechazo lo pisan explícitamente
+// con `.mockRejectedValue(...)`).
+function buildMockCashRegisterService(): MockCashRegisterService {
+  return {
+    getSesionAbiertaOrThrow: jest
+      .fn<Promise<SessionRow>, [unknown]>()
+      .mockResolvedValue(buildSessionRow()),
+    registrarMovimiento: jest
+      .fn<Promise<CashMovementRow>, [unknown, unknown]>()
+      .mockResolvedValue({ id: 777 }),
+  };
+}
+
+function buildService(
+  cashRegisterService: MockCashRegisterService = buildMockCashRegisterService(),
+): ExpensesService {
+  return new ExpensesService(
+    {} as unknown as PrismaService,
+    cashRegisterService as unknown as CashRegisterService,
+  );
+}
+
 describe('ExpensesService.registrarGasto (T6.2)', () => {
   let service: ExpensesService;
 
   beforeEach(() => {
-    service = new ExpensesService({} as unknown as PrismaService);
+    service = buildService();
   });
 
   describe.each([
@@ -271,6 +338,111 @@ describe('ExpensesService.registrarGasto (T6.2)', () => {
   });
 });
 
+// T6.3 — invariante 10 ("los gastos solo requieren sesión abierta si se
+// pagan en efectivo desde la caja") + invariante 7 (GASTO tiene su propio
+// origen, ver `cash-register.service.ts`). Spec del módulo, sección 5,
+// orden textual: validar monto → validar categoría → (NUEVO, solo
+// EFECTIVO) `getSesionAbiertaOrThrow` fail-fast → crear el gasto → (NUEVO,
+// solo EFECTIVO) `registrarMovimiento` vinculado.
+describe('ExpensesService.registrarGasto — T6.3 (efectivo → movimiento de caja)', () => {
+  it('medioPago EFECTIVO con sesión abierta: llama getSesionAbiertaOrThrow(tx) y luego registrarMovimiento(tx, {...}) exactamente una vez cada uno, con el monto/descr/userId del propio gasto y referenciaId = id del gasto recién creado', async () => {
+    const tx = buildMockTx(buildCategoria());
+    const cashRegisterService = buildMockCashRegisterService();
+    const service = buildService(cashRegisterService);
+
+    const result = await service.registrarGasto(
+      tx as unknown as Prisma.TransactionClient,
+      {
+        expenseCategoryId: 3,
+        descripcion: 'Pago de luz en efectivo',
+        monto: '850.00',
+        medioPago: ExpenseMedioPago.EFECTIVO,
+        userId: 42,
+        idempotencyKey: 'idem-key-t63-1',
+      },
+    );
+
+    expect(cashRegisterService.getSesionAbiertaOrThrow).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(cashRegisterService.getSesionAbiertaOrThrow).toHaveBeenCalledWith(
+      tx,
+    );
+
+    expect(tx.expense.create).toHaveBeenCalledTimes(1);
+
+    expect(cashRegisterService.registrarMovimiento).toHaveBeenCalledTimes(1);
+    expect(cashRegisterService.registrarMovimiento).toHaveBeenCalledWith(tx, {
+      sessionId: 55,
+      tipo: CashMovementTipo.GASTO,
+      monto: expect.anything(),
+      referenciaTipo: CashMovementReferenciaTipo.EXPENSE,
+      referenciaId: result.id,
+      descripcion: 'Pago de luz en efectivo',
+      userId: 42,
+    });
+    const call =
+      cashRegisterService.registrarMovimiento.mock.calls[0][1];
+    expect(new Prisma.Decimal((call as { monto: Prisma.Decimal.Value }).monto).toString()).toBe(
+      '850',
+    );
+  });
+
+  it('medioPago EFECTIVO, sin sesión abierta (getSesionAbiertaOrThrow rechaza con 409): el método propaga el rechazo, tx.expense.create NUNCA se llama, registrarMovimiento NUNCA se llama', async () => {
+    const tx = buildMockTx(buildCategoria());
+    const cashRegisterService = buildMockCashRegisterService();
+    cashRegisterService.getSesionAbiertaOrThrow.mockRejectedValue(
+      new ConflictException('No hay una sesión de caja abierta'),
+    );
+    const service = buildService(cashRegisterService);
+
+    const call = service.registrarGasto(
+      tx as unknown as Prisma.TransactionClient,
+      {
+        expenseCategoryId: 3,
+        descripcion: 'Gasto sin sesión',
+        monto: '100.00',
+        medioPago: ExpenseMedioPago.EFECTIVO,
+        userId: 1,
+        idempotencyKey: 'idem-key-t63-2',
+      },
+    );
+
+    await expect(call).rejects.toBeInstanceOf(ConflictException);
+    await expect(call).rejects.toThrow('No hay una sesión de caja abierta');
+    expect(tx.expense.create).not.toHaveBeenCalled();
+    expect(cashRegisterService.registrarMovimiento).not.toHaveBeenCalled();
+  });
+
+  it.each([ExpenseMedioPago.TRANSFERENCIA, ExpenseMedioPago.OTRO])(
+    'medioPago %s: ni getSesionAbiertaOrThrow ni registrarMovimiento se llaman nunca, el gasto se crea igual (comportamiento de T6.2, sin cambios)',
+    async (medioPago) => {
+      const tx = buildMockTx(buildCategoria());
+      const cashRegisterService = buildMockCashRegisterService();
+      const service = buildService(cashRegisterService);
+
+      const result = await service.registrarGasto(
+        tx as unknown as Prisma.TransactionClient,
+        {
+          expenseCategoryId: 3,
+          descripcion: 'Pago que no toca caja',
+          monto: '100.00',
+          medioPago,
+          userId: 1,
+          idempotencyKey: 'idem-key-t63-3',
+        },
+      );
+
+      expect(
+        cashRegisterService.getSesionAbiertaOrThrow,
+      ).not.toHaveBeenCalled();
+      expect(cashRegisterService.registrarMovimiento).not.toHaveBeenCalled();
+      expect(tx.expense.create).toHaveBeenCalledTimes(1);
+      expect(result.medioPago).toBe(medioPago);
+    },
+  );
+});
+
 // Cobertura agregada en la Fase 04 (implementación): `findAll` no forma
 // parte del contrato mínimo que exigió la Fase04a (esa fase solo probó
 // `GET /expenses` de punta a punta contra Postgres real, sin fijar el
@@ -307,7 +479,10 @@ describe('ExpensesService.findAll (T6.2)', () => {
 
   it('pagina con skip/take derivados de page/pageSize, ordena por fecha descendente', async () => {
     const prisma = buildMockPrisma();
-    const service = new ExpensesService(prisma as unknown as PrismaService);
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
 
     await service.findAll({ page: 3, pageSize: 10 });
 
@@ -321,7 +496,10 @@ describe('ExpensesService.findAll (T6.2)', () => {
 
   it('sin desde/hasta, el where no filtra por fecha', async () => {
     const prisma = buildMockPrisma();
-    const service = new ExpensesService(prisma as unknown as PrismaService);
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
 
     await service.findAll({ page: 1, pageSize: 20 });
 
@@ -331,7 +509,10 @@ describe('ExpensesService.findAll (T6.2)', () => {
 
   it('con desde y hasta, filtra fecha con gte/lte', async () => {
     const prisma = buildMockPrisma();
-    const service = new ExpensesService(prisma as unknown as PrismaService);
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
     const desde = new Date('2026-01-01T00:00:00Z');
     const hasta = new Date('2026-01-31T23:59:59Z');
 
@@ -344,7 +525,10 @@ describe('ExpensesService.findAll (T6.2)', () => {
   it('devuelve items/itemCount/page/pageSize', async () => {
     const prisma = buildMockPrisma();
     prisma.expense.count.mockResolvedValue(42);
-    const service = new ExpensesService(prisma as unknown as PrismaService);
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
 
     const result = await service.findAll({ page: 2, pageSize: 15 });
 

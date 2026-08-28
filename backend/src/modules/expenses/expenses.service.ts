@@ -6,6 +6,7 @@ import {
 import { Expense, ExpenseMedioPago, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertPositive } from '../../common/money/money.util';
+import { CashRegisterService } from '../cash-registers/cash-register.service';
 
 export interface RegistrarGastoInput {
   expenseCategoryId: number;
@@ -36,7 +37,14 @@ export interface PaginatedResult<T> {
 
 @Injectable()
 export class ExpensesService {
-  constructor(private readonly prisma: PrismaService) {}
+  // T6.3 (Fase 04a, cambio estructural mínimo): segundo colaborador,
+  // `CashRegisterService` — todavía sin uso dentro de `registrarGasto`
+  // (el cuerpo del método sigue siendo exactamente el de T6.2). Lo
+  // conecta la Fase 04 (implementación), no esta fase.
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cashRegisterService: CashRegisterService,
+  ) {}
 
   // T6.2 — registrar un gasto (RN-2 a RN-4, RN-7 de la spec del módulo).
   // Recibe siempre el `tx` de una transacción ya abierta por el
