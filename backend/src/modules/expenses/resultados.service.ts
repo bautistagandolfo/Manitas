@@ -85,15 +85,29 @@ function money(value: Prisma.Decimal): string {
 export class ResultadosService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async consultar(query: ResultadosQuery): Promise<ResultadosResponse> {
-    const desde = argentinaDayRangeToUtc(query.desde).desde;
-    const hasta = argentinaDayRangeToUtc(query.hasta).hasta;
+  // Fase 07 (cierre del módulo): las tres consultas repetían este mismo
+  // cálculo de límites + validación letra por letra — unificado acá.
+  // `desde`/`hasta` en hora argentina (AD-13, T0.7): `gte` es la
+  // medianoche del día `desde`, `lte` el 23:59:59.999 del día `hasta`,
+  // ambos ya convertidos a UTC (dos cálculos independientes, no el
+  // mismo día aplicado a los dos extremos, para que un rango de varios
+  // días tome el inicio del primero y el fin del último).
+  private resolverRango(
+    desdeStr: string,
+    hastaStr: string,
+  ): { gte: Date; lte: Date } {
+    const desde = argentinaDayRangeToUtc(desdeStr).desde;
+    const hasta = argentinaDayRangeToUtc(hastaStr).hasta;
 
     if (desde.getTime() > hasta.getTime()) {
       throw new BadRequestException('El rango de fechas no es válido');
     }
 
-    const rango = { gte: desde, lte: hasta };
+    return { gte: desde, lte: hasta };
+  }
+
+  async consultar(query: ResultadosQuery): Promise<ResultadosResponse> {
+    const rango = this.resolverRango(query.desde, query.hasta);
 
     const [ventasAgg, devolucionesAgg, saleItems, returnItems, gastosAgg] =
       await this.prisma.$transaction(
@@ -186,14 +200,7 @@ export class ResultadosService {
   async rankingProductos(
     query: RankingProductosQuery,
   ): Promise<RankingProductoItem[]> {
-    const desde = argentinaDayRangeToUtc(query.desde).desde;
-    const hasta = argentinaDayRangeToUtc(query.hasta).hasta;
-
-    if (desde.getTime() > hasta.getTime()) {
-      throw new BadRequestException('El rango de fechas no es válido');
-    }
-
-    const rango = { gte: desde, lte: hasta };
+    const rango = this.resolverRango(query.desde, query.hasta);
 
     const [saleItems, returnItems] = await this.prisma.$transaction(
       (tx) =>
@@ -296,17 +303,12 @@ export class ResultadosService {
   async gastosPorCategoria(
     query: GastosPorCategoriaQuery,
   ): Promise<GastoPorCategoriaItem[]> {
-    const desde = argentinaDayRangeToUtc(query.desde).desde;
-    const hasta = argentinaDayRangeToUtc(query.hasta).hasta;
-
-    if (desde.getTime() > hasta.getTime()) {
-      throw new BadRequestException('El rango de fechas no es válido');
-    }
+    const rango = this.resolverRango(query.desde, query.hasta);
 
     const expenses = await this.prisma.$transaction(
       (tx) =>
         tx.expense.findMany({
-          where: { fecha: { gte: desde, lte: hasta } },
+          where: { fecha: rango },
           select: {
             expenseCategoryId: true,
             monto: true,
