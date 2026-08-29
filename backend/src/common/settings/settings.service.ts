@@ -29,6 +29,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class SettingsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  // T6.9 — `GET /settings`: la pantalla de configuración lista los 4 a
+  // la vez. Orden por `clave` para que la lista sea determinística
+  // (no hay un orden de negocio explícito entre estos 4 parámetros).
+  findAll(): Promise<Setting[]> {
+    return this.prisma.setting.findMany({ orderBy: { clave: 'asc' } });
+  }
+
   async getBool(clave: string): Promise<boolean> {
     const row = await this.findOrThrow(clave, SettingTipo.BOOL);
     return row.valor === 'true';
@@ -75,6 +82,59 @@ export class SettingsService {
       new Prisma.Decimal(valor).toString(),
       userId,
     );
+  }
+
+  // T6.9 — `PATCH /settings/:clave`: la pantalla de configuración manda
+  // siempre `valor` como string en el body (mismo criterio que
+  // `Expense.monto`, BLUEPRINT §9.3 — todo importe/valor viaja como
+  // string), sin que el cliente tenga que saber de antemano si esa
+  // clave es BOOL/INT/DECIMAL. Este método lee el tipo REAL de la fila
+  // (nunca confía en lo que mande el cliente) y valida el formato antes
+  // de delegar al setter tipado correspondiente — así un valor mal
+  // formado (`"12.5"` para un INT, `"sí"` para un BOOL) se rechaza acá,
+  // con 400, en vez de llegar a `new Prisma.Decimal(...)`/`parseInt`
+  // sin chequear y explotar como 500 más abajo.
+  async setValor(
+    clave: string,
+    valorRaw: string,
+    userId: number,
+  ): Promise<Setting> {
+    const existing = await this.prisma.setting.findUnique({
+      where: { clave },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `No existe el parámetro de configuración "${clave}"`,
+      );
+    }
+
+    switch (existing.tipo) {
+      case SettingTipo.BOOL: {
+        if (valorRaw !== 'true' && valorRaw !== 'false') {
+          throw new BadRequestException(
+            `${clave} tiene que ser "true" o "false"`,
+          );
+        }
+        return this.setBool(clave, valorRaw === 'true', userId);
+      }
+      case SettingTipo.INT: {
+        if (!/^-?\d+$/.test(valorRaw)) {
+          throw new BadRequestException(
+            `${clave} tiene que ser un número entero`,
+          );
+        }
+        return this.setInt(clave, Number(valorRaw), userId);
+      }
+      case SettingTipo.DECIMAL: {
+        let decimal: Prisma.Decimal;
+        try {
+          decimal = new Prisma.Decimal(valorRaw);
+        } catch {
+          throw new BadRequestException(`${clave} no es un número válido`);
+        }
+        return this.setDecimal(clave, decimal, userId);
+      }
+    }
   }
 
   private async findOrThrow(

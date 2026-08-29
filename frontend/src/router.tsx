@@ -14,6 +14,7 @@ import { CobroPage } from './features/sales/CobroPage';
 import { DevolucionPage } from './features/returns/DevolucionPage';
 import { GastosPage } from './features/expenses/GastosPage';
 import { ResultadosPage } from './features/expenses/ResultadosPage';
+import { SettingsPage } from './features/settings/SettingsPage';
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -51,6 +52,8 @@ export const router = createBrowserRouter([
               // montos contra categorías sensibles ("Sueldos").
               { path: '/gastos', element: <GastosPage /> },
               { path: '/resultados', element: <ResultadosPage /> },
+              // T6.9, BLUEPRINT §3.8: "Solo OWNER los modifica".
+              { path: '/configuracion', element: <SettingsPage /> },
             ],
           },
         ],
