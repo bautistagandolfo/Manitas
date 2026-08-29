@@ -394,6 +394,28 @@ describe('resultados (integration, T6.4)', () => {
 
       expect(response.status).toBe(400);
     });
+
+    // Fase 08 (QA adversarial) — hallazgo real, corregido en
+    // `argentinaDayRangeToUtc` (T0.7): antes de este fix, "2026-02-30"
+    // pasaba `@IsDateString()` (formato válido) y `Date.UTC` lo "rodaba"
+    // en silencio al 2 de marzo — un `GET /resultados` con un día
+    // inexistente devolvía 200 con el resultado de OTRO día, en vez de
+    // rechazar el pedido con 400.
+    it('desde con un día que no existe en el calendario (30 de febrero) → 400, no un resultado calculado sobre otro día', async () => {
+      const response = await owned(
+        request(app.getHttpServer()).get('/resultados'),
+      ).query({ desde: '2026-02-30', hasta: '2026-02-28' });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('hasta con un día que no existe en el calendario → 400', async () => {
+      const response = await owned(
+        request(app.getHttpServer()).get('/resultados'),
+      ).query({ desde: '2026-02-01', hasta: '2026-04-31' });
+
+      expect(response.status).toBe(400);
+    });
   });
 
   describe('camino feliz', () => {

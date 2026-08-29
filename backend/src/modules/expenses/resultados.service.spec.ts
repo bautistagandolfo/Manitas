@@ -678,6 +678,45 @@ describe('ResultadosService.rankingProductos (T6.6)', () => {
     ]);
   });
 
+  it('el orden por unidades usa el VALOR de unidadesVendidas, no el variantId — insertado adrede con el id más chico en la variante con MENOS unidades', async () => {
+    // Fase 08 (QA adversarial): el test de "camino feliz" de arriba usa
+    // ids que por coincidencia ya quedan en el mismo orden si el código
+    // solo mirara `variantId` en vez de `unidadesVendidas` (id 10 tiene
+    // más unidades Y menos id). Este test invierte esa correlación a
+    // propósito — variante con MÁS unidades tiene el id MÁS GRANDE — así
+    // un desperfecto que ignore `unidadesVendidas` y ordene por id (o
+    // que no reste bien las unidades) da un resultado observable
+    // distinto del correcto.
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 1,
+          descripcionSnapshot: 'Menos unidades, id chico',
+          cantidad: 2,
+          netoLinea: '100.00',
+          costoUnitario: '10.00',
+        },
+        {
+          variantId: 99,
+          descripcionSnapshot: 'Más unidades, id grande',
+          cantidad: 5,
+          netoLinea: '100.00',
+          costoUnitario: '10.00',
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31', 'unidades'),
+    );
+
+    // Correcto: id 99 (5 unidades) antes que id 1 (2 unidades) — el
+    // orden ascendente por id ([1, 99]) sería el resultado si el
+    // desempate por unidades estuviera roto.
+    expect(result.map((r) => r.variantId)).toEqual([99, 1]);
+  });
+
   it('orden se omite → default "unidades" (decisión de esta fase, sin marcarlo obligatorio)', async () => {
     const tx = buildRankingMockTx({
       saleItems: [
@@ -754,25 +793,132 @@ describe('ResultadosService.rankingProductos (T6.6)', () => {
     ]);
   });
 
+  it('devolución reingresaStock: true: además de bajar unidades e ingresos, SÍ revierte el costo (y por lo tanto sube el margen respecto de no revertirlo)', async () => {
+    // Mismos números que el test hermano de `reingresaStock: false`
+    // (variante, cantidad y costos idénticos) — la única diferencia es
+    // el flag, para que la comparación de resultado aísle el efecto de
+    // esa rama sola.
+    //   Variante C (id 30): 1 línea, cantidad 4, netoLinea 400.00,
+    //     costoUnitario 50.00 → cmv base = 4×50.00 = 200.00.
+    //   Devolución de 1 unidad, reingresaStock: true, netoLinea 100.00,
+    //     costoUnitario 50.00.
+    //     unidadesVendidas = 4 − 1 = 3
+    //     ingresos = 400.00 − 100.00 = 300.00
+    //     cmv = 200.00 − (1×50.00) = 150.00 (SÍ se revierte)
+    //     margenTotal = 300.00 − 150.00 = 150.00 (vs 100.00 si no
+    //       revirtiera — la diferencia que este test verifica)
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 30,
+          descripcionSnapshot: 'Campera Roja S',
+          cantidad: 4,
+          netoLinea: '400.00',
+          costoUnitario: '50.00',
+        },
+      ],
+      returnItems: [
+        {
+          variantId: 30,
+          cantidad: 1,
+          netoLinea: '100.00',
+          costoUnitario: '50.00',
+          reingresaStock: true,
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31'),
+    );
+
+    expect(result).toEqual([
+      {
+        variantId: 30,
+        descripcionSnapshot: 'Campera Roja S',
+        unidadesVendidas: 3,
+        margenTotal: '150.00',
+      },
+    ]);
+  });
+
+  it('una devolución "huérfana" (referencia un variantId que no vendió nada en el rango) se ignora, sin romper el resto del ranking', async () => {
+    // Fase 08 (QA adversarial) — no debería pasar en producción (una
+    // devolución siempre referencia una línea vendida), pero el propio
+    // comentario del código documenta esto como defensa deliberada; el
+    // caso más realista en que SÍ puede pasar es un rango de fechas que
+    // incluye la devolución pero no la venta original (venta de un mes,
+    // devuelta al siguiente). Variante 40 vende normal; variante 999 (la
+    // "huérfana") solo aparece en `returnItems`, sin línea de venta
+    // correspondiente en el rango.
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 40,
+          descripcionSnapshot: 'Buzo Gris M',
+          cantidad: 3,
+          netoLinea: '300.00',
+          costoUnitario: '20.00',
+        },
+      ],
+      returnItems: [
+        {
+          variantId: 999,
+          cantidad: 1,
+          netoLinea: '100.00',
+          costoUnitario: '20.00',
+          reingresaStock: true,
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31'),
+    );
+
+    // La variante 40 queda intacta (la devolución huérfana no la toca,
+    // no comparte variantId) y no aparece ninguna entrada para 999.
+    expect(result).toEqual([
+      {
+        variantId: 40,
+        descripcionSnapshot: 'Buzo Gris M',
+        unidadesVendidas: 3,
+        margenTotal: '240.00',
+      },
+    ]);
+  });
+
   it('desempate por variantId ascendente cuando dos variantes empatan en el criterio de orden (unidades)', async () => {
     // Variante D (id 1) y variante E (id 2): ambas con 5 unidades
     // vendidas (empate exacto en "unidades"), márgenes distintos a
     // propósito (450.00 vs 949.00) para confirmar que el desempate es
     // por `variantId`, no por margen ni por ningún otro campo.
+    //
+    // Fase 08 (QA adversarial) — CORRECCIÓN: insertado con el id MAYOR
+    // (2) primero en el array de `saleItems` (antes estaba 1, luego 2 —
+    // orden que YA coincidía con el resultado esperado, así que un
+    // desempate roto igual daba [1, 2] "de casualidad" por el orden de
+    // inserción del Map, sin que el test lo notara). Con el id mayor
+    // insertado primero, un desempate que reste al revés (`variantId +
+    // variantId` en vez de `-`) deja el orden de inserción sin invertir
+    // y da [2, 1] — distinto del [1, 2] correcto — así el test sí
+    // detecta la falla. Aserción sin cambios (sigue siendo [1, 2]).
     const tx = buildRankingMockTx({
       saleItems: [
-        {
-          variantId: 1,
-          descripcionSnapshot: 'Producto D',
-          cantidad: 5,
-          netoLinea: '500.00',
-          costoUnitario: '10.00',
-        },
         {
           variantId: 2,
           descripcionSnapshot: 'Producto E',
           cantidad: 5,
           netoLinea: '999.00',
+          costoUnitario: '10.00',
+        },
+        {
+          variantId: 1,
+          descripcionSnapshot: 'Producto D',
+          cantidad: 5,
+          netoLinea: '500.00',
           costoUnitario: '10.00',
         },
       ],
@@ -786,9 +932,43 @@ describe('ResultadosService.rankingProductos (T6.6)', () => {
     expect(result.map((r) => r.variantId)).toEqual([1, 2]);
   });
 
+  it('desempate por variantId ascendente también con orden por margen, cuando dos variantes empatan en margen', async () => {
+    // Fase 08 — el desempate por `variantId` no es exclusivo de
+    // `orden=unidades`: con `orden=margen`, dos variantes con el MISMO
+    // margen también tienen que caer al mismo desempate (línea
+    // `if (cmp !== 0) { return cmp; }` — si ese chequeo se rompiera y
+    // SIEMPRE devolviera `cmp` — incluso el 0 de un empate — el orden
+    // quedaría en el de inserción del Map en vez de por variantId).
+    const tx = buildRankingMockTx({
+      saleItems: [
+        {
+          variantId: 2,
+          descripcionSnapshot: 'Producto F',
+          cantidad: 1,
+          netoLinea: '100.00',
+          costoUnitario: '0.00',
+        },
+        {
+          variantId: 1,
+          descripcionSnapshot: 'Producto G',
+          cantidad: 1,
+          netoLinea: '100.00',
+          costoUnitario: '0.00',
+        },
+      ],
+    });
+    const { service } = buildServiceWithTx(tx);
+
+    const result = await service.rankingProductos(
+      rankingQuery('2026-01-01', '2026-01-31', 'margen'),
+    );
+
+    expect(result.map((r) => r.variantId)).toEqual([1, 2]);
+  });
+
   it('filtros y AD-13: sale_items filtra por sale.estado COMPLETADA, return_items NO filtra por reingresaStock en el where, y los límites gte/lte salen de argentinaDayRangeToUtc', async () => {
     const tx = buildRankingMockTx();
-    const { service } = buildServiceWithTx(tx);
+    const { service, transactionMock } = buildServiceWithTx(tx);
     const { desde } = argentinaDayRangeToUtc('2026-02-01');
     const hastaFin = argentinaDayRangeToUtc('2026-02-28').hasta;
 
@@ -820,6 +1000,13 @@ describe('ResultadosService.rankingProductos (T6.6)', () => {
         reingresaStock: true,
         saleItem: { select: { variantId: true } },
       },
+    });
+    // Fase 08 — lectura pura, misma exigencia de aislamiento que
+    // `consultar`: sin `RepeatableRead`, una escritura real entre las
+    // dos queries de este mismo `Promise.all` podría dar un ranking que
+    // nunca existió en ningún instante consistente.
+    expect(transactionMock).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
     });
   });
 
@@ -898,7 +1085,7 @@ describe('ResultadosService.gastosPorCategoria (T6.6)', () => {
 
   it('filtro y AD-13: los límites gte/lte que llegan a la query de gastos salen de argentinaDayRangeToUtc', async () => {
     const tx = buildGastosMockTx();
-    const { service } = buildServiceWithTx(tx);
+    const { service, transactionMock } = buildServiceWithTx(tx);
     const desde = argentinaDayRangeToUtc('2026-03-01').desde;
     const hasta = argentinaDayRangeToUtc('2026-03-31').hasta;
 
@@ -911,6 +1098,10 @@ describe('ResultadosService.gastosPorCategoria (T6.6)', () => {
         monto: true,
         expenseCategory: { select: { nombre: true } },
       },
+    });
+    // Fase 08 — misma exigencia de aislamiento que el resto del módulo.
+    expect(transactionMock).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
     });
   });
 

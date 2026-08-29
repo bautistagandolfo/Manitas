@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import {
   argentinaCalendarDate,
   argentinaDayRangeToUtc,
@@ -72,7 +73,7 @@ describe('argentina-timezone.util (T0.7, AD-13)', () => {
       expect(argentinaCalendarDate(finDeAño.hasta)).toBe('2026-12-31');
     });
 
-    it('rechaza una fecha con formato inválido', () => {
+    it('rechaza una fecha con formato inválido, con BadRequestException (400, no un 500 sin capturar)', () => {
       expect(() => argentinaDayRangeToUtc('2026/01/14')).toThrow(
         /fecha inválida/i,
       );
@@ -80,6 +81,43 @@ describe('argentina-timezone.util (T0.7, AD-13)', () => {
         /fecha inválida/i,
       );
       expect(() => argentinaDayRangeToUtc('')).toThrow(/fecha inválida/i);
+      expect(() => argentinaDayRangeToUtc('2026/01/14')).toThrow(
+        BadRequestException,
+      );
+    });
+
+    // Fase 08 (QA adversarial, expenses/resultados) — hallazgo real: el
+    // regex de formato (y `@IsDateString()` en los DTOs que llaman a
+    // esta función) solo valida la FORMA "YYYY-MM-DD", nunca que el día
+    // exista en ese mes/año. Antes de este fix, `Date.UTC` "rodaba" en
+    // silencio un día inexistente al mes siguiente (30 de febrero →
+    // 2 de marzo), corriendo el rango de fechas consultado sin ningún
+    // error — un `GET /resultados?desde=2026-02-30&hasta=2026-02-30`
+    // habría calculado el resultado del 2 de marzo, no habría rechazado
+    // el pedido.
+    it('rechaza un día que no existe en el calendario (30 de febrero — nunca existe)', () => {
+      expect(() => argentinaDayRangeToUtc('2026-02-30')).toThrow(
+        /fecha inválida/i,
+      );
+      expect(() => argentinaDayRangeToUtc('2026-02-30')).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('rechaza un mes fuera de rango (mes 13) y un día fuera de rango del mes correcto (31 de abril — abril tiene 30)', () => {
+      expect(() => argentinaDayRangeToUtc('2026-13-01')).toThrow(
+        /fecha inválida/i,
+      );
+      expect(() => argentinaDayRangeToUtc('2026-04-31')).toThrow(
+        /fecha inválida/i,
+      );
+    });
+
+    it('29 de febrero: rechazado en un año NO bisiesto (2026), aceptado en uno bisiesto (2024) — la validación respeta el calendario real, no un límite fijo "28/29"', () => {
+      expect(() => argentinaDayRangeToUtc('2026-02-29')).toThrow(
+        /fecha inválida/i,
+      );
+      expect(() => argentinaDayRangeToUtc('2024-02-29')).not.toThrow();
     });
   });
 

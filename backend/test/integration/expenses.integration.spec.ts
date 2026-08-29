@@ -783,5 +783,25 @@ describe('expenses (integration, T6.2)', () => {
       );
       expect(ids).toContain(id);
     });
+
+    // Fase 08 (QA adversarial) — hallazgo: antes de este fix,
+    // `@IsDateString()` aceptaba "2026-02-30" (formato válido, día
+    // inexistente) y `new Date('2026-02-30')` lo "rodaba" en silencio al
+    // 2 de marzo, sin rechazar el pedido — un filtro de fecha mal escrito
+    // devolvía 200 con un rango corrido, nunca un 400.
+    it.each(['2026-02-30', '2026-04-31', '2026-13-01'])(
+      'desde="%s" (día que no existe en el calendario) → 400, no un rango corrido en silencio',
+      async (fechaInvalida) => {
+        await owned(
+          request(app.getHttpServer()).get(`/expenses?desde=${fechaInvalida}`),
+        ).expect(400);
+      },
+    );
+
+    it('hasta con un día que no existe en el calendario → 400', async () => {
+      await owned(
+        request(app.getHttpServer()).get('/expenses?hasta=2026-02-30'),
+      ).expect(400);
+    });
   });
 });

@@ -268,42 +268,70 @@ describe('ExpensesService.registrarGasto (T6.2)', () => {
   });
 
   it.each(['0', '-1', '-100.50'])(
-    'monto "%s" (≤ 0) → 400, sin crear el gasto',
+    'monto "%s" (≤ 0) → 400 "El monto tiene que ser mayor a 0", sin crear el gasto',
     async (monto) => {
       const tx = buildMockTx(buildCategoria());
 
-      await expect(
-        service.registrarGasto(tx as unknown as Prisma.TransactionClient, {
+      const call = service.registrarGasto(
+        tx as unknown as Prisma.TransactionClient,
+        {
           expenseCategoryId: 3,
           descripcion: 'Gasto x',
           monto,
           medioPago: ExpenseMedioPago.EFECTIVO,
           userId: 1,
           idempotencyKey: 'idem-key-4',
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+        },
+      );
+      await expect(call).rejects.toBeInstanceOf(BadRequestException);
+      await expect(call).rejects.toThrow('El monto tiene que ser mayor a 0');
       expect(tx.expense.create).not.toHaveBeenCalled();
     },
   );
 
   it.each(['10.123', '99.999', '1.005'])(
-    'monto "%s" (más de 2 decimales) → 400, sin crear el gasto',
+    'monto "%s" (más de 2 decimales) → 400 "El monto no puede tener más de 2 decimales", sin crear el gasto',
     async (monto) => {
       const tx = buildMockTx(buildCategoria());
 
-      await expect(
-        service.registrarGasto(tx as unknown as Prisma.TransactionClient, {
+      const call = service.registrarGasto(
+        tx as unknown as Prisma.TransactionClient,
+        {
           expenseCategoryId: 3,
           descripcion: 'Gasto x',
           monto,
           medioPago: ExpenseMedioPago.EFECTIVO,
           userId: 1,
           idempotencyKey: 'idem-key-5',
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+        },
+      );
+      await expect(call).rejects.toBeInstanceOf(BadRequestException);
+      await expect(call).rejects.toThrow(
+        'El monto no puede tener más de 2 decimales',
+      );
       expect(tx.expense.create).not.toHaveBeenCalled();
     },
   );
+
+  // Fase 08 (QA adversarial) — límite exacto: 2 decimales es el máximo
+  // PERMITIDO, no un valor más que también se rechaza (el mutante que
+  // cambia `> 2` por `>= 2` sobrevivía a los `it.each` de arriba, que
+  // solo prueban valores por ENCIMA del límite).
+  it('monto "10.55" (exactamente 2 decimales) → se acepta, no rechaza', async () => {
+    const tx = buildMockTx(buildCategoria());
+
+    await expect(
+      service.registrarGasto(tx as unknown as Prisma.TransactionClient, {
+        expenseCategoryId: 3,
+        descripcion: 'Gasto x',
+        monto: '10.55',
+        medioPago: ExpenseMedioPago.EFECTIVO,
+        userId: 1,
+        idempotencyKey: 'idem-key-5b',
+      }),
+    ).resolves.toBeDefined();
+    expect(tx.expense.create).toHaveBeenCalledTimes(1);
+  });
 
   it('idempotencyKey viaja intacto hasta el create (la mitad de §9.7 que es responsabilidad del servicio — la otra mitad, "un reintento no duplica", es del controller/withIdempotency, ver nota de archivo)', async () => {
     const tx = buildMockTx(buildCategoria());
@@ -530,6 +558,40 @@ describe('ExpensesService.findAll (T6.2)', () => {
     expect(call.where.fecha).toEqual({ gte: desde, lte: hasta });
   });
 
+  // Fase 08 (QA adversarial) — el mutante que cambia `||` por `&&` en
+  // la condición del filtro sobrevivía: con SOLO uno de los dos
+  // parámetros, `||` sigue armando el filtro de fecha (con el `gte`/
+  // `lte` que corresponda, el otro extremo abierto), mientras que `&&`
+  // lo dejaría sin filtro alguno — un caso real y esperado ("todos los
+  // gastos desde tal fecha en adelante", sin `hasta`).
+  it('con SOLO desde (sin hasta), filtra igual — el filtro no exige los dos extremos', async () => {
+    const prisma = buildMockPrisma();
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
+    const desde = new Date('2026-01-01T00:00:00Z');
+
+    await service.findAll({ page: 1, pageSize: 20, desde });
+
+    const call = prisma.expense.findMany.mock.calls[0][0];
+    expect(call.where.fecha).toEqual({ gte: desde });
+  });
+
+  it('con SOLO hasta (sin desde), filtra igual — el filtro no exige los dos extremos', async () => {
+    const prisma = buildMockPrisma();
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
+    const hasta = new Date('2026-01-31T23:59:59Z');
+
+    await service.findAll({ page: 1, pageSize: 20, hasta });
+
+    const call = prisma.expense.findMany.mock.calls[0][0];
+    expect(call.where.fecha).toEqual({ lte: hasta });
+  });
+
   it('devuelve items/itemCount/page/pageSize', async () => {
     const prisma = buildMockPrisma();
     prisma.expense.count.mockResolvedValue(42);
@@ -545,6 +607,26 @@ describe('ExpensesService.findAll (T6.2)', () => {
       itemCount: 42,
       page: 2,
       pageSize: 15,
+    });
+  });
+
+  it('cuenta el total (itemCount) con el MISMO where que la página, no un count sin filtro', async () => {
+    // Fase 08 — el mutante que vacía el `where` de `count` (`count({})`
+    // en vez de `count({ where })`) sobrevivía: con paginado, un total
+    // sin filtrar rompe la cantidad de páginas mostrada en la UI apenas
+    // se use `desde`/`hasta`.
+    const prisma = buildMockPrisma();
+    const service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      buildMockCashRegisterService() as unknown as CashRegisterService,
+    );
+    const desde = new Date('2026-01-01T00:00:00Z');
+    const hasta = new Date('2026-01-31T23:59:59Z');
+
+    await service.findAll({ page: 1, pageSize: 20, desde, hasta });
+
+    expect(prisma.expense.count).toHaveBeenCalledWith({
+      where: { fecha: { gte: desde, lte: hasta } },
     });
   });
 });

@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+
 // T0.7 — AD-13: "toda agrupación por día, mes o período se calcula en
 // `America/Argentina/Buenos_Aires`", nunca en UTC. Sin esto, una venta
 // de las 22:00 (hora argentina) cae en el día siguiente en UTC — un
@@ -110,11 +112,32 @@ export function argentinaDayRangeToUtc(fechaYYYYMMDD: string): {
   hasta: Date;
 } {
   if (!FECHA_YYYY_MM_DD.test(fechaYYYYMMDD)) {
-    throw new Error(
+    throw new BadRequestException(
       `Fecha inválida (se espera YYYY-MM-DD): "${fechaYYYYMMDD}"`,
     );
   }
   const [year, month, day] = fechaYYYYMMDD.split('-').map(Number);
+
+  // Fase 08 (QA adversarial, expenses/resultados) — hallazgo: el regex
+  // de arriba (y `@IsDateString()` en los DTOs que llaman a esta
+  // función, `ResultadosQueryDto`/`FindExpensesQueryDto`) solo valida
+  // FORMATO, no que el día exista en ese mes/año — "2026-02-30" pasa
+  // ambos chequeos. `Date.UTC` no rechaza un día fuera de rango: lo
+  // "rueda" al mes siguiente en silencio (2026-02-30 → 2026-03-02),
+  // corriendo el rango consultado un día entero sin ningún error. Se
+  // valida acá, releyendo los mismos campos de vuelta desde el `Date`
+  // ya construido — si no coinciden con lo que se pidió, el día no
+  // existía.
+  const diaValidado = new Date(Date.UTC(year, month - 1, day));
+  const diaExiste =
+    diaValidado.getUTCFullYear() === year &&
+    diaValidado.getUTCMonth() === month - 1 &&
+    diaValidado.getUTCDate() === day;
+  if (!diaExiste) {
+    throw new BadRequestException(
+      `Fecha inválida (el día no existe): "${fechaYYYYMMDD}"`,
+    );
+  }
 
   return {
     desde: argentinaWallTimeToUtc(year, month, day, 0, 0, 0, 0),

@@ -60,7 +60,7 @@ describe('ExpenseCategoriesService', () => {
   });
 
   describe('create (RN-1, AD-7)', () => {
-    it('crea una categoría', async () => {
+    it('crea una categoría, con el nombre exacto que llegó en el DTO', async () => {
       prisma.expenseCategory.create.mockResolvedValue({
         id: 1,
         nombre: 'Limpieza',
@@ -69,14 +69,45 @@ describe('ExpenseCategoriesService', () => {
       const result = await service.create({ nombre: 'Limpieza' });
 
       expect(result).toEqual({ id: 1, nombre: 'Limpieza' });
+      expect(prisma.expenseCategory.create).toHaveBeenCalledWith({
+        data: { nombre: 'Limpieza' },
+      });
     });
 
-    it('traduce una violación de nombre único a ConflictException', async () => {
+    it('traduce una violación de nombre único a ConflictException, con el mensaje exacto', async () => {
       prisma.expenseCategory.create.mockRejectedValue(prismaUniqueViolation());
 
-      await expect(
-        service.create({ nombre: 'Limpieza' }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      const call = service.create({ nombre: 'Limpieza' });
+      await expect(call).rejects.toBeInstanceOf(ConflictException);
+      await expect(call).rejects.toThrow(
+        'Ya existe una categoría de gasto con ese nombre',
+      );
+    });
+
+    // Fase 08 (QA adversarial): el chequeo de P2002 es específico — un
+    // error de Prisma con OTRO código, o un error que ni siquiera es de
+    // Prisma, tiene que propagarse tal cual, nunca traducirse a
+    // ConflictException (eso escondería el error real detrás de un
+    // mensaje de "nombre duplicado" que no es lo que pasó).
+    it('un error de Prisma con otro código (no P2002) se propaga sin traducir', async () => {
+      const otroError = new Prisma.PrismaClientKnownRequestError(
+        'Foreign key constraint failed',
+        { code: 'P2003', clientVersion: '6.19.3' },
+      );
+      prisma.expenseCategory.create.mockRejectedValue(otroError);
+
+      await expect(service.create({ nombre: 'Limpieza' })).rejects.toBe(
+        otroError,
+      );
+    });
+
+    it('un error que no es de Prisma se propaga sin traducir', async () => {
+      const errorGenerico = new Error('la base no responde');
+      prisma.expenseCategory.create.mockRejectedValue(errorGenerico);
+
+      await expect(service.create({ nombre: 'Limpieza' })).rejects.toBe(
+        errorGenerico,
+      );
     });
 
     // AD-7, literal: nunca "Mercadería" — probado con la tilde, sin
@@ -90,6 +121,33 @@ describe('ExpenseCategoriesService', () => {
       'Compra de ropa',
       'Pago a proveedores',
     ])('rechaza "%s" — alude a compra de mercadería (AD-7)', async (nombre) => {
+      const call = service.create({ nombre });
+      await expect(call).rejects.toBeInstanceOf(BadRequestException);
+      await expect(call).rejects.toThrow(
+        'Comprar mercadería no es un gasto — se registra como ingreso de stock',
+      );
+      expect(prisma.expenseCategory.create).not.toHaveBeenCalled();
+    });
+
+    // Fase 08 — límites exactos del filtro Unicode de `normalizar`
+    // (0x0300–0x036F, "Combining Diacritical Marks"), no solo el caso de
+    // en medio del rango que ya cubre "Mercadería" (é = e + U+0301).
+    it('rechaza un nombre con acento grave (U+0300, el primer combinante del rango) — "mercadèria"', async () => {
+      // 'è' descompone (NFD) en 'e' + U+0300 exacto: el límite INFERIOR
+      // del rango que `normalizar` tiene que descartar.
+      await expect(
+        service.create({ nombre: 'Comprar mercadèria' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.expenseCategory.create).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un nombre con el combinante U+036F insertado a mano (el último del rango)', async () => {
+      // U+036F ("combining latin small letter x") es el límite SUPERIOR
+      // exacto del rango — no aparece en ningún acento español real, se
+      // inserta a mano para probar el límite del filtro en sí, no un
+      // caso de negocio. Insertado entre "mercaderi" y "a" para que,
+      // filtrado correctamente, quede "mercaderia" intacto.
+      const nombre = `Pago a mercaderi${String.fromCodePoint(0x036f)}a falsa`;
       await expect(service.create({ nombre })).rejects.toBeInstanceOf(
         BadRequestException,
       );
@@ -134,16 +192,19 @@ describe('ExpenseCategoriesService', () => {
       });
     });
 
-    it('rechaza con NotFoundException si el id no existe', async () => {
+    it('rechaza con NotFoundException si el id no existe, con el mensaje exacto', async () => {
       prisma.expenseCategory.findUnique.mockResolvedValue(null);
 
-      await expect(service.update(999, { nombre: 'X' })).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      const call = service.update(999, { nombre: 'X' });
+      await expect(call).rejects.toBeInstanceOf(NotFoundException);
+      await expect(call).rejects.toThrow('Categoría de gasto no encontrada');
+      expect(prisma.expenseCategory.findUnique).toHaveBeenCalledWith({
+        where: { id: 999 },
+      });
       expect(prisma.expenseCategory.update).not.toHaveBeenCalled();
     });
 
-    it('rechaza CUALQUIER cambio de nombre en una categoría bloqueada', async () => {
+    it('rechaza CUALQUIER cambio de nombre en una categoría bloqueada, con el mensaje exacto', async () => {
       prisma.expenseCategory.findUnique.mockResolvedValue({
         id: 1,
         nombre: 'Alquiler',
@@ -151,13 +212,15 @@ describe('ExpenseCategoriesService', () => {
         bloqueada: true,
       });
 
-      await expect(
-        service.update(1, { nombre: 'Alquiler mensual' }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      const call = service.update(1, { nombre: 'Alquiler mensual' });
+      await expect(call).rejects.toBeInstanceOf(ConflictException);
+      await expect(call).rejects.toThrow(
+        'Esta categoría no se puede modificar',
+      );
       expect(prisma.expenseCategory.update).not.toHaveBeenCalled();
     });
 
-    it('rechaza CUALQUIER cambio de activo en una categoría bloqueada', async () => {
+    it('rechaza CUALQUIER cambio de activo en una categoría bloqueada, con el mensaje exacto', async () => {
       prisma.expenseCategory.findUnique.mockResolvedValue({
         id: 1,
         nombre: 'Alquiler',
@@ -165,13 +228,41 @@ describe('ExpenseCategoriesService', () => {
         bloqueada: true,
       });
 
-      await expect(service.update(1, { activo: false })).rejects.toBeInstanceOf(
-        ConflictException,
+      const call = service.update(1, { activo: false });
+      await expect(call).rejects.toBeInstanceOf(ConflictException);
+      await expect(call).rejects.toThrow(
+        'Esta categoría no se puede modificar',
       );
       expect(prisma.expenseCategory.update).not.toHaveBeenCalled();
     });
 
-    it('rechaza un nombre que alude a mercadería, aunque la categoría NO esté bloqueada', async () => {
+    // Fase 08 — el chequeo de bloqueada dispara solo si el DTO trae
+    // `nombre` y/o `activo`; un PATCH con body vacío sobre una
+    // categoría bloqueada no tiene nada que bloquear y tiene que
+    // pasar igual (releer T6.1: "sí se puede seguir usando en
+    // POST /expenses", nada prohíbe un PATCH sin cambios reales).
+    it('un PATCH sin nombre ni activo sobre una categoría bloqueada NO se rechaza', async () => {
+      prisma.expenseCategory.findUnique.mockResolvedValue({
+        id: 1,
+        nombre: 'Alquiler',
+        activo: true,
+        bloqueada: true,
+      });
+      prisma.expenseCategory.update.mockResolvedValue({
+        id: 1,
+        nombre: 'Alquiler',
+        activo: true,
+        bloqueada: true,
+      });
+
+      await expect(service.update(1, {})).resolves.toBeDefined();
+      expect(prisma.expenseCategory.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: {},
+      });
+    });
+
+    it('rechaza un nombre que alude a mercadería, aunque la categoría NO esté bloqueada, con el mensaje exacto', async () => {
       prisma.expenseCategory.findUnique.mockResolvedValue({
         id: 5,
         nombre: 'Insumos de oficina',
@@ -179,13 +270,15 @@ describe('ExpenseCategoriesService', () => {
         bloqueada: false,
       });
 
-      await expect(
-        service.update(5, { nombre: 'Compra de mercadería' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      const call = service.update(5, { nombre: 'Compra de mercadería' });
+      await expect(call).rejects.toBeInstanceOf(BadRequestException);
+      await expect(call).rejects.toThrow(
+        'Comprar mercadería no es un gasto — se registra como ingreso de stock',
+      );
       expect(prisma.expenseCategory.update).not.toHaveBeenCalled();
     });
 
-    it('traduce una violación de nombre único a ConflictException', async () => {
+    it('traduce una violación de nombre único a ConflictException, con el mensaje exacto', async () => {
       prisma.expenseCategory.findUnique.mockResolvedValue({
         id: 1,
         nombre: 'Limpieza',
@@ -194,9 +287,44 @@ describe('ExpenseCategoriesService', () => {
       });
       prisma.expenseCategory.update.mockRejectedValue(prismaUniqueViolation());
 
-      await expect(
-        service.update(1, { nombre: 'Servicios' }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      const call = service.update(1, { nombre: 'Servicios' });
+      await expect(call).rejects.toBeInstanceOf(ConflictException);
+      await expect(call).rejects.toThrow(
+        'Ya existe una categoría de gasto con ese nombre',
+      );
+    });
+
+    it('un error de Prisma con otro código (no P2002) se propaga sin traducir', async () => {
+      prisma.expenseCategory.findUnique.mockResolvedValue({
+        id: 1,
+        nombre: 'Limpieza',
+        activo: true,
+        bloqueada: false,
+      });
+      const otroError = new Prisma.PrismaClientKnownRequestError(
+        'Foreign key constraint failed',
+        { code: 'P2003', clientVersion: '6.19.3' },
+      );
+      prisma.expenseCategory.update.mockRejectedValue(otroError);
+
+      await expect(service.update(1, { nombre: 'Servicios' })).rejects.toBe(
+        otroError,
+      );
+    });
+
+    it('un error que no es de Prisma se propaga sin traducir', async () => {
+      prisma.expenseCategory.findUnique.mockResolvedValue({
+        id: 1,
+        nombre: 'Limpieza',
+        activo: true,
+        bloqueada: false,
+      });
+      const errorGenerico = new Error('la base no responde');
+      prisma.expenseCategory.update.mockRejectedValue(errorGenerico);
+
+      await expect(service.update(1, { nombre: 'Servicios' })).rejects.toBe(
+        errorGenerico,
+      );
     });
 
     it('puede desactivar una categoría no bloqueada', async () => {
