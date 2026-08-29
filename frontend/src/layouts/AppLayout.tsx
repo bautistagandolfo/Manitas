@@ -10,6 +10,7 @@ export function AppLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [loggingOut, setLoggingOut] = useState(false);
+  const isOwner = user?.rol === 'OWNER';
 
   const handleLogout = async (): Promise<void> => {
     setLoggingOut(true);
@@ -39,6 +40,16 @@ export function AppLayout() {
             <Button component={Link} to="/catalogo" variant="subtle">
               Catálogo
             </Button>
+            {isOwner && (
+              <>
+                <Button component={Link} to="/gastos" variant="subtle">
+                  Gastos
+                </Button>
+                <Button component={Link} to="/resultados" variant="subtle">
+                  Resultados
+                </Button>
+              </>
+            )}
           </Group>
           <Group gap="sm">
             <Text size="sm">{user?.nombre}</Text>

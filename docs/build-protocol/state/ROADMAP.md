@@ -449,7 +449,7 @@ completa en la sección 12.1 del blueprint.
 | T6.5 | **Agrupación temporal en hora argentina** (AD-13) + test de venta a las 23:30 | T6.4, T0.7 | VERDE |
 | T6.6 | Rankings: productos por unidades vendidas y por margen; gastos por categoría | T6.4 | VERDE |
 | T6.7 | Tests de cálculo con casos armados a mano (incluyendo devoluciones) | T6.5 | VERDE |
-| T6.8 | Pantallas de gastos y de resultados (solo OWNER) | T6.6 | PENDIENTE |
+| T6.8 | Pantallas de gastos y de resultados (solo OWNER) | T6.6 | VERDE |
 | T6.9 | Pantalla de configuración (solo OWNER): editar los 4 parámetros de la sección 10 | T0.13, T1.3 | PENDIENTE |
 
 **T6.4 y T6.6 son críticos**: es el número por el que la clienta compra el

@@ -12,6 +12,8 @@ import { CashRegisterPage } from './features/cash-registers/CashRegisterPage';
 import { SalePage } from './features/sales/SalePage';
 import { CobroPage } from './features/sales/CobroPage';
 import { DevolucionPage } from './features/returns/DevolucionPage';
+import { GastosPage } from './features/expenses/GastosPage';
+import { ResultadosPage } from './features/expenses/ResultadosPage';
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -43,6 +45,12 @@ export const router = createBrowserRouter([
                 path: '/catalogo/productos/:productId/variantes/nueva',
                 element: <NewVariantPage />,
               },
+              // T6.8, RN-2/RN-11: registrar/ver gastos y consultar
+              // resultados es tan restringido como el módulo de
+              // resultados en sí (BLUEPRINT §5.1) — un gasto revela
+              // montos contra categorías sensibles ("Sueldos").
+              { path: '/gastos', element: <GastosPage /> },
+              { path: '/resultados', element: <ResultadosPage /> },
             ],
           },
         ],

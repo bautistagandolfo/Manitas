@@ -60,3 +60,16 @@ export function formatDateTime(value: string | Date): string {
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat('es-AR').format(value);
 }
+
+// `margenBrutoPct` (T6.4) ya llega del backend como el número del
+// porcentaje (ej. "33.33" para 33,33%), no como una fracción — acá solo
+// se le pone la coma decimal es-AR y el símbolo, nunca se recalcula ni
+// se vuelve a dividir nada.
+export function formatPercent(value: string | number): string {
+  const numero = Number(value);
+  const formateado = new Intl.NumberFormat('es-AR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(numero);
+  return `${formateado} %`;
+}
