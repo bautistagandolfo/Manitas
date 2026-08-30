@@ -44,7 +44,7 @@ Sin módulos de negocio. Es la base sobre la que se apoya todo.
 | T0.5 | Frontend Vite + React + **Mantine** + routing + cliente HTTP con cookies | T0.1 | VERDE |
 | T0.9 | `seed:dev` con datos realistas para desarrollo (nunca en producción) | T0.4 | PENDIENTE |
 | T0.10 | **Stryker** (testing de mutación) + umbral de cobertura 80% en servicios, en CI | T0.1 | PENDIENTE |
-| T0.6 | Backup diario: GitHub Action con `pg_dump` cifrado a almacenamiento externo | T0.3 | PENDIENTE |
+| T0.6 | Backup diario: GitHub Action con `pg_dump` cifrado a almacenamiento externo | T0.3 | VERDE |
 | T0.7 | Zona horaria: helper de agrupación en hora argentina + test (AD-13) | T0.3 | VERDE |
 | T0.8 | Regla de lint que prohíba `number` para importes (AD-14) | T0.1 | VERDE |
 | T0.11 | Helpers de formato es-AR (§12.3): moneda, fecha, número — prohibido formatear a mano en un componente | T0.5 | VERDE |
@@ -464,10 +464,10 @@ negocio.
 
 | Fase | Qué | Estado |
 |---|---|---|
-| 13 | Integration audit | PENDIENTE |
-| 14 | E2E realista (flujos completos de `MVP_SCOPE.md` §7) | PENDIENTE |
-| 15 | Concurrencia y carga | PENDIENTE |
-| 16 | Release Candidate | PENDIENTE |
+| 13 | Integration audit | VERDE |
+| 14 | E2E realista (flujos completos de `MVP_SCOPE.md` §7) | VERDE |
+| 15 | Concurrencia y carga | VERDE |
+| 16 | Release Candidate | NOT READY (bloqueaba en T0.6, ver abajo — resuelto, falta re-correr la fase) |
 | 17 | Backup restore drill + `ROLLBACK_PLAN.md` | PENDIENTE |
 | 18 | Deploy checklist (autorización humana) | PENDIENTE |
 | 19 | Production smoke test | PENDIENTE |

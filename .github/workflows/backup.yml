@@ -1,0 +1,112 @@
+name: Backup diario
+
+# T0.6 (BLUEPRINT §9.10, "Problema 2"): el hosting gratuito no ofrece
+# retención de backups confiable — acá vive la contabilidad real de una
+# tienda (ventas, caja, stock). Backup propio, cifrado, a un
+# almacenamiento externo (Cloudflare R2 o Backblaze B2, S3-compatible),
+# con retención de 30 días.
+#
+# Este workflow SOLO corre contra una base real cuando los secrets de
+# abajo estén configurados (ver docs/ops/BACKUP.md) — sin ellos, falla
+# rápido y explícito en vez de un dump vacío o silencioso.
+
+on:
+  schedule:
+    # 06:00 UTC = 03:00 hora argentina (ART, UTC-3 fijo, sin horario de
+    # verano) — horario de tráfico mínimo, lejos del cierre de caja
+    # típico del mostrador.
+    - cron: '0 6 * * *'
+  # Permite correrlo a mano desde la pestaña Actions de GitHub — para
+  # probar el workflow sin esperar al cron, o para forzar un backup
+  # extra antes de una migración riesgosa.
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Verificar que los secrets necesarios estén configurados
+        run: |
+          set -euo pipefail
+          faltantes=()
+          [ -z "${{ secrets.BACKUP_DATABASE_URL }}" ] && faltantes+=(BACKUP_DATABASE_URL)
+          [ -z "${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}" ] && faltantes+=(BACKUP_ENCRYPTION_PASSPHRASE)
+          [ -z "${{ secrets.BACKUP_S3_ENDPOINT }}" ] && faltantes+=(BACKUP_S3_ENDPOINT)
+          [ -z "${{ secrets.BACKUP_S3_BUCKET }}" ] && faltantes+=(BACKUP_S3_BUCKET)
+          [ -z "${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}" ] && faltantes+=(BACKUP_S3_ACCESS_KEY_ID)
+          [ -z "${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}" ] && faltantes+=(BACKUP_S3_SECRET_ACCESS_KEY)
+          if [ "${#faltantes[@]}" -gt 0 ]; then
+            echo "::error::Faltan secrets del repositorio: ${faltantes[*]} — ver docs/ops/BACKUP.md"
+            exit 1
+          fi
+
+      - name: Instalar cliente de Postgres (pg_dump, versión 16 — la de docker-compose.yml)
+        # Ensayado en la Fase 16 (Release Candidate) contra la base de dev
+        # real: `postgresql-client` genérico instaló un cliente más nuevo
+        # que el servidor (v18 cliente contra v16 servidor), y el dump
+        # resultante trae un `SET transaction_timeout` que un Postgres 16
+        # no reconoce ("ERROR: unrecognized configuration parameter") al
+        # restaurar — inofensivo en los datos (verificado con conteos de
+        # filas idénticos tabla por tabla), pero ruidoso y evitable fijando
+        # la misma versión mayor que usa el proyecto en todos lados.
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends postgresql-client-16
+
+      - name: Dump + cifrado (GPG simétrico, AES256)
+        env:
+          DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          fecha="$(date -u +%Y-%m-%d)"
+          nombre="manitas-backup-${fecha}.sql.gpg"
+          # --no-owner/--no-privileges: el dump se restaura contra
+          # cualquier usuario de destino, no ata la restauración al
+          # usuario exacto de producción (Fase 17 lo necesita).
+          pg_dump "$DATABASE_URL" --no-owner --no-privileges \
+            | gpg --symmetric --batch --yes \
+                  --passphrase "$BACKUP_PASSPHRASE" --cipher-algo AES256 \
+                  -o "$nombre"
+          echo "backup_nombre=$nombre" >> "$GITHUB_ENV"
+
+      - name: Subir al almacenamiento externo (S3-compatible)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          aws s3 cp "$backup_nombre" \
+            "s3://${{ secrets.BACKUP_S3_BUCKET }}/$backup_nombre" \
+            --endpoint-url "${{ secrets.BACKUP_S3_ENDPOINT }}"
+          rm -f "$backup_nombre"
+
+      - name: Borrar backups con más de 30 días (retención mínima, BLUEPRINT §9.10)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          limite="$(date -u -d '30 days ago' +%Y-%m-%dT00:00:00)"
+          claves="$(aws s3api list-objects-v2 \
+            --bucket "${{ secrets.BACKUP_S3_BUCKET }}" \
+            --endpoint-url "${{ secrets.BACKUP_S3_ENDPOINT }}" \
+            --query "Contents[?LastModified<='${limite}'].Key" \
+            --output text)"
+          if [ -z "$claves" ] || [ "$claves" = "None" ]; then
+            echo "Sin backups vencidos para borrar."
+            exit 0
+          fi
+          echo "$claves" | tr '\t' '\n' | while IFS= read -r clave; do
+            [ -z "$clave" ] && continue
+            echo "Borrando backup vencido: $clave"
+            aws s3 rm "s3://${{ secrets.BACKUP_S3_BUCKET }}/$clave" \
+              --endpoint-url "${{ secrets.BACKUP_S3_ENDPOINT }}"
+          done
+
+# Si este job falla, GitHub notifica por mail a quien tenga las
+# notificaciones de Actions activadas para este repositorio (default de
+# GitHub para workflows con `schedule`) — no depende de Sentry/
+# UptimeRobot (BLUEPRINT §9.10, esos cubren la app, no este workflow).
+# Verificalo activado en la configuración de notificaciones de la
+# cuenta antes de confiar en que un fallo se va a notar solo.
