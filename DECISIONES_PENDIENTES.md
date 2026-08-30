@@ -132,6 +132,11 @@ Estas no las puede decidir nadie más. Ordenadas por impacto.
   discriminar IVA por ítem **desde el principio** — hacia atrás no se
   reconstruye.
 
+**Resuelto (2026-08-30):** por el momento no se necesita. No bloquea
+la salida a producción del MVP tal como está. Si la clienta empieza a
+facturar más adelante, revisar esta decisión antes de agregar ese
+módulo (ver la advertencia de arriba sobre retroactividad).
+
 ### B2 🔴 ¿Fía? ¿Vende en cuenta corriente?
 
 **Es la que más puede cambiar el alcance.**
@@ -147,6 +152,14 @@ conscientemente que esas ventas queden fuera del sistema al principio.
 
 Determina si hay que soportar impresora térmica (58 u 80 mm) o alcanza con
 mostrar el detalle en pantalla.
+
+**Resuelto (diferida, AMB-9 en `docs/build-protocol/state/AMBIGUITIES.md`):**
+no se construye soporte de impresora térmica para tickets de venta en el
+MVP — queda en pantalla. Es aditivo, se agrega después si hace falta.
+Nota aparte, distinta de esto: sí está en conversación un módulo de
+**etiquetas de código de barras** (para tagear mercadería, no para el
+ticket de venta) — en pausa hasta confirmar qué impresora compra la
+clienta.
 
 ### B4 🟡 ¿Con qué maneja hoy el catálogo y el stock?
 
