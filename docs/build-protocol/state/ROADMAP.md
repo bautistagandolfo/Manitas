@@ -467,7 +467,7 @@ negocio.
 | 13 | Integration audit | VERDE |
 | 14 | E2E realista (flujos completos de `MVP_SCOPE.md` §7) | VERDE |
 | 15 | Concurrencia y carga | VERDE |
-| 16 | Release Candidate | NOT READY (bloqueaba en T0.6, ver abajo — resuelto, falta re-correr la fase) |
+| 16 | Release Candidate | READY |
 | 17 | Backup restore drill + `ROLLBACK_PLAN.md` | PENDIENTE |
 | 18 | Deploy checklist (autorización humana) | PENDIENTE |
 | 19 | Production smoke test | PENDIENTE |
