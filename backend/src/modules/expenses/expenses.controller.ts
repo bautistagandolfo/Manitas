@@ -64,8 +64,8 @@ export class ExpensesController {
     return this.expensesService.findAll({
       page: query.page,
       pageSize: query.pageSize,
-      desde: query.desde ? new Date(query.desde) : undefined,
-      hasta: query.hasta ? new Date(query.hasta) : undefined,
+      desde: query.desde,
+      hasta: query.hasta,
     });
   }
 }

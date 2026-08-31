@@ -718,13 +718,18 @@ describe('expenses (integration, T6.2)', () => {
 
     it('ordena por fecha descendente — "lo último siempre arriba" (§12.4)', async () => {
       const categoriaId = await crearCategoria('Categoría orden T6.2');
+      // Mediodía UTC, no medianoche (AD-13/T0.7, fix retroactivo — ver
+      // `expenses.service.ts`): con `desde`/`hasta` resueltos en hora
+      // argentina, una `fecha` a medianoche UTC exacta cae ANTES de la
+      // medianoche argentina de ese mismo día (03:00 UTC) — quedaría
+      // fuera del rango pedido más abajo.
       const viejoId = await crearGastoDirecto(
         categoriaId,
-        new Date('2026-02-01T00:00:00Z'),
+        new Date('2026-02-01T12:00:00Z'),
       );
       const nuevoId = await crearGastoDirecto(
         categoriaId,
-        new Date('2026-02-20T00:00:00Z'),
+        new Date('2026-02-20T12:00:00Z'),
       );
 
       const response = await owned(
@@ -745,13 +750,14 @@ describe('expenses (integration, T6.2)', () => {
 
     it('desde/hasta filtran por fecha — un gasto fuera del rango no aparece', async () => {
       const categoriaId = await crearCategoria('Categoría filtro T6.2');
+      // Mediodía UTC — mismo motivo que el test anterior (AD-13/T0.7).
       const dentroId = await crearGastoDirecto(
         categoriaId,
-        new Date('2026-03-15T00:00:00Z'),
+        new Date('2026-03-15T12:00:00Z'),
       );
       const fueraId = await crearGastoDirecto(
         categoriaId,
-        new Date('2026-04-15T00:00:00Z'),
+        new Date('2026-04-15T12:00:00Z'),
       );
 
       const response = await owned(
@@ -765,6 +771,31 @@ describe('expenses (integration, T6.2)', () => {
       );
       expect(ids).toContain(dentroId);
       expect(ids).not.toContain(fueraId);
+    });
+
+    // Fix retroactivo (ver `expenses.service.ts`) — regresión directa
+    // del bug encontrado en el ticket de `sales` (commit `de5fa1b`): un
+    // gasto a las 23:30 hora argentina cae en el día UTC SIGUIENTE —
+    // filtrar "hasta" ese mismo día argentino con un `Date.UTC` ingenuo
+    // lo habría excluido.
+    it('un gasto de las 23:30 hora argentina (fecha UTC del día siguiente) aparece al filtrar "hasta" su propio día argentino', async () => {
+      const categoriaId = await crearCategoria('Categoría límite AR T6.2');
+      // 23:30 en Argentina (UTC-3) el 10/05 = 02:30 UTC el 11/05.
+      const tardioId = await crearGastoDirecto(
+        categoriaId,
+        new Date('2026-05-11T02:30:00Z'),
+      );
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          '/expenses?pageSize=100&desde=2026-05-10&hasta=2026-05-10',
+        ),
+      ).expect(200);
+
+      const ids = (response.body as { items: ExpenseBody[] }).items.map(
+        (item) => item.id,
+      );
+      expect(ids).toContain(tardioId);
     });
 
     it('sin desde/hasta trae todo, sin filtrar', async () => {

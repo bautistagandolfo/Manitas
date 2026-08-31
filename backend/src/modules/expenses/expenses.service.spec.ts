@@ -12,6 +12,7 @@ import {
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { CashRegisterService } from '../cash-registers/cash-register.service';
 import { ExpensesService } from './expenses.service';
+import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 
 // Fase 04a (T6.2) — tests escritos ANTES de la implementación, contra
 // Prisma completamente mockeado. Fuente única: el ticket T6.2 pasado en
@@ -543,19 +544,25 @@ describe('ExpensesService.findAll (T6.2)', () => {
     expect(call.where).toEqual({});
   });
 
-  it('con desde y hasta, filtra fecha con gte/lte', async () => {
+  it('con desde y hasta, filtra fecha con gte/lte en hora argentina (AD-13/T0.7)', async () => {
     const prisma = buildMockPrisma();
     const service = new ExpensesService(
       prisma as unknown as PrismaService,
       buildMockCashRegisterService() as unknown as CashRegisterService,
     );
-    const desde = new Date('2026-01-01T00:00:00Z');
-    const hasta = new Date('2026-01-31T23:59:59Z');
 
-    await service.findAll({ page: 1, pageSize: 20, desde, hasta });
+    await service.findAll({
+      page: 1,
+      pageSize: 20,
+      desde: '2026-01-01',
+      hasta: '2026-01-31',
+    });
 
     const call = prisma.expense.findMany.mock.calls[0][0];
-    expect(call.where.fecha).toEqual({ gte: desde, lte: hasta });
+    expect(call.where.fecha).toEqual({
+      gte: argentinaDayRangeToUtc('2026-01-01').desde,
+      lte: argentinaDayRangeToUtc('2026-01-31').hasta,
+    });
   });
 
   // Fase 08 (QA adversarial) — el mutante que cambia `||` por `&&` en
@@ -570,12 +577,13 @@ describe('ExpensesService.findAll (T6.2)', () => {
       prisma as unknown as PrismaService,
       buildMockCashRegisterService() as unknown as CashRegisterService,
     );
-    const desde = new Date('2026-01-01T00:00:00Z');
 
-    await service.findAll({ page: 1, pageSize: 20, desde });
+    await service.findAll({ page: 1, pageSize: 20, desde: '2026-01-01' });
 
     const call = prisma.expense.findMany.mock.calls[0][0];
-    expect(call.where.fecha).toEqual({ gte: desde });
+    expect(call.where.fecha).toEqual({
+      gte: argentinaDayRangeToUtc('2026-01-01').desde,
+    });
   });
 
   it('con SOLO hasta (sin desde), filtra igual — el filtro no exige los dos extremos', async () => {
@@ -584,12 +592,25 @@ describe('ExpensesService.findAll (T6.2)', () => {
       prisma as unknown as PrismaService,
       buildMockCashRegisterService() as unknown as CashRegisterService,
     );
-    const hasta = new Date('2026-01-31T23:59:59Z');
 
-    await service.findAll({ page: 1, pageSize: 20, hasta });
+    await service.findAll({ page: 1, pageSize: 20, hasta: '2026-01-31' });
 
     const call = prisma.expense.findMany.mock.calls[0][0];
-    expect(call.where.fecha).toEqual({ lte: hasta });
+    expect(call.where.fecha).toEqual({
+      lte: argentinaDayRangeToUtc('2026-01-31').hasta,
+    });
+  });
+
+  // TD (fix retroactivo, ver `expenses.service.ts`) — regresión directa
+  // del bug encontrado en el ticket de `sales`: un gasto cargado a las
+  // 21:38 hora argentina persiste con `fecha` del día UTC SIGUIENTE. Un
+  // `Date.UTC` ingenuo para "hasta" ese mismo día argentino lo habría
+  // excluido.
+  it('un gasto de las 21:38 hora argentina (fecha UTC del día siguiente) queda DENTRO del filtro "hasta" de su propio día argentino', () => {
+    const gastoFechaUtc = new Date('2026-08-31T00:38:07.123Z');
+    const { hasta } = argentinaDayRangeToUtc('2026-08-30');
+
+    expect(gastoFechaUtc.getTime()).toBeLessThanOrEqual(hasta.getTime());
   });
 
   it('devuelve items/itemCount/page/pageSize', async () => {
@@ -620,13 +641,21 @@ describe('ExpensesService.findAll (T6.2)', () => {
       prisma as unknown as PrismaService,
       buildMockCashRegisterService() as unknown as CashRegisterService,
     );
-    const desde = new Date('2026-01-01T00:00:00Z');
-    const hasta = new Date('2026-01-31T23:59:59Z');
 
-    await service.findAll({ page: 1, pageSize: 20, desde, hasta });
+    await service.findAll({
+      page: 1,
+      pageSize: 20,
+      desde: '2026-01-01',
+      hasta: '2026-01-31',
+    });
 
     expect(prisma.expense.count).toHaveBeenCalledWith({
-      where: { fecha: { gte: desde, lte: hasta } },
+      where: {
+        fecha: {
+          gte: argentinaDayRangeToUtc('2026-01-01').desde,
+          lte: argentinaDayRangeToUtc('2026-01-31').hasta,
+        },
+      },
     });
   });
 });

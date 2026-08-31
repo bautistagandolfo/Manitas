@@ -13,6 +13,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertPositive } from '../../common/money/money.util';
 import { CashRegisterService } from '../cash-registers/cash-register.service';
+import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 
 export interface RegistrarGastoInput {
   expenseCategoryId: number;
@@ -26,8 +27,8 @@ export interface RegistrarGastoInput {
 export interface FindAllExpensesInput {
   page: number;
   pageSize: number;
-  desde?: Date;
-  hasta?: Date;
+  desde?: string;
+  hasta?: string;
 }
 
 // "itemCount", no "total" — el linter local `no-number-money` trata
@@ -151,18 +152,29 @@ export class ExpensesService {
   // Lectura pura, sin `tx` — mismo criterio que `reconciliar()` de otros
   // módulos. Paginado en el servidor (BLUEPRINT §12.4), ordenado por
   // `fecha` descendente ("lo último siempre arriba", §12.4) — mismo
-  // patrón que `VariantsService.search`. `desde`/`hasta` filtran sobre
-  // `fecha` tal cual llegan (sin conversión a hora argentina — esa
-  // conversión, AD-13/T0.7, es para el cálculo de períodos de
-  // `resultados`, no para este listado crudo).
+  // patrón que `VariantsService.search`.
+  //
+  // TD (fix retroactivo, post `sales.findAll` — ver
+  // `sales.service.ts`/commit `de5fa1b`): `desde`/`hasta` SÍ se
+  // resuelven en hora argentina (AD-13/T0.7, `argentinaDayRangeToUtc`,
+  // mismo mecanismo que `ResultadosService`) — un `Date.UTC` ingenuo
+  // interpretaba "hasta: hoy" como la medianoche UTC de ese día (21:00
+  // hora argentina del día ANTERIOR), excluyendo casi todo el día de
+  // hoy. Encontrado navegando el sistema en el ticket de `sales`, TD
+  // aceptada ahí mismo y corregida acá aparte para no mezclar dos
+  // tickets en un commit.
   async findAll(
     input: FindAllExpensesInput,
   ): Promise<PaginatedResult<Expense>> {
     const where: Prisma.ExpenseWhereInput = {
       ...((input.desde || input.hasta) && {
         fecha: {
-          ...(input.desde && { gte: input.desde }),
-          ...(input.hasta && { lte: input.hasta }),
+          ...(input.desde && {
+            gte: argentinaDayRangeToUtc(input.desde).desde,
+          }),
+          ...(input.hasta && {
+            lte: argentinaDayRangeToUtc(input.hasta).hasta,
+          }),
         },
       }),
     };
