@@ -160,10 +160,31 @@ describe('Users (integration)', () => {
     createdUserIds.push((winner.body as UserResponseBody).id);
   });
 
-  it('POST /users rechaza un body inválido (email mal formado)', async () => {
+  // Ticket nuevo (post Release Candidate) — hallazgo real de esta sesión:
+  // "no-es-un-email" (el fixture original de este caso, antes de la
+  // relajación) ahora es un usuario VÁLIDO a propósito (decisión del
+  // usuario, apartándose de BLUEPRINT §5.1 — ver login.dto.ts). Con la
+  // aserción vieja (`.expect(400)`), la request igual se mandaba
+  // entera de verdad, así que el 201 real dejaba un usuario huérfano
+  // en la base cada vez que este test corría — reproducido en vivo: el
+  // id 15447 quedó colgado antes de arreglar esto. Reemplazado por dos
+  // casos que sí siguen siendo inválidos con el criterio nuevo
+  // (`\S{2,254}`, sin espacios): vacío y con espacios.
+  it('POST /users rechaza un usuario vacío', async () => {
     await authed(request(app.getHttpServer()).post('/users'))
       .send({
-        email: 'no-es-un-email',
+        email: '',
+        password: 'password123',
+        nombre: 'X',
+        rol: 'SELLER',
+      })
+      .expect(400);
+  });
+
+  it('POST /users rechaza un usuario con espacios', async () => {
+    await authed(request(app.getHttpServer()).post('/users'))
+      .send({
+        email: 'con espacios',
         password: 'password123',
         nombre: 'X',
         rol: 'SELLER',

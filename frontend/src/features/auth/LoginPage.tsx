@@ -19,8 +19,12 @@ interface LoginFormValues {
   password: string;
 }
 
-const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
-
+// Ticket nuevo (post Release Candidate) — decisión explícita del usuario,
+// apartándose a propósito de BLUEPRINT §5.1 ("Login con email y
+// contraseña"): un usuario simple, sin exigir forma de email. El campo
+// interno sigue llamándose `email` (contrato con el backend, `login.dto.ts`
+// — nunca fue un email real, era puramente un identificador de login con
+// esa forma).
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -31,8 +35,7 @@ export function LoginPage() {
   const form = useForm<LoginFormValues>({
     initialValues: { email: '', password: '' },
     validate: {
-      email: (value) =>
-        EMAIL_PATTERN.test(value) ? null : 'Ingresá un email válido',
+      email: (value) => (value.trim().length > 0 ? null : 'Ingresá tu usuario'),
       password: (value) => (value.length > 0 ? null : 'Ingresá tu contraseña'),
     },
   });
@@ -73,8 +76,8 @@ export function LoginPage() {
                 </Alert>
               )}
               <TextInput
-                label="Email"
-                placeholder="tu@tienda.com"
+                label="Usuario"
+                placeholder="Ej: estefa"
                 disabled={submitting}
                 {...form.getInputProps('email')}
               />
