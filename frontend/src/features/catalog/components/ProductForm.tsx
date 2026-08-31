@@ -10,9 +10,10 @@ import {
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { ApiError } from '../../../lib/http-client';
-import { getBrands, getCategories } from '../api';
+import { createBrand, createCategory, getBrands, getCategories } from '../api';
 import type { ProductFormValues } from '../api';
 import type { Brand, Category } from '../types';
+import { NuevoValorModal } from './NuevoValorModal';
 
 interface ProductFormProps {
   initialValues?: ProductFormValues;
@@ -33,15 +34,8 @@ export function ProductForm({
   const [categories, setCategories] = useState<Category[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    getBrands()
-      .then((data) => setBrands(data.filter((b) => b.activo)))
-      .catch(() => undefined);
-    getCategories()
-      .then((data) => setCategories(data.filter((c) => c.activo)))
-      .catch(() => undefined);
-  }, []);
+  const [nuevaMarcaOpen, setNuevaMarcaOpen] = useState(false);
+  const [nuevaCategoriaOpen, setNuevaCategoriaOpen] = useState(false);
 
   const form = useForm<ProductFormValues>({
     initialValues: initialValues ?? {
@@ -55,6 +49,34 @@ export function ProductForm({
         value.trim().length > 0 ? null : 'El nombre es obligatorio',
     },
   });
+
+  function loadBrands(selectId?: number): void {
+    getBrands()
+      .then((data) => {
+        setBrands(data.filter((b) => b.activo));
+        if (selectId !== undefined) {
+          form.setFieldValue('brandId', selectId);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  function loadCategories(selectId?: number): void {
+    getCategories()
+      .then((data) => {
+        setCategories(data.filter((c) => c.activo));
+        if (selectId !== undefined) {
+          form.setFieldValue('categoryId', selectId);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  useEffect(() => {
+    loadBrands();
+    loadCategories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = form.onSubmit(async (values) => {
     setError(null);
@@ -95,45 +117,96 @@ export function ProductForm({
           disabled={submitting}
           {...form.getInputProps('descripcion')}
         />
-        <Select
-          label="Marca"
-          placeholder="Sin marca"
-          clearable
-          disabled={submitting}
-          data={brands.map((b) => ({ value: String(b.id), label: b.nombre }))}
-          value={
-            form.values.brandId !== undefined
-              ? String(form.values.brandId)
-              : null
-          }
-          onChange={(value) =>
-            form.setFieldValue('brandId', value ? Number(value) : undefined)
-          }
-        />
-        <Select
-          label="Categoría"
-          placeholder="Sin categoría"
-          clearable
-          disabled={submitting}
-          data={categories.map((c) => ({
-            value: String(c.id),
-            label: c.nombre,
-          }))}
-          value={
-            form.values.categoryId !== undefined
-              ? String(form.values.categoryId)
-              : null
-          }
-          onChange={(value) =>
-            form.setFieldValue('categoryId', value ? Number(value) : undefined)
-          }
-        />
+        <Group align="flex-end" gap="xs">
+          <Select
+            label="Marca"
+            placeholder="Sin marca"
+            clearable
+            disabled={submitting}
+            data={brands.map((b) => ({ value: String(b.id), label: b.nombre }))}
+            value={
+              form.values.brandId !== undefined
+                ? String(form.values.brandId)
+                : null
+            }
+            onChange={(value) =>
+              form.setFieldValue('brandId', value ? Number(value) : undefined)
+            }
+            flex={1}
+          />
+          <Button
+            variant="default"
+            onClick={() => setNuevaMarcaOpen(true)}
+            disabled={submitting}
+          >
+            + Nueva
+          </Button>
+        </Group>
+        <Group align="flex-end" gap="xs">
+          <Select
+            label="Categoría"
+            placeholder="Sin categoría"
+            clearable
+            disabled={submitting}
+            data={categories.map((c) => ({
+              value: String(c.id),
+              label: c.nombre,
+            }))}
+            value={
+              form.values.categoryId !== undefined
+                ? String(form.values.categoryId)
+                : null
+            }
+            onChange={(value) =>
+              form.setFieldValue(
+                'categoryId',
+                value ? Number(value) : undefined,
+              )
+            }
+            flex={1}
+          />
+          <Button
+            variant="default"
+            onClick={() => setNuevaCategoriaOpen(true)}
+            disabled={submitting}
+          >
+            + Nueva
+          </Button>
+        </Group>
         <Group justify="flex-end">
           <Button type="submit" loading={submitting}>
             {submitLabel}
           </Button>
         </Group>
       </Stack>
+
+      {nuevaMarcaOpen && (
+        <NuevoValorModal
+          title="Nueva marca"
+          label="Nombre"
+          placeholder="Ej: Levi's"
+          onCreate={createBrand}
+          onClose={() => setNuevaMarcaOpen(false)}
+          onCreated={(marca) => {
+            setNuevaMarcaOpen(false);
+            loadBrands(marca.id);
+          }}
+        />
+      )}
+
+      {nuevaCategoriaOpen && (
+        <NuevoValorModal
+          title="Nueva categoría"
+          label="Nombre"
+          placeholder="Ej: Camperas"
+          onCreate={createCategory}
+          onClose={() => setNuevaCategoriaOpen(false)}
+          onCreated={(categoria) => {
+            setNuevaCategoriaOpen(false);
+            loadCategories(categoria.id);
+          }}
+        />
+      )}
     </form>
   );
 }

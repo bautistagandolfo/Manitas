@@ -27,6 +27,30 @@ export function getColors(): Promise<Color[]> {
   return httpClient.get<Color[]>('/colors');
 }
 
+// Ticket nuevo (post Release Candidate) — hallazgo real de uso: estos
+// cuatro combos solo dejaban ELEGIR (GET), nunca crear, aunque los
+// cuatro POST del backend ya existían sin @Roles() (cualquiera
+// autenticado, como el resto del catálogo). Mismo criterio de "sin
+// marca/categoría se puede seguir sin problema" no aplica acá — la
+// ausencia real era de UI, no de permiso.
+export function createBrand(nombre: string): Promise<Brand> {
+  return httpClient.post<Brand>('/brands', { nombre });
+}
+
+export function createCategory(nombre: string): Promise<Category> {
+  return httpClient.post<Category>('/categories', { nombre });
+}
+
+// `orden` (BLUEPRINT §3.2): S/M/L/XL en ese orden, no alfabético —
+// único de los cuatro que lo necesita.
+export function createSize(nombre: string, orden: number): Promise<Size> {
+  return httpClient.post<Size>('/sizes', { nombre, orden });
+}
+
+export function createColor(nombre: string): Promise<Color> {
+  return httpClient.post<Color>('/colors', { nombre });
+}
+
 export interface SearchVariantsParams {
   q?: string;
   page?: number;

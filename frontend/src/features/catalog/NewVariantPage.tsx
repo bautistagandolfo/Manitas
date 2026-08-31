@@ -14,8 +14,10 @@ import { useForm } from '@mantine/form';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../../lib/http-client';
 import { parseNumberInputValue } from '../../lib/number-input';
-import { createVariant, getColors, getSizes } from './api';
+import { createColor, createVariant, getColors, getSizes } from './api';
 import type { Size, Color } from './types';
+import { NuevoValorModal } from './components/NuevoValorModal';
+import { NuevoTalleModal } from './components/NuevoTalleModal';
 
 interface FormValues {
   sizeId: number | undefined;
@@ -39,15 +41,8 @@ export function NewVariantPage() {
   const [colors, setColors] = useState<Color[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    getSizes()
-      .then((data) => setSizes(data.filter((s) => s.activo)))
-      .catch(() => undefined);
-    getColors()
-      .then((data) => setColors(data.filter((c) => c.activo)))
-      .catch(() => undefined);
-  }, []);
+  const [nuevoTalleOpen, setNuevoTalleOpen] = useState(false);
+  const [nuevoColorOpen, setNuevoColorOpen] = useState(false);
 
   const form = useForm<FormValues>({
     initialValues: {
@@ -69,6 +64,34 @@ export function NewVariantPage() {
           : 'Tiene que ser mayor a 0',
     },
   });
+
+  function loadSizes(selectId?: number): void {
+    getSizes()
+      .then((data) => {
+        setSizes(data.filter((s) => s.activo));
+        if (selectId !== undefined) {
+          form.setFieldValue('sizeId', selectId);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  function loadColors(selectId?: number): void {
+    getColors()
+      .then((data) => {
+        setColors(data.filter((c) => c.activo));
+        if (selectId !== undefined) {
+          form.setFieldValue('colorId', selectId);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  useEffect(() => {
+    loadSizes();
+    loadColors();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = form.onSubmit(async (values) => {
     if (
@@ -111,42 +134,68 @@ export function NewVariantPage() {
                 {error}
               </Alert>
             )}
-            <Select
-              label="Talle"
-              placeholder="Sin talle"
-              clearable
-              disabled={submitting}
-              data={sizes.map((s) => ({
-                value: String(s.id),
-                label: s.nombre,
-              }))}
-              value={
-                form.values.sizeId !== undefined
-                  ? String(form.values.sizeId)
-                  : null
-              }
-              onChange={(value) =>
-                form.setFieldValue('sizeId', value ? Number(value) : undefined)
-              }
-            />
-            <Select
-              label="Color"
-              placeholder="Sin color"
-              clearable
-              disabled={submitting}
-              data={colors.map((c) => ({
-                value: String(c.id),
-                label: c.nombre,
-              }))}
-              value={
-                form.values.colorId !== undefined
-                  ? String(form.values.colorId)
-                  : null
-              }
-              onChange={(value) =>
-                form.setFieldValue('colorId', value ? Number(value) : undefined)
-              }
-            />
+            <Group align="flex-end" gap="xs">
+              <Select
+                label="Talle"
+                placeholder="Sin talle"
+                clearable
+                disabled={submitting}
+                data={sizes.map((s) => ({
+                  value: String(s.id),
+                  label: s.nombre,
+                }))}
+                value={
+                  form.values.sizeId !== undefined
+                    ? String(form.values.sizeId)
+                    : null
+                }
+                onChange={(value) =>
+                  form.setFieldValue(
+                    'sizeId',
+                    value ? Number(value) : undefined,
+                  )
+                }
+                flex={1}
+              />
+              <Button
+                variant="default"
+                onClick={() => setNuevoTalleOpen(true)}
+                disabled={submitting}
+              >
+                + Nuevo
+              </Button>
+            </Group>
+            <Group align="flex-end" gap="xs">
+              <Select
+                label="Color"
+                placeholder="Sin color"
+                clearable
+                disabled={submitting}
+                data={colors.map((c) => ({
+                  value: String(c.id),
+                  label: c.nombre,
+                }))}
+                value={
+                  form.values.colorId !== undefined
+                    ? String(form.values.colorId)
+                    : null
+                }
+                onChange={(value) =>
+                  form.setFieldValue(
+                    'colorId',
+                    value ? Number(value) : undefined,
+                  )
+                }
+                flex={1}
+              />
+              <Button
+                variant="default"
+                onClick={() => setNuevoColorOpen(true)}
+                disabled={submitting}
+              >
+                + Nuevo
+              </Button>
+            </Group>
             <TextInput
               label="SKU"
               placeholder="Se genera automáticamente si lo dejás vacío"
@@ -199,6 +248,33 @@ export function NewVariantPage() {
           </Stack>
         </form>
       </Paper>
+
+      {nuevoTalleOpen && (
+        <NuevoTalleModal
+          ordenSugerido={
+            sizes.length > 0 ? Math.max(...sizes.map((s) => s.orden)) + 1 : 1
+          }
+          onClose={() => setNuevoTalleOpen(false)}
+          onCreated={(size) => {
+            setNuevoTalleOpen(false);
+            loadSizes(size.id);
+          }}
+        />
+      )}
+
+      {nuevoColorOpen && (
+        <NuevoValorModal
+          title="Nuevo color"
+          label="Nombre"
+          placeholder="Ej: Bordó"
+          onCreate={createColor}
+          onClose={() => setNuevoColorOpen(false)}
+          onCreated={(color) => {
+            setNuevoColorOpen(false);
+            loadColors(color.id);
+          }}
+        />
+      )}
     </Stack>
   );
 }

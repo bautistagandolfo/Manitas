@@ -17,10 +17,12 @@ import { notifications } from '@mantine/notifications';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../../lib/http-client';
 import { parseNumberInputValue } from '../../lib/number-input';
-import { createVariantGrid, getColors, getSizes } from './api';
+import { createColor, createVariantGrid, getColors, getSizes } from './api';
 import { applyDefaultsToAllRows, buildGridRows } from './grid';
 import type { GridRow } from './grid';
 import type { Size, Color } from './types';
+import { NuevoValorModal } from './components/NuevoValorModal';
+import { NuevoTalleModal } from './components/NuevoTalleModal';
 
 // BLUEPRINT §12.3: separador de miles con punto, decimal con coma —
 // mismos props en todo NumberInput de dinero de esta pantalla.
@@ -55,14 +57,37 @@ export function VariantGridPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [nuevoTalleOpen, setNuevoTalleOpen] = useState(false);
+  const [nuevoColorOpen, setNuevoColorOpen] = useState(false);
+
+  // `addId`, si viene, además de recargar la lista, agrega el nuevo
+  // talle/color a la selección — se acaba de crear porque hacía falta
+  // usarlo ahora, no solo para que quede disponible más adelante.
+  function loadSizes(addId?: number): void {
+    getSizes()
+      .then((data) => {
+        setSizes(data.filter((s) => s.activo));
+        if (addId !== undefined) {
+          setSelectedSizeIds((prev) => [...prev, String(addId)]);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  function loadColors(addId?: number): void {
+    getColors()
+      .then((data) => {
+        setColors(data.filter((c) => c.activo));
+        if (addId !== undefined) {
+          setSelectedColorIds((prev) => [...prev, String(addId)]);
+        }
+      })
+      .catch(() => undefined);
+  }
 
   useEffect(() => {
-    getSizes()
-      .then((data) => setSizes(data.filter((s) => s.activo)))
-      .catch(() => undefined);
-    getColors()
-      .then((data) => setColors(data.filter((c) => c.activo)))
-      .catch(() => undefined);
+    loadSizes();
+    loadColors();
   }, []);
 
   const sizeById = new Map(sizes.map((s) => [s.id, s]));
@@ -143,27 +168,39 @@ export function VariantGridPage() {
 
       <Paper withBorder p="md">
         <Stack>
-          <Group grow>
-            <MultiSelect
-              label="Talles"
-              placeholder="Elegí uno o más"
-              data={sizes.map((s) => ({
-                value: String(s.id),
-                label: s.nombre,
-              }))}
-              value={selectedSizeIds}
-              onChange={setSelectedSizeIds}
-            />
-            <MultiSelect
-              label="Colores"
-              placeholder="Elegí uno o más"
-              data={colors.map((c) => ({
-                value: String(c.id),
-                label: c.nombre,
-              }))}
-              value={selectedColorIds}
-              onChange={setSelectedColorIds}
-            />
+          <Group grow align="flex-end">
+            <Group align="flex-end" gap="xs" flex={1}>
+              <MultiSelect
+                label="Talles"
+                placeholder="Elegí uno o más"
+                data={sizes.map((s) => ({
+                  value: String(s.id),
+                  label: s.nombre,
+                }))}
+                value={selectedSizeIds}
+                onChange={setSelectedSizeIds}
+                flex={1}
+              />
+              <Button variant="default" onClick={() => setNuevoTalleOpen(true)}>
+                + Nuevo
+              </Button>
+            </Group>
+            <Group align="flex-end" gap="xs" flex={1}>
+              <MultiSelect
+                label="Colores"
+                placeholder="Elegí uno o más"
+                data={colors.map((c) => ({
+                  value: String(c.id),
+                  label: c.nombre,
+                }))}
+                value={selectedColorIds}
+                onChange={setSelectedColorIds}
+                flex={1}
+              />
+              <Button variant="default" onClick={() => setNuevoColorOpen(true)}>
+                + Nuevo
+              </Button>
+            </Group>
           </Group>
           <Button
             onClick={handleGenerar}
@@ -307,6 +344,33 @@ export function VariantGridPage() {
             </Button>
           </Group>
         </Paper>
+      )}
+
+      {nuevoTalleOpen && (
+        <NuevoTalleModal
+          ordenSugerido={
+            sizes.length > 0 ? Math.max(...sizes.map((s) => s.orden)) + 1 : 1
+          }
+          onClose={() => setNuevoTalleOpen(false)}
+          onCreated={(size) => {
+            setNuevoTalleOpen(false);
+            loadSizes(size.id);
+          }}
+        />
+      )}
+
+      {nuevoColorOpen && (
+        <NuevoValorModal
+          title="Nuevo color"
+          label="Nombre"
+          placeholder="Ej: Bordó"
+          onCreate={createColor}
+          onClose={() => setNuevoColorOpen(false)}
+          onCreated={(color) => {
+            setNuevoColorOpen(false);
+            loadColors(color.id);
+          }}
+        />
       )}
     </Stack>
   );
