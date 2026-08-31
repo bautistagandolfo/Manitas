@@ -194,6 +194,19 @@ export function SalePage() {
     setDropdownOpen(false);
   }
 
+  // Ticket nuevo (post Release Candidate) — hallazgo real de la
+  // auto-revisión del sistema: sacar un producto del carrito solo existía
+  // como atajo (Ctrl+Supr), sin ningún botón visible — a diferencia de
+  // Devoluciones, que sí tiene "Quitar" en sus listas equivalentes
+  // (`quitarNuevaItem`, `PaymentLinesBuilder.quitarLinea`). Usado tanto
+  // por el botón nuevo de cada fila como por el atajo, que sigue andando
+  // igual que antes para quien ya lo conoce.
+  function handleRemoveLine(variantId: number): void {
+    setLines((prev) => removeLine(prev, variantId));
+    setSelectedLineIndex(null);
+    focusSearch();
+  }
+
   function handleCancelSale(): void {
     setLines([]);
     setDiscounts([]);
@@ -231,8 +244,7 @@ export function SalePage() {
     if (event.ctrlKey && event.key === 'Delete') {
       event.preventDefault();
       if (selectedLine) {
-        setLines((prev) => removeLine(prev, selectedLine.variantId));
-        setSelectedLineIndex(null);
+        handleRemoveLine(selectedLine.variantId);
       }
       return;
     }
@@ -387,6 +399,7 @@ export function SalePage() {
               <Table.Th>Cantidad</Table.Th>
               <Table.Th>Precio</Table.Th>
               <Table.Th>Subtotal</Table.Th>
+              <Table.Th />
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -431,6 +444,16 @@ export function SalePage() {
                 <Table.Td>{formatCurrency(line.precioVenta)}</Table.Td>
                 <Table.Td>
                   {formatCurrency(centsToAmountString(lineSubtotalCents(line)))}
+                </Table.Td>
+                <Table.Td onClick={(event) => event.stopPropagation()}>
+                  <Button
+                    variant="subtle"
+                    color="red"
+                    size="xs"
+                    onClick={() => handleRemoveLine(line.variantId)}
+                  >
+                    Quitar
+                  </Button>
                 </Table.Td>
               </Table.Tr>
             ))}
