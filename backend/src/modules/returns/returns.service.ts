@@ -90,6 +90,16 @@ export interface CrearDevolucionInput {
   ventaNueva?: CrearDevolucionVentaNuevaInput;
 }
 
+// Ticket nuevo (post Release Candidate) — `Return` tal cual, más el
+// número de la venta nueva de un `CAMBIO` (`null` en una `DEVOLUCION`
+// simple, que nunca genera una). Antes de este campo, esa venta nueva
+// quedaba sin ningún número visible en ningún lado — `saleNuevaId` es
+// un id interno, no el `numero` que usan `GET /sales`/
+// `GET /returns/sales/:numero`.
+export interface CrearDevolucionResult extends Return {
+  saleNuevaNumero: number | null;
+}
+
 // T5.7 (backend) — respuesta de lectura pura para armar la pantalla de
 // devolución/cambio: qué le queda disponible a cada línea de una venta.
 // `costoUnitario` es opcional: el controller lo omite para `SELLER`
@@ -143,10 +153,31 @@ export class ReturnsService {
     private readonly salesService: SalesService,
   ) {}
 
+  // Ticket nuevo (post Release Candidate) — resuelve `saleNuevaNumero`
+  // a partir de `saleNuevaId` (`null` si la devolución no generó venta
+  // nueva). Compartido entre el cortocircuito de idempotencia DENTRO
+  // de la transacción (`crearDevolucion`, más abajo) y el fallback de
+  // idempotencia a nivel HTTP (`ReturnsController.crear`, contra un
+  // choque genuino de dos requests concurrentes con la misma clave) —
+  // los dos casos parten de un `Return` ya persistido, nunca de uno
+  // recién creado (para ESE camino, `crearVenta` ya devuelve el
+  // `numero` en memoria, sin necesidad de una consulta más).
+  async resolveSaleNuevaNumero(
+    client: Pick<Prisma.TransactionClient, 'sale'>,
+    saleNuevaId: number | null,
+  ): Promise<number | null> {
+    if (!saleNuevaId) return null;
+    const sale = await client.sale.findUnique({
+      where: { id: saleNuevaId },
+      select: { numero: true },
+    });
+    return sale?.numero ?? null;
+  }
+
   async crearDevolucion(
     tx: Prisma.TransactionClient,
     input: CrearDevolucionInput,
-  ): Promise<Return> {
+  ): Promise<CrearDevolucionResult> {
     // Paso 0 (RN-9/§9.7) — hallazgo real de esta implementación: a
     // diferencia de una venta (donde un reintento casi siempre sigue
     // teniendo stock de sobra y solo choca con la unicidad de
@@ -163,7 +194,15 @@ export class ReturnsService {
       where: { idempotencyKey: input.idempotencyKey },
     });
     if (existente) {
-      return existente;
+      // Ticket nuevo (post Release Candidate) — mismo `saleNuevaNumero`
+      // que el camino de creación fresca (ver abajo): un reintento de
+      // esta MISMA operación tiene que devolver la misma información,
+      // no una versión recortada.
+      const saleNuevaNumero = await this.resolveSaleNuevaNumero(
+        tx,
+        existente.saleNuevaId,
+      );
+      return { ...existente, saleNuevaNumero };
     }
 
     // Paso 0b (T5.5, RN-9; ampliado en T5.8 — hallazgo real, AMB-16) —
@@ -437,6 +476,15 @@ export class ReturnsService {
     // da la misma clave) pero distinto al de la devolución — son dos
     // filas distintas (`sales`/`returns`), cada una con su propia
     // columna `idempotency_key` única.
+    // Ticket nuevo (post Release Candidate) — hallazgo real de uso: sin
+    // esto, el número de la venta nueva de un `CAMBIO` no se mostraba
+    // en ningún lado — la confirmación solo mostraba el número de LA
+    // DEVOLUCIÓN (`Return.numero`), que no sirve para encontrar esa
+    // venta nueva después (`GET /sales`/`GET /returns/sales/:numero`
+    // piden el número de VENTA). `null` para una `DEVOLUCION` simple
+    // (nunca genera venta nueva).
+    let saleNuevaNumero: number | null = null;
+
     if (tipo === ReturnTipo.CAMBIO) {
       const creditoAplicado = creditoPayments[0];
       const ventaNueva = await this.salesService.crearVenta(tx, {
@@ -460,9 +508,10 @@ export class ReturnsService {
         where: { id: devolucion.id },
         data: { saleNuevaId: ventaNueva.id },
       });
+      saleNuevaNumero = ventaNueva.numero;
     }
 
-    return devolucion;
+    return { ...devolucion, saleNuevaNumero };
   }
 
   // T5.7 (backend) — `GET /returns/sales/:numero` (spec sección 4): lectura

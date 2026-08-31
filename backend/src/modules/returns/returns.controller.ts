@@ -7,11 +7,12 @@ import {
   Post,
   UseInterceptors,
 } from '@nestjs/common';
-import { Return, UserRole } from '@prisma/client';
+import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   BuscarVentaParaDevolucionResult,
   ConsultarCreditoResult,
+  CrearDevolucionResult,
   ReturnsService,
 } from './returns.service';
 import { CreateReturnDto } from './dto/create-return.dto';
@@ -65,7 +66,7 @@ export class ReturnsController {
     @Body() dto: CreateReturnDto,
     @CurrentUser() user: RequestUser,
     @IdempotencyKey() idempotencyKey: string,
-  ): Promise<Return> {
+  ): Promise<CrearDevolucionResult> {
     return withIdempotency(
       () =>
         this.prisma.$transaction((tx) =>
@@ -80,7 +81,23 @@ export class ReturnsController {
             idempotencyKey,
           }),
         ),
-      () => this.prisma.return.findUnique({ where: { idempotencyKey } }),
+      // Choque genuino de dos requests concurrentes con la misma clave
+      // (el cortocircuito DENTRO de la transacción, en
+      // `crearDevolucion`, cubre el caso normal de "la misma operación
+      // pidiendo confirmación de nuevo") — mismo `saleNuevaNumero` que
+      // cualquier otro camino, nunca una versión recortada.
+      async () => {
+        const existing = await this.prisma.return.findUnique({
+          where: { idempotencyKey },
+        });
+        if (!existing) return null;
+        const saleNuevaNumero =
+          await this.returnsService.resolveSaleNuevaNumero(
+            this.prisma,
+            existing.saleNuevaId,
+          );
+        return { ...existing, saleNuevaNumero };
+      },
     );
   }
 }

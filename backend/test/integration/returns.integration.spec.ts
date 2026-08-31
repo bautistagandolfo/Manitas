@@ -18,7 +18,10 @@ import { StockService } from '../../src/modules/stock/stock.service';
 import { CashRegisterService } from '../../src/modules/cash-registers/cash-register.service';
 import { SettingsService } from '../../src/common/settings/settings.service';
 import { SalesService } from '../../src/modules/sales/sales.service';
-import { ReturnsService } from '../../src/modules/returns/returns.service';
+import {
+  ReturnsService,
+  type CrearDevolucionResult,
+} from '../../src/modules/returns/returns.service';
 import { withIdempotency } from '../../src/common/idempotency/idempotency.util';
 import { SETTINGS_KEYS } from '../../src/common/settings/settings-keys';
 
@@ -1529,7 +1532,8 @@ describe('returns (integration, T5.1)', () => {
 
         const results = [a, b];
         const fulfilled = results.filter(
-          (r): r is PromiseFulfilledResult<Return> => r.status === 'fulfilled',
+          (r): r is PromiseFulfilledResult<CrearDevolucionResult> =>
+            r.status === 'fulfilled',
         );
         const rejected = results.filter(
           (r): r is PromiseRejectedResult => r.status === 'rejected',

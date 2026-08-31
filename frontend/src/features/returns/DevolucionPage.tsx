@@ -362,6 +362,11 @@ export function DevolucionPage() {
           color: 'green',
           title: 'Devolución registrada',
           message: `Devolución #${result.numero} por ${formatCurrency(result.totalDevuelto)}`,
+          // Ticket nuevo (post Release Candidate) — mismo motivo que el
+          // toast de Cambio: este número hace falta después (para
+          // aplicar el crédito en una venta futura, `GET
+          // /returns/:numero/credito`) y antes desaparecía solo.
+          autoClose: false,
         });
       } else {
         const result = await crearDevolucion(
@@ -395,7 +400,8 @@ export function DevolucionPage() {
         notifications.show({
           color: 'green',
           title: 'Cambio registrado',
-          message: `Devolución #${result.numero} — venta nueva vinculada`,
+          message: `Devolución #${result.numero} — venta nueva #${result.saleNuevaNumero}`,
+          autoClose: false,
         });
       }
 

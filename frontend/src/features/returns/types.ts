@@ -35,6 +35,11 @@ export interface ReturnResult {
   numero: number;
   saleId: number;
   saleNuevaId: number | null;
+  // Ticket nuevo (post Release Candidate) — hallazgo real de uso: sin
+  // esto, el número de la venta nueva de un CAMBIO no se mostraba en
+  // ningún lado (`saleNuevaId` es un id interno). `null` en una
+  // DEVOLUCION simple, que nunca genera venta nueva.
+  saleNuevaNumero: number | null;
   totalDevuelto: string;
   tipo: 'DEVOLUCION' | 'CAMBIO';
   idempotencyKey: string | null;

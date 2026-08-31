@@ -101,6 +101,7 @@ interface ReturnResponseBody {
   numero: number;
   saleId: number;
   saleNuevaId: number | null;
+  saleNuevaNumero: number | null;
   totalDevuelto: string | number;
   tipo: string;
   idempotencyKey: string | null;
@@ -566,6 +567,10 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
       expect(returnRow.saleId).toBe(venta.saleId);
       expect(returnRow.totalDevuelto.toFixed(2)).toBe('300.00');
 
+      // Ticket nuevo (post Release Candidate) — una DEVOLUCION simple
+      // nunca genera venta nueva: `null`, no un número inventado.
+      expect(body.saleNuevaNumero).toBeNull();
+
       const variantAfterReturn = await prisma.variant.findUniqueOrThrow({
         where: { id: variant.id },
       });
@@ -687,6 +692,16 @@ describe('returns-controller (integration, T5.7 backend, fase 04a)', () => {
 
       if (returnRow.saleNuevaId) {
         createdSaleIds.push(returnRow.saleNuevaId);
+
+        // Ticket nuevo (post Release Candidate) — hallazgo real de uso:
+        // sin esto, el número de la venta nueva no aparecía en ningún
+        // lado (`saleNuevaId` es un id interno, no el número que
+        // después sirve para encontrarla). Se verifica contra la venta
+        // real, no un valor fijo.
+        const ventaNuevaReal = await prisma.sale.findUniqueOrThrow({
+          where: { id: returnRow.saleNuevaId },
+        });
+        expect(body.saleNuevaNumero).toBe(ventaNuevaReal.numero);
       }
 
       const creditPayment = await prisma.payment.findFirst({

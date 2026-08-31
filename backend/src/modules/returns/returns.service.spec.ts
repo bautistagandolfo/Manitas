@@ -585,6 +585,12 @@ describe('ReturnsService.crearDevolucion', () => {
         .calls[0][1] as { monto: Prisma.Decimal.Value; tipo: string };
       expect(movimiento.tipo).toBe('DEVOLUCION');
       expect(new Prisma.Decimal(movimiento.monto).toString()).toBe('200');
+
+      // Ticket nuevo (post Release Candidate) — una DEVOLUCION simple
+      // nunca genera venta nueva, `saleNuevaNumero` tiene que ser
+      // `null`, no `undefined` (el frontend lo distingue de "no vino").
+      expect(result.saleNuevaNumero).toBeNull();
+      expect(deps.salesService.crearVenta).not.toHaveBeenCalled();
     });
   });
 
@@ -1803,6 +1809,12 @@ describe('ReturnsService.crearDevolucion — T5.5 CAMBIO (RN-9)', () => {
           data: expect.objectContaining({ saleNuevaId: 601 }) as unknown,
         }),
       );
+
+      // Ticket nuevo (post Release Candidate) — el número de la venta
+      // nueva (no el id interno) tiene que salir en la respuesta: es lo
+      // único que después sirve para encontrarla (`GET /sales`,
+      // `GET /returns/sales/:numero`).
+      expect(devolucion.saleNuevaNumero).toBe(601);
     });
   });
 
@@ -2458,7 +2470,11 @@ describe('ReturnsService.crearDevolucion — mutantes adicionales (Fase 08)', ()
       buildInput({ idempotencyKey: 'ya-existe' }),
     );
 
-    expect(result).toBe(existente);
+    // Ticket nuevo (post Release Candidate) — ya no es la MISMA
+    // referencia (se le agrega `saleNuevaNumero`), pero el resto del
+    // comportamiento de este test (cortocircuito real, sin
+    // colaboradores de más) sigue intacto.
+    expect(result).toEqual({ ...existente, saleNuevaNumero: null });
     expect(tx.return.findUnique).toHaveBeenCalledWith({
       where: { idempotencyKey: 'ya-existe' },
     });
@@ -2466,6 +2482,43 @@ describe('ReturnsService.crearDevolucion — mutantes adicionales (Fase 08)', ()
     expect(
       deps.cashRegisterService.getSesionAbiertaOrThrow,
     ).not.toHaveBeenCalled();
+  });
+
+  it('idempotencia de un CAMBIO ya confirmado: resuelve saleNuevaNumero consultando la venta nueva por su id, no la deja en null', async () => {
+    const existente = {
+      id: 778,
+      idempotencyKey: 'ya-existe-cambio',
+      saleNuevaId: 601,
+    };
+    const tx = buildMockTx([buildSaleItemRow()]);
+    tx.return.findUnique.mockResolvedValue(
+      existente as unknown as CreatedReturn,
+    );
+    // El mismo mock de `tx.sale.findUnique` sirve para dos consultas
+    // distintas en este archivo (la venta ORIGINAL de la devolución, y
+    // acá la venta NUEVA del cambio) — se discrimina por `where.id`
+    // para no confundir una con la otra.
+    tx.sale.findUnique.mockImplementation((args: unknown) => {
+      const where = (args as { where: { id: number } }).where;
+      if (where.id === 601) {
+        return Promise.resolve(buildSaleRow({ id: 601, numero: 601 }));
+      }
+      return Promise.resolve(null);
+    });
+    const deps = buildDeps();
+    const service = buildService(deps);
+
+    const result = await service.crearDevolucion(
+      asTx(tx),
+      buildInput({ idempotencyKey: 'ya-existe-cambio' }),
+    );
+
+    expect(result).toEqual({ ...existente, saleNuevaNumero: 601 });
+    expect(tx.sale.findUnique).toHaveBeenCalledWith({
+      where: { id: 601 },
+      select: { numero: true },
+    });
+    expect(tx.return.create).not.toHaveBeenCalled();
   });
 
   it('lee la venta por el saleId exacto del input (no un objeto vacío ni otro id)', async () => {
