@@ -119,6 +119,8 @@ interface CrearDevolucionInput {
   userId: number;
   esOwner: boolean;
   idempotencyKey: string;
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4).
+  customerId?: number;
 }
 
 function buildInput(
@@ -304,6 +306,10 @@ interface ReturnCreateCall {
     tipo: 'DEVOLUCION' | 'CAMBIO';
     totalDevuelto: Prisma.Decimal.Value;
     autorizadoPorUserId: number | null;
+    // Ticket nuevo — `?` porque los ~40 tests preexistentes construyen
+    // `ReturnCreateCall` implícitamente vía el mock (nunca a mano), y
+    // ahora siempre viaja `null` cuando no se manda `customerId`.
+    customerId?: number | null;
     idempotencyKey?: string;
     items: { create: ReturnItemCreateInput[] };
     returnPayments: { create: ReturnPaymentCreateInput[] };
@@ -317,6 +323,7 @@ interface CreatedReturn {
   tipo: 'DEVOLUCION' | 'CAMBIO';
   totalDevuelto: Prisma.Decimal.Value;
   autorizadoPorUserId: number | null;
+  customerId?: number | null;
   saleNuevaId: number | null;
   items: Array<ReturnItemCreateInput & { id: number }>;
   returnPayments: Array<ReturnPaymentCreateInput & { id: number }>;
@@ -339,6 +346,7 @@ function buildCreatedReturnFromCall(
     tipo: call.data.tipo,
     totalDevuelto: call.data.totalDevuelto,
     autorizadoPorUserId: call.data.autorizadoPorUserId,
+    customerId: call.data.customerId,
     saleNuevaId: null,
     items: call.data.items.create.map((item, index) => ({
       id: index + 1,
@@ -357,6 +365,14 @@ interface MockTx {
     // Nunca se espera que `crearDevolucion` toque la venta original — se
     // deja armado para poder afirmar explícitamente `not.toHaveBeenCalled`.
     update: jest.Mock<Promise<unknown>, [unknown]>;
+  };
+  // Ticket nuevo (post Release Candidate) — Paso 0c: si `input.customerId`
+  // viene, tiene que existir. Solo se llama cuando algún test manda
+  // `customerId` en el input; los ~40 tests preexistentes de T5.1-T5.5
+  // nunca lo mandan, así que nunca invocan este mock — comportamiento
+  // idéntico al de antes de este campo.
+  customer: {
+    findUnique: jest.Mock<Promise<{ id: number } | null>, [unknown]>;
   };
   saleItem: {
     findMany: jest.Mock<Promise<SaleItemRow[]>, [unknown]>;
@@ -393,6 +409,9 @@ function buildMockTx(
     saleRow?: SaleRow | null;
     previousReturnItems?: ReturnItemRow[];
     existingReturn?: CreatedReturn | null;
+    // Ticket nuevo — `undefined` (default) simula un cliente existente
+    // genérico; pasar `null` explícito simula "no encontrado" (Paso 0c).
+    customerRow?: { id: number } | null;
   } = {},
 ): MockTx {
   // T5.5: `update()` real de Prisma devuelve la fila COMPLETA con los
@@ -411,6 +430,13 @@ function buildMockTx(
           options.saleRow === undefined ? buildSaleRow() : options.saleRow,
         ),
       update: jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue({}),
+    },
+    customer: {
+      findUnique: jest
+        .fn<Promise<{ id: number } | null>, [unknown]>()
+        .mockResolvedValue(
+          options.customerRow === undefined ? { id: 1 } : options.customerRow,
+        ),
     },
     saleItem: {
       findMany: jest
@@ -1577,6 +1603,65 @@ describe('ReturnsService.crearDevolucion', () => {
       const itemB = call.data.items.create.find((i) => i.saleItemId === 2)!;
       expect(new Prisma.Decimal(itemA.costoUnitario).toString()).toBe('30');
       expect(new Prisma.Decimal(itemB.costoUnitario).toString()).toBe('55.25');
+    });
+  });
+
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — Paso 0c:
+  // `customerId` es puramente informativo (a quién pertenece el crédito
+  // que puede generar esta devolución, AMB-16), pero si viene, tiene que
+  // existir.
+  describe('ticket nuevo — customerId (a quién pertenece el crédito, BLUEPRINT §8.4)', () => {
+    it('sin customerId en el input, nunca consulta customer.findUnique y persiste null', async () => {
+      const saleItem = buildSaleItemRow({
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem]);
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await service.crearDevolucion(asTx(tx), buildInput());
+
+      expect(tx.customer.findUnique).not.toHaveBeenCalled();
+      const call = tx.return.create.mock.calls[0][0];
+      expect(call.data.customerId).toBeNull();
+    });
+
+    it('con un customerId que existe, lo persiste tal cual en la devolución', async () => {
+      const saleItem = buildSaleItemRow({
+        cantidad: 2,
+        netoLinea: new Prisma.Decimal('200.00'),
+      });
+      const tx = buildMockTx([saleItem], { customerRow: { id: 42 } });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      const result = await service.crearDevolucion(
+        asTx(tx),
+        buildInput({ customerId: 42 }),
+      );
+
+      expect(tx.customer.findUnique).toHaveBeenCalledWith({
+        where: { id: 42 },
+      });
+      const call = tx.return.create.mock.calls[0][0];
+      expect(call.data.customerId).toBe(42);
+      expect(result.customerId).toBe(42);
+    });
+
+    it('con un customerId que no existe, rechaza con NotFoundException ANTES de leer sesión de caja o venta', async () => {
+      const saleItem = buildSaleItemRow({ cantidad: 2 });
+      const tx = buildMockTx([saleItem], { customerRow: null });
+      const deps = buildDeps();
+      const service = buildService(deps);
+
+      await expect(
+        service.crearDevolucion(asTx(tx), buildInput({ customerId: 999 })),
+      ).rejects.toThrow('Cliente no encontrado');
+
+      expect(deps.cashRegisterService.getSesionAbiertaOrThrow).not.toHaveBeenCalled();
+      expect(tx.sale.findUnique).not.toHaveBeenCalled();
+      expect(tx.return.create).not.toHaveBeenCalled();
     });
   });
 });

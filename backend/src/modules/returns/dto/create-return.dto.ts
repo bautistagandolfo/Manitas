@@ -120,6 +120,14 @@ export class CreateReturnDto {
   @IsEnum(ReturnTipo)
   tipo!: ReturnTipo;
 
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — a quién
+  // pertenece el crédito que puede generar esta devolución. Opcional:
+  // sigue existiendo el camino de siempre (crédito ligado solo al
+  // número de comprobante) para cuando no se cargó un cliente.
+  @IsOptional()
+  @IsInt()
+  customerId?: number;
+
   @IsArray()
   @ArrayNotEmpty()
   @ArrayMaxSize(500)

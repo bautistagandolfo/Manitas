@@ -22,6 +22,7 @@ import { CashRegistersModule } from './modules/cash-registers/cash-registers.mod
 import { SalesModule } from './modules/sales/sales.module';
 import { ReturnsModule } from './modules/returns/returns.module';
 import { ExpensesModule } from './modules/expenses/expenses.module';
+import { CustomersModule } from './modules/customers/customers.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { AuthGuard } from './common/auth/auth.guard';
 import { RolesGuard } from './common/auth/roles.guard';
@@ -65,6 +66,7 @@ import { OriginCheckMiddleware } from './common/security/origin-check.middleware
     SalesModule,
     ReturnsModule,
     ExpensesModule,
+    CustomersModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },

@@ -76,6 +76,7 @@ export class ReturnsController {
             items: dto.items,
             returnPayments: dto.returnPayments,
             ventaNueva: dto.ventaNueva,
+            customerId: dto.customerId,
             userId: user.id,
             esOwner: user.rol === UserRole.OWNER,
             idempotencyKey,

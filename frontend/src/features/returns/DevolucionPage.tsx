@@ -28,6 +28,9 @@ import { useIdempotencyKey } from '../../lib/idempotency';
 import { useAuth } from '../auth/AuthContext';
 import { searchVariants } from '../catalog/api';
 import type { VariantSearchResult } from '../catalog/types';
+import { buscarClientes } from '../customers/api';
+import { NuevoClienteModal } from '../customers/components/NuevoClienteModal';
+import type { Customer } from '../customers/types';
 import {
   buscarVentaParaDevolucion,
   crearDevolucion,
@@ -122,6 +125,15 @@ export function DevolucionPage() {
     VariantSearchResult[] | null
   >(null);
   const [nuevaItems, setNuevaItems] = useState<NuevaPrendaLine[]>([]);
+
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — a quién
+  // ligar el crédito de esta devolución (opcional: sigue existiendo el
+  // camino de siempre, encontrarlo después por número de comprobante).
+  const [clienteQuery, setClienteQuery] = useState('');
+  const [debouncedClienteQuery] = useDebouncedValue(clienteQuery, 200);
+  const [clienteResults, setClienteResults] = useState<Customer[] | null>(null);
+  const [selectedCliente, setSelectedCliente] = useState<Customer | null>(null);
+  const [nuevoClienteModalOpen, setNuevoClienteModalOpen] = useState(false);
   const [diferenciaLines, setDiferenciaLines] = useState<DraftReintegro[]>([]);
   const [extraReintegroLines, setExtraReintegroLines] = useState<
     DraftReintegro[]
@@ -158,6 +170,33 @@ export function DevolucionPage() {
     };
   }, [debouncedNuevaQuery]);
 
+  // Mismo patrón que la búsqueda de "prenda nueva" de arriba.
+  const [trackedClienteQuery, setTrackedClienteQuery] = useState(
+    debouncedClienteQuery,
+  );
+  if (debouncedClienteQuery !== trackedClienteQuery) {
+    setTrackedClienteQuery(debouncedClienteQuery);
+    if (!debouncedClienteQuery.trim()) {
+      setClienteResults(null);
+    }
+  }
+
+  useEffect(() => {
+    const trimmed = debouncedClienteQuery.trim();
+    if (!trimmed) return;
+    let cancelled = false;
+    buscarClientes(trimmed)
+      .then((data) => {
+        if (!cancelled) setClienteResults(data);
+      })
+      .catch(() => {
+        if (!cancelled) setClienteResults(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedClienteQuery]);
+
   function resetFormAfterSubmit(): void {
     setSaleInfo(null);
     setNumeroQuery('');
@@ -170,6 +209,9 @@ export function DevolucionPage() {
     setDiferenciaLines([]);
     setExtraReintegroLines([]);
     setSubmitError(null);
+    setClienteQuery('');
+    setClienteResults(null);
+    setSelectedCliente(null);
   }
 
   async function buscarNumero(numero: number): Promise<void> {
@@ -184,6 +226,9 @@ export function DevolucionPage() {
       setDiferenciaLines([]);
       setExtraReintegroLines([]);
       setTipo('DEVOLUCION');
+      setClienteQuery('');
+      setClienteResults(null);
+      setSelectedCliente(null);
     } catch (err) {
       setSaleInfo(null);
       setSearchError(
@@ -355,6 +400,7 @@ export function DevolucionPage() {
               metodo: r.metodo as PaymentMetodo,
               monto: r.monto,
             })),
+            customerId: selectedCliente?.id,
           },
           idempotencyKey,
         );
@@ -384,6 +430,7 @@ export function DevolucionPage() {
                 monto: r.monto,
               })),
             ],
+            customerId: selectedCliente?.id,
             ventaNueva: {
               items: nuevaItems.map((l) => ({
                 variantId: l.variantId,
@@ -627,6 +674,92 @@ export function DevolucionPage() {
                 </Text>
               </Group>
 
+              {/* Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — a
+                  quién ligar el crédito de esta devolución, opcional.
+                  `overflow: visible` por el mismo motivo que la búsqueda de
+                  "Prenda nueva" de más abajo: el dropdown de resultados
+                  cuelga por afuera de la tarjeta. */}
+              <Card withBorder style={{ overflow: 'visible' }}>
+                <Stack gap="xs">
+                  <Text fw={500} size="sm">
+                    Cliente (opcional)
+                  </Text>
+                  {selectedCliente ? (
+                    <Group justify="space-between">
+                      <Text size="sm">
+                        {selectedCliente.nombre} — DNI {selectedCliente.dni}
+                      </Text>
+                      <Button
+                        variant="subtle"
+                        size="xs"
+                        onClick={() => setSelectedCliente(null)}
+                      >
+                        Quitar
+                      </Button>
+                    </Group>
+                  ) : (
+                    <>
+                      <div style={{ position: 'relative' }}>
+                        <Group align="flex-end">
+                          <TextInput
+                            placeholder="Buscá por nombre o DNI…"
+                            value={clienteQuery}
+                            onChange={(event) =>
+                              setClienteQuery(event.currentTarget.value)
+                            }
+                            style={{ flex: 1 }}
+                          />
+                          <Button
+                            variant="default"
+                            onClick={() => setNuevoClienteModalOpen(true)}
+                          >
+                            + Nuevo cliente
+                          </Button>
+                        </Group>
+                        {clienteResults && clienteResults.length > 0 && (
+                          <Card
+                            withBorder
+                            shadow="sm"
+                            p={0}
+                            style={{
+                              position: 'absolute',
+                              top: '100%',
+                              left: 0,
+                              right: 0,
+                              zIndex: 10,
+                            }}
+                          >
+                            <Table highlightOnHover>
+                              <Table.Tbody>
+                                {clienteResults.map((cliente) => (
+                                  <Table.Tr
+                                    key={cliente.id}
+                                    onClick={() => {
+                                      setSelectedCliente(cliente);
+                                      setClienteQuery('');
+                                      setClienteResults(null);
+                                    }}
+                                    style={{ cursor: 'pointer' }}
+                                  >
+                                    <Table.Td>{cliente.nombre}</Table.Td>
+                                    <Table.Td>DNI {cliente.dni}</Table.Td>
+                                  </Table.Tr>
+                                ))}
+                              </Table.Tbody>
+                            </Table>
+                          </Card>
+                        )}
+                      </div>
+                      {clienteResults && clienteResults.length === 0 && (
+                        <Text size="xs" c="dimmed">
+                          No se encontró ningún cliente con ese nombre o DNI.
+                        </Text>
+                      )}
+                    </>
+                  )}
+                </Stack>
+              </Card>
+
               <Radio.Group
                 label="Tipo de operación"
                 value={tipo}
@@ -826,6 +959,19 @@ export function DevolucionPage() {
             </Button>
           </Group>
         </>
+      )}
+
+      {nuevoClienteModalOpen && (
+        <NuevoClienteModal
+          nombreInicial={clienteQuery}
+          onClose={() => setNuevoClienteModalOpen(false)}
+          onCreated={(cliente) => {
+            setSelectedCliente(cliente);
+            setNuevoClienteModalOpen(false);
+            setClienteQuery('');
+            setClienteResults(null);
+          }}
+        />
       )}
     </Stack>
   );

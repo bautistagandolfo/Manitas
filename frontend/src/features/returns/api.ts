@@ -71,6 +71,9 @@ export interface CreateReturnData {
   items: CreateReturnItemData[];
   returnPayments: CreateReturnPaymentData[];
   ventaNueva?: CreateReturnVentaNuevaData;
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — a quién
+  // pertenece el crédito que puede generar esta devolución.
+  customerId?: number;
 }
 
 // T5.7 — RN-9/§9.7: idempotente, mismo patrón que `createSale`.

@@ -6,12 +6,16 @@ import {
   Button,
   Card,
   Group,
+  Loader,
   NumberInput,
   Paper,
   Stack,
+  Table,
   Text,
+  TextInput,
   Title,
 } from '@mantine/core';
+import { useDebouncedValue } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../lib/http-client';
@@ -19,7 +23,8 @@ import { formatCurrency } from '../../lib/format';
 import { parseNumberInputValue } from '../../lib/number-input';
 import { useIdempotencyKey } from '../../lib/idempotency';
 import { consultarCredito } from '../returns/api';
-import type { CreditoDevolucionInfo } from '../returns/types';
+import { buscarClientes, creditoDisponibleDeCliente } from '../customers/api';
+import type { Customer } from '../customers/types';
 import { createSale } from './api';
 import {
   centsToAmountString,
@@ -54,6 +59,19 @@ const METODOS: Array<{
   { key: '5', metodo: 'CREDITO_DEVOLUCION', label: 'Crédito devolución' },
 ];
 
+// Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — lo único que
+// esta pantalla necesita de un crédito aplicable, sin importar si se
+// encontró por número (`consultarCredito`, T5.8) o por cliente
+// (`creditoDisponibleDeCliente`, ticket nuevo): `CreditoDevolucionInfo`
+// trae más campos (`totalDevuelto`/`creditoConsumido`/`saleId`) que
+// nunca se leen acá — un objeto de cualquiera de los dos orígenes
+// encaja en este tipo más chico sin conversión.
+interface CreditoAplicable {
+  returnId: number;
+  numero: number;
+  creditoDisponible: string;
+}
+
 // T4.11 (BLUEPRINT §12.1, "Pantalla de cobro") — lee el borrador armado
 // en T4.10 (`sessionStorage`, mismas claves vía `draft-storage.ts`) y lo
 // confirma contra `POST /sales` (T4.11 backend). El foco arranca en el
@@ -83,11 +101,23 @@ export function CobroPage() {
   // previo (consultar `GET /returns/:numero/credito`) antes de poder
   // cargar un importe.
   const [creditoNumeroValue, setCreditoNumeroValue] = useState<number | ''>('');
-  const [creditoInfo, setCreditoInfo] = useState<CreditoDevolucionInfo | null>(
-    null,
-  );
+  const [creditoInfo, setCreditoInfo] = useState<CreditoAplicable | null>(null);
   const [creditoLoading, setCreditoLoading] = useState(false);
   const [creditoError, setCreditoError] = useState<string | null>(null);
+
+  // Ticket nuevo — segunda forma de encontrar el crédito, sin depender
+  // de que la clienta haya guardado el número de comprobante: buscar
+  // por nombre o DNI en vez de por número.
+  const [mostrarBuscarPorCliente, setMostrarBuscarPorCliente] = useState(false);
+  const [clienteQuery, setClienteQuery] = useState('');
+  const [debouncedClienteQuery] = useDebouncedValue(clienteQuery, 200);
+  const [clienteResults, setClienteResults] = useState<Customer[] | null>(null);
+  const [clienteSeleccionado, setClienteSeleccionado] =
+    useState<Customer | null>(null);
+  const [creditosDelCliente, setCreditosDelCliente] = useState<
+    CreditoAplicable[] | null
+  >(null);
+  const [creditosClienteLoading, setCreditosClienteLoading] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -102,6 +132,37 @@ export function CobroPage() {
       void navigate('/venta', { replace: true });
     }
   }, [draft.lines.length, navigate]);
+
+  // Ticket nuevo — búsqueda de cliente para la segunda forma de
+  // encontrar un crédito. Mismo patrón que `SalePage`/`DevolucionPage`:
+  // limpiar el resultado anterior durante el render cuando el término
+  // queda vacío (no dentro de este efecto, que dispararía
+  // `react-hooks/set-state-in-effect`).
+  const [trackedClienteQuery, setTrackedClienteQuery] = useState(
+    debouncedClienteQuery,
+  );
+  if (debouncedClienteQuery !== trackedClienteQuery) {
+    setTrackedClienteQuery(debouncedClienteQuery);
+    if (!debouncedClienteQuery.trim()) {
+      setClienteResults(null);
+    }
+  }
+
+  useEffect(() => {
+    const trimmed = debouncedClienteQuery.trim();
+    if (!trimmed) return;
+    let cancelled = false;
+    buscarClientes(trimmed)
+      .then((data) => {
+        if (!cancelled) setClienteResults(data);
+      })
+      .catch(() => {
+        if (!cancelled) setClienteResults(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedClienteQuery]);
 
   const subtotalCents = computeSubtotalCents(draft.lines);
   const discountCents = computeDiscountTotalCents(
@@ -142,6 +203,29 @@ export function CobroPage() {
     setCreditoNumeroValue('');
     setCreditoInfo(null);
     setCreditoError(null);
+    setMostrarBuscarPorCliente(false);
+    setClienteQuery('');
+    setClienteResults(null);
+    setClienteSeleccionado(null);
+    setCreditosDelCliente(null);
+  }
+
+  // Ticket nuevo — común a las dos formas de encontrar un crédito
+  // (por número o por cliente): precarga el importe con el menor entre
+  // "saldo pendiente" y "crédito disponible", mismo criterio de UX que
+  // los atajos 1-4.
+  function aplicarCreditoEncontrado(credito: CreditoAplicable): void {
+    setCreditoInfo(credito);
+    const disponibleCents = toCents(credito.creditoDisponible);
+    const aplicarCents = Math.min(saldoCents, disponibleCents);
+    setImporteValue(
+      aplicarCents > 0 ? Number(centsToAmountString(aplicarCents)) : '',
+    );
+    setCreditoError(
+      disponibleCents <= 0
+        ? 'Esta devolución no tiene crédito disponible'
+        : null,
+    );
   }
 
   function irAImporte(): void {
@@ -165,15 +249,7 @@ export function CobroPage() {
     setCreditoError(null);
     try {
       const info = await consultarCredito(creditoNumeroValue);
-      setCreditoInfo(info);
-      const disponibleCents = toCents(info.creditoDisponible);
-      const aplicarCents = Math.min(saldoCents, disponibleCents);
-      setImporteValue(
-        aplicarCents > 0 ? Number(centsToAmountString(aplicarCents)) : '',
-      );
-      if (disponibleCents <= 0) {
-        setCreditoError('Esta devolución no tiene crédito disponible');
-      }
+      aplicarCreditoEncontrado(info);
     } catch (err) {
       setCreditoInfo(null);
       setImporteValue('');
@@ -184,6 +260,37 @@ export function CobroPage() {
       );
     } finally {
       setCreditoLoading(false);
+    }
+  }
+
+  // Ticket nuevo — segunda forma de encontrar el crédito: por cliente en
+  // vez de por número. Al elegir un cliente, se listan sus devoluciones
+  // con saldo (`GET /customers/:id/credito`); con una sola, se aplica
+  // directo (mismo criterio que un match exacto en `SalePage`); con más
+  // de una, hace falta elegir cuál.
+  async function elegirClienteParaCredito(cliente: Customer): Promise<void> {
+    setClienteSeleccionado(cliente);
+    setClienteQuery('');
+    setClienteResults(null);
+    setCreditosClienteLoading(true);
+    setCreditoError(null);
+    try {
+      const creditos = await creditoDisponibleDeCliente(cliente.id);
+      setCreditosDelCliente(creditos);
+      if (creditos.length === 0) {
+        setCreditoError('Este cliente no tiene crédito disponible');
+      } else if (creditos.length === 1) {
+        aplicarCreditoEncontrado(creditos[0]);
+      }
+    } catch (err) {
+      setCreditosDelCliente(null);
+      setCreditoError(
+        err instanceof ApiError
+          ? err.message
+          : 'No se pudo consultar el crédito. Probá de nuevo.',
+      );
+    } finally {
+      setCreditosClienteLoading(false);
     }
   }
 
@@ -404,7 +511,12 @@ export function CobroPage() {
       )}
 
       {saldoCents > 0 ? (
-        <Card withBorder>
+        // Ticket nuevo (post Release Candidate) — `overflow: visible`:
+        // mismo motivo que `DevolucionPage.tsx` (hallazgo real de esa
+        // sesión), acá aplicado preventivamente porque el buscador de
+        // cliente nuevo de más abajo tiene el mismo dropdown `position:
+        // absolute` que ese bug recortaba.
+        <Card withBorder style={{ overflow: 'visible' }}>
           <Stack>
             <Group justify="space-between">
               <Text fw={700}>Saldo pendiente</Text>
@@ -456,36 +568,160 @@ export function CobroPage() {
             </Group>
 
             {selectedMetodo === 'CREDITO_DEVOLUCION' && (
-              <Group align="flex-end">
-                <NumberInput
-                  label="Número de devolución"
-                  description="El comprobante que presenta la clienta"
-                  min={1}
-                  value={creditoNumeroValue}
-                  onChange={(value) =>
-                    setCreditoNumeroValue(parseNumberInputValue(value))
-                  }
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      void buscarCredito();
-                    }
-                  }}
-                  error={creditoError}
-                />
-                <Button
-                  variant="default"
-                  loading={creditoLoading}
-                  onClick={() => void buscarCredito()}
-                >
-                  Buscar crédito
-                </Button>
+              <Stack gap="xs">
+                {!mostrarBuscarPorCliente ? (
+                  <Group align="flex-end">
+                    <NumberInput
+                      label="Número de devolución"
+                      description="El comprobante que presenta la clienta"
+                      min={1}
+                      value={creditoNumeroValue}
+                      onChange={(value) =>
+                        setCreditoNumeroValue(parseNumberInputValue(value))
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          void buscarCredito();
+                        }
+                      }}
+                      error={creditoError}
+                    />
+                    <Button
+                      variant="default"
+                      loading={creditoLoading}
+                      onClick={() => void buscarCredito()}
+                    >
+                      Buscar crédito
+                    </Button>
+                    <Button
+                      variant="subtle"
+                      onClick={() => setMostrarBuscarPorCliente(true)}
+                    >
+                      ¿No tenés el número? Buscar por cliente
+                    </Button>
+                  </Group>
+                ) : (
+                  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) —
+                  // el pedido original: encontrar el crédito por nombre/DNI
+                  // en vez de depender de que la clienta guardó el
+                  // comprobante.
+                  <Stack gap="xs">
+                    {clienteSeleccionado ? (
+                      <Group justify="space-between">
+                        <Text size="sm">
+                          {clienteSeleccionado.nombre} — DNI{' '}
+                          {clienteSeleccionado.dni}
+                        </Text>
+                        <Button
+                          variant="subtle"
+                          size="xs"
+                          onClick={() => {
+                            setClienteSeleccionado(null);
+                            setCreditosDelCliente(null);
+                            setCreditoInfo(null);
+                            setCreditoError(null);
+                          }}
+                        >
+                          Cambiar
+                        </Button>
+                      </Group>
+                    ) : (
+                      <div style={{ position: 'relative' }}>
+                        <TextInput
+                          placeholder="Buscá por nombre o DNI…"
+                          value={clienteQuery}
+                          onChange={(event) =>
+                            setClienteQuery(event.currentTarget.value)
+                          }
+                          rightSection={
+                            creditosClienteLoading ? <Loader size="xs" /> : null
+                          }
+                        />
+                        {clienteResults && clienteResults.length > 0 && (
+                          <Card
+                            withBorder
+                            shadow="sm"
+                            p={0}
+                            style={{
+                              position: 'absolute',
+                              top: '100%',
+                              left: 0,
+                              right: 0,
+                              zIndex: 10,
+                            }}
+                          >
+                            <Table highlightOnHover>
+                              <Table.Tbody>
+                                {clienteResults.map((cliente) => (
+                                  <Table.Tr
+                                    key={cliente.id}
+                                    onClick={() =>
+                                      void elegirClienteParaCredito(cliente)
+                                    }
+                                    style={{ cursor: 'pointer' }}
+                                  >
+                                    <Table.Td>{cliente.nombre}</Table.Td>
+                                    <Table.Td>DNI {cliente.dni}</Table.Td>
+                                  </Table.Tr>
+                                ))}
+                              </Table.Tbody>
+                            </Table>
+                          </Card>
+                        )}
+                      </div>
+                    )}
+                    {creditosDelCliente && creditosDelCliente.length > 1 && (
+                      <Table highlightOnHover>
+                        <Table.Tbody>
+                          {creditosDelCliente.map((credito) => (
+                            <Table.Tr
+                              key={credito.returnId}
+                              onClick={() => aplicarCreditoEncontrado(credito)}
+                              style={{
+                                cursor: 'pointer',
+                                backgroundColor:
+                                  creditoInfo?.returnId === credito.returnId
+                                    ? 'var(--mantine-color-blue-light)'
+                                    : undefined,
+                              }}
+                            >
+                              <Table.Td>Devolución #{credito.numero}</Table.Td>
+                              <Table.Td>
+                                {formatCurrency(credito.creditoDisponible)}
+                              </Table.Td>
+                            </Table.Tr>
+                          ))}
+                        </Table.Tbody>
+                      </Table>
+                    )}
+                    {creditoError && (
+                      <Text size="sm" c="red">
+                        {creditoError}
+                      </Text>
+                    )}
+                    <Button
+                      variant="subtle"
+                      onClick={() => {
+                        setMostrarBuscarPorCliente(false);
+                        setClienteSeleccionado(null);
+                        setClienteQuery('');
+                        setClienteResults(null);
+                        setCreditosDelCliente(null);
+                        setCreditoError(null);
+                      }}
+                      w="fit-content"
+                    >
+                      Buscar por número en vez de por cliente
+                    </Button>
+                  </Stack>
+                )}
                 {creditoInfo && (
                   <Text size="sm" c="dimmed">
                     Disponible: {formatCurrency(creditoInfo.creditoDisponible)}
                   </Text>
                 )}
-              </Group>
+              </Stack>
             )}
 
             {selectedMetodo &&

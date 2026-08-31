@@ -88,6 +88,13 @@ export interface CrearDevolucionInput {
   // T5.5: obligatorio cuando `tipo = CAMBIO`, prohibido en caso
   // contrario (validado al principio, sección "Paso 0b" de abajo).
   ventaNueva?: CrearDevolucionVentaNuevaInput;
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — a quién
+  // pertenece el crédito que puede generar esta devolución (AMB-16).
+  // Opcional, puramente informativo: no cambia ninguna regla de
+  // crédito existente, solo permite encontrarlo después por cliente
+  // (`CustomersService.creditoDisponible`) en vez de por número de
+  // comprobante.
+  customerId?: number;
 }
 
 // Ticket nuevo (post Release Candidate) — `Return` tal cual, más el
@@ -259,6 +266,22 @@ export class ReturnsService {
       }
     }
 
+    // Paso 0c (ticket nuevo, post Release Candidate) — si se cargó un
+    // cliente, tiene que existir. Chequeo barato y puramente
+    // informativo (no cambia ninguna regla de crédito ni necesita
+    // lock: `customerId` nunca decide un monto ni un tope), pero
+    // igual antes de tocar la base — mismo criterio de "fail-fast con
+    // lo que ya se puede validar sin escribir nada" que el resto de
+    // los pasos 0.
+    if (input.customerId !== undefined) {
+      const cliente = await tx.customer.findUnique({
+        where: { id: input.customerId },
+      });
+      if (!cliente) {
+        throw new NotFoundException('Cliente no encontrado');
+      }
+    }
+
     // Paso 1 (RN-2): sesión de caja abierta — lectura fail-fast, ANTES
     // de leer nada más (mismo hallazgo que `sales`: no depende de si
     // hay reintegro en efectivo).
@@ -422,6 +445,7 @@ export class ReturnsService {
         tipo,
         totalDevuelto,
         autorizadoPorUserId,
+        customerId: input.customerId ?? null,
         idempotencyKey: input.idempotencyKey,
         items: { create: itemsData },
         returnPayments: { create: returnPaymentsData },

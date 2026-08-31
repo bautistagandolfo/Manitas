@@ -190,6 +190,31 @@ model Color {
   @@map("colors")
 }
 
+// Ticket nuevo (post Release Candidate) — BLUEPRINT §8.4: "Tabla
+// customers y un FK opcional en sales. Es aditivo, sin migración de
+// datos." Alcance acotado a lo pedido (registrar saldo a favor sin
+// depender de una anotación manual): solo el FK en `Return` (de ahí
+// sale el crédito, AMB-16/T5.8), no en `Sale` — no hay ninguna
+// pantalla que lo use todavía, y agregarlo sin uso sería columna
+// muerta (nunca AD-17: sigue sin existir cuenta corriente/fiado, esto
+// es puramente "a quién pertenece este crédito"). `dni` es el dato
+// que distingue de forma inequívoca (puede haber dos "Carlos
+// Martínez") — obligatorio y único, se normaliza a solo dígitos antes
+// de guardar (`CustomersService.normalizarDni`).
+model Customer {
+  id        Int      @id @default(autoincrement())
+  nombre    String
+  dni       String   @unique
+  telefono  String?
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  returns Return[]
+
+  @@map("customers")
+}
+
 model Product {
   id          Int      @id @default(autoincrement())
   nombre      String
@@ -379,6 +404,12 @@ model Return {
   totalDevuelto         Decimal    @map("total_devuelto") @db.Decimal(12, 2)
   saleNuevaId           Int?       @map("sale_nueva_id")
   autorizadoPorUserId   Int?       @map("autorizado_por_user_id")
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — a quién
+  // pertenece el crédito que puede generar esta devolución (AMB-16).
+  // Opcional: sigue existiendo el camino de siempre (crédito ligado
+  // solo al número de comprobante, `GET /returns/:numero/credito`)
+  // para cuando no se cargó un cliente.
+  customerId            Int?       @map("customer_id")
   idempotencyKey        String?    @unique @map("idempotency_key")
   createdAt             DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt             DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -388,11 +419,13 @@ model Return {
   user                User                @relation("ReturnUser", fields: [userId], references: [id])
   autorizadoPor       User?               @relation("ReturnAutorizadoPor", fields: [autorizadoPorUserId], references: [id])
   cashRegisterSession CashRegisterSession @relation(fields: [cashRegisterSessionId], references: [id])
+  customer            Customer?           @relation(fields: [customerId], references: [id])
 
   items          ReturnItem[]
   payments       Payment[]
   returnPayments ReturnPayment[]
 
+  @@index([customerId])
   @@map("returns")
 }
 
