@@ -102,6 +102,27 @@ export function changeLineQuantity(
   );
 }
 
+// Ticket nuevo (post Release Candidate) — hallazgo real de uso: para
+// cargar una cantidad grande (ej. "10 remeras") no alcanza con
+// `changeLineQuantity` de a uno — y el atajo `Ctrl`+`+` para eso
+// colisiona con el zoom del navegador (`preventDefault()` no lo frena
+// en la mayoría de los navegadores, es un atajo reservado del
+// navegador mismo). Escribe la cantidad directo, sin pasar por ningún
+// atajo de teclado. Mismo piso que `changeLineQuantity`: nunca baja de
+// 1 (para sacar la línea entera está `removeLine`, una acción distinta
+// a propósito).
+export function setLineQuantity(
+  lines: CartLine[],
+  variantId: number,
+  cantidad: number,
+): CartLine[] {
+  return lines.map((line) =>
+    line.variantId === variantId
+      ? { ...line, cantidad: Math.max(1, Math.floor(cantidad)) }
+      : line,
+  );
+}
+
 export function removeLine(lines: CartLine[], variantId: number): CartLine[] {
   return lines.filter((line) => line.variantId !== variantId);
 }

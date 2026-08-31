@@ -9,6 +9,7 @@ import {
   computeTotalCents,
   findExactMatch,
   removeLine,
+  setLineQuantity,
   toCents,
   type CartLine,
   type DraftDiscount,
@@ -121,6 +122,37 @@ describe('changeLineQuantity', () => {
   it('no toca ninguna línea que no sea la indicada', () => {
     const other: CartLine = { ...line, variantId: 20, cantidad: 7 };
     const result = changeLineQuantity([line, other], 10, 1);
+    expect(result.find((l) => l.variantId === 20)?.cantidad).toBe(7);
+  });
+});
+
+describe('setLineQuantity', () => {
+  const line: CartLine = {
+    variantId: 10,
+    sku: 'SKU-1',
+    barcode: null,
+    descripcion: 'Remera',
+    cantidad: 3,
+    precioVenta: '100.00',
+    stockActual: 5,
+  };
+
+  it('deja la cantidad exacta que se pide, sin pasar por sumas de a uno', () => {
+    expect(setLineQuantity([line], 10, 10)[0].cantidad).toBe(10);
+  });
+
+  it('nunca baja de 1, ni con 0 ni con negativos', () => {
+    expect(setLineQuantity([line], 10, 0)[0].cantidad).toBe(1);
+    expect(setLineQuantity([line], 10, -5)[0].cantidad).toBe(1);
+  });
+
+  it('trunca decimales — media unidad no tiene sentido en este carrito', () => {
+    expect(setLineQuantity([line], 10, 4.7)[0].cantidad).toBe(4);
+  });
+
+  it('no toca ninguna línea que no sea la indicada', () => {
+    const other: CartLine = { ...line, variantId: 20, cantidad: 7 };
+    const result = setLineQuantity([line, other], 10, 10);
     expect(result.find((l) => l.variantId === 20)?.cantidad).toBe(7);
   });
 });

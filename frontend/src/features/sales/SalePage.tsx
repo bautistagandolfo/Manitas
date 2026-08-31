@@ -10,6 +10,7 @@ import {
   Kbd,
   Loader,
   Modal,
+  NumberInput,
   Stack,
   Table,
   Text,
@@ -33,6 +34,7 @@ import {
   findExactMatch,
   lineSubtotalCents,
   removeLine,
+  setLineQuantity,
   type CartLine,
   type DraftDiscount,
 } from './cart';
@@ -402,13 +404,29 @@ export function SalePage() {
               >
                 <Table.Td>{line.descripcion}</Table.Td>
                 <Table.Td>{line.sku}</Table.Td>
-                <Table.Td>
-                  {line.cantidad}
-                  {line.cantidad > line.stockActual && (
-                    <Text span c="red" size="xs" ml="xs">
-                      Sin stock suficiente (quedan {line.stockActual})
-                    </Text>
-                  )}
+                <Table.Td onClick={(event) => event.stopPropagation()}>
+                  <Group gap="xs" wrap="nowrap">
+                    <NumberInput
+                      value={line.cantidad}
+                      min={1}
+                      step={1}
+                      w={80}
+                      onChange={(value) =>
+                        setLines((prev) =>
+                          setLineQuantity(
+                            prev,
+                            line.variantId,
+                            typeof value === 'number' ? value : 1,
+                          ),
+                        )
+                      }
+                    />
+                    {line.cantidad > line.stockActual && (
+                      <Text span c="red" size="xs">
+                        Sin stock suficiente (quedan {line.stockActual})
+                      </Text>
+                    )}
+                  </Group>
                 </Table.Td>
                 <Table.Td>{formatCurrency(line.precioVenta)}</Table.Td>
                 <Table.Td>
