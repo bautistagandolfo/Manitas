@@ -13,7 +13,16 @@ type MockPrisma = {
 
 function buildMockPrisma(): MockPrisma {
   return {
-    category: { create: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+    // Ticket nuevo (post Release Candidate) — `create`/`update` ahora
+    // consultan `findMany` primero (chequeo de duplicado case/acento-
+    // insensible, `esNombreDuplicado`). Default `[]` para no romper los
+    // tests preexistentes que no le prestan atención a esta consulta —
+    // los que sí, la pisan con `mockResolvedValueOnce`.
+    category: {
+      create: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
+    },
   };
 }
 
@@ -68,6 +77,17 @@ describe('CategoriesService', () => {
         service.create({ nombre: 'Remeras' }),
       ).rejects.toBeInstanceOf(ConflictException);
     });
+
+    // Ticket nuevo (post Release Candidate) — mismo hallazgo real
+    // verificado en vivo en `colors.service.ts`.
+    it('rechaza "remeras" cuando ya existe "Remeras" — mayúsculas distintas, misma categoría', async () => {
+      prisma.category.findMany.mockResolvedValue([{ nombre: 'Remeras' }]);
+
+      await expect(
+        service.create({ nombre: 'remeras' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.category.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('update', () => {
@@ -93,6 +113,16 @@ describe('CategoriesService', () => {
       await expect(
         service.update(1, { nombre: 'Pantalones' }),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    // Ticket nuevo — mismo hallazgo que en `create`, aplicado a renombrar.
+    it('rechaza renombrar a "pantalones" cuando ya existe "Pantalones" en OTRA fila', async () => {
+      prisma.category.findMany.mockResolvedValue([{ nombre: 'Pantalones' }]);
+
+      await expect(
+        service.update(1, { nombre: 'pantalones' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.category.update).not.toHaveBeenCalled();
     });
   });
 });

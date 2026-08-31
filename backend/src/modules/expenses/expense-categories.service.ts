@@ -6,6 +6,10 @@ import {
 } from '@nestjs/common';
 import { ExpenseCategory, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  esNombreDuplicado,
+  normalizarParaComparar,
+} from '../../common/text/normalize-for-comparison';
 import { CreateExpenseCategoryDto } from './dto/create-expense-category.dto';
 import { UpdateExpenseCategoryDto } from './dto/update-expense-category.dto';
 
@@ -18,29 +22,8 @@ import { UpdateExpenseCategoryDto } from './dto/update-expense-category.dto';
 // criterio textual que da el propio blueprint como ejemplos.
 const PATRONES_MERCADERIA = ['mercaderia', 'compra de ropa', 'proveedores'];
 
-// Saca acentos sin depender de un rango de regex con caracteres
-// combinantes literales en el código fuente (frágil entre editores/
-// encodings) — tras `normalize('NFD')` cada letra acentuada se
-// descompone en [letra base, marca diacrítica]; filtramos por código
-// de punto Unicode (0x0300–0x036F = "Combining Diacritical Marks") en
-// vez de un regex con esos caracteres pegados en el archivo.
-const PRIMER_DIACRITICO_COMBINANTE = 0x0300;
-const ULTIMO_DIACRITICO_COMBINANTE = 0x036f;
-
-function normalizar(texto: string): string {
-  return Array.from(texto.toLowerCase().normalize('NFD'))
-    .filter((caracter) => {
-      const codigo = caracter.codePointAt(0)!;
-      return (
-        codigo < PRIMER_DIACRITICO_COMBINANTE ||
-        codigo > ULTIMO_DIACRITICO_COMBINANTE
-      );
-    })
-    .join('');
-}
-
 function aludeAMercaderia(nombre: string): boolean {
-  const normalizado = normalizar(nombre);
+  const normalizado = normalizarParaComparar(nombre);
   return PATRONES_MERCADERIA.some((patron) => normalizado.includes(patron));
 }
 
@@ -58,6 +41,26 @@ export class ExpenseCategoriesService {
     if (aludeAMercaderia(dto.nombre)) {
       throw new BadRequestException(
         'Comprar mercadería no es un gasto — se registra como ingreso de stock',
+      );
+    }
+    // Ticket nuevo (post Release Candidate) — hallazgo real: sin esto,
+    // "alquiler" cuando ya existe "Alquiler" se creaba como una
+    // categoría nueva y distinta, sin ningún aviso (verificado en vivo
+    // con colores). El `@unique` de Postgres es case-sensitive; este
+    // chequeo previo cubre mayúsculas Y acentos, antes de llegar al
+    // `create` (cuyo catch de P2002 sigue como red de contención para
+    // una carrera genuina, no como el camino principal).
+    const existentes = await this.prisma.expenseCategory.findMany({
+      select: { nombre: true },
+    });
+    if (
+      esNombreDuplicado(
+        dto.nombre,
+        existentes.map((e) => e.nombre),
+      )
+    ) {
+      throw new ConflictException(
+        'Ya existe una categoría de gasto con ese nombre',
       );
     }
     try {
@@ -103,6 +106,26 @@ export class ExpenseCategoriesService {
       throw new BadRequestException(
         'Comprar mercadería no es un gasto — se registra como ingreso de stock',
       );
+    }
+    // Ticket nuevo — mismo chequeo que `create`, para no poder renombrar
+    // "Alquiler" a "servicios" cuando ya existe "Servicios". Excluye la
+    // propia fila (`id`) para no chocar contra sí misma en un guardado
+    // que no le cambia el nombre.
+    if (dto.nombre !== undefined) {
+      const otras = await this.prisma.expenseCategory.findMany({
+        where: { id: { not: id } },
+        select: { nombre: true },
+      });
+      if (
+        esNombreDuplicado(
+          dto.nombre,
+          otras.map((e) => e.nombre),
+        )
+      ) {
+        throw new ConflictException(
+          'Ya existe una categoría de gasto con ese nombre',
+        );
+      }
     }
     try {
       return await this.prisma.expenseCategory.update({

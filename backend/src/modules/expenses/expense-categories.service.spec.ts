@@ -24,7 +24,12 @@ function buildMockPrisma(): MockPrisma {
   return {
     expenseCategory: {
       create: jest.fn(),
-      findMany: jest.fn(),
+      // Ticket nuevo (post Release Candidate) — `create`/`update` ahora
+      // consultan `findMany` primero (chequeo de duplicado case/acento-
+      // insensible, `esNombreDuplicado`). Default `[]` para no romper
+      // los tests preexistentes que no le prestan atención a esta
+      // consulta nueva — los que sí, la pisan con `mockResolvedValueOnce`.
+      findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
       update: jest.fn(),
     },
@@ -82,6 +87,21 @@ describe('ExpenseCategoriesService', () => {
       await expect(call).rejects.toThrow(
         'Ya existe una categoría de gasto con ese nombre',
       );
+    });
+
+    // Ticket nuevo (post Release Candidate) — mismo hallazgo real
+    // verificado en vivo en `colors.service.ts`: "limpieza" se crea
+    // como una categoría nueva y distinta cuando ya existe "Limpieza"
+    // (@unique de Postgres es case-sensitive).
+    it('rechaza "limpieza" cuando ya existe "Limpieza" — mayúsculas distintas, misma categoría', async () => {
+      prisma.expenseCategory.findMany.mockResolvedValue([
+        { nombre: 'Limpieza' },
+      ]);
+
+      await expect(
+        service.create({ nombre: 'limpieza' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.expenseCategory.create).not.toHaveBeenCalled();
     });
 
     // Fase 08 (QA adversarial): el chequeo de P2002 es específico — un
@@ -190,6 +210,26 @@ describe('ExpenseCategoriesService', () => {
         where: { id: 1 },
         data: { nombre: 'Limpieza y mantenimiento' },
       });
+    });
+
+    // Ticket nuevo (post Release Candidate) — mismo hallazgo que en
+    // `create`, aplicado a renombrar. `findUnique` (chequeo de
+    // `bloqueada`) pasa igual; lo que la rechaza es el `findMany` nuevo.
+    it('rechaza renombrar a "servicios" cuando ya existe "Servicios" en OTRA fila', async () => {
+      prisma.expenseCategory.findUnique.mockResolvedValue({
+        id: 1,
+        nombre: 'Limpieza',
+        activo: true,
+        bloqueada: false,
+      });
+      prisma.expenseCategory.findMany.mockResolvedValue([
+        { nombre: 'Servicios' },
+      ]);
+
+      await expect(
+        service.update(1, { nombre: 'servicios' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.expenseCategory.update).not.toHaveBeenCalled();
     });
 
     it('rechaza con NotFoundException si el id no existe, con el mensaje exacto', async () => {

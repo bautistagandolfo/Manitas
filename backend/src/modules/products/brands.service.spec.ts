@@ -13,7 +13,16 @@ type MockPrisma = {
 
 function buildMockPrisma(): MockPrisma {
   return {
-    brand: { create: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+    // Ticket nuevo (post Release Candidate) — `create`/`update` ahora
+    // consultan `findMany` primero (chequeo de duplicado case/acento-
+    // insensible, `esNombreDuplicado`). Default `[]` para no romper los
+    // tests preexistentes que no le prestan atención a esta consulta —
+    // los que sí, la pisan con `mockResolvedValueOnce`.
+    brand: {
+      create: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
+    },
   };
 }
 
@@ -68,6 +77,19 @@ describe('BrandsService', () => {
         ConflictException,
       );
     });
+
+    // Ticket nuevo (post Release Candidate) — mismo hallazgo real
+    // verificado en vivo en `colors.service.ts`: "nike" se crea como
+    // una marca nueva y distinta cuando ya existe "Nike" (@unique de
+    // Postgres es case-sensitive).
+    it('rechaza "nike" cuando ya existe "Nike" — mayúsculas distintas, misma marca', async () => {
+      prisma.brand.findMany.mockResolvedValue([{ nombre: 'Nike' }]);
+
+      await expect(service.create({ nombre: 'nike' })).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(prisma.brand.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('update', () => {
@@ -93,6 +115,16 @@ describe('BrandsService', () => {
       await expect(
         service.update(1, { nombre: 'Adidas' }),
       ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    // Ticket nuevo — mismo hallazgo que en `create`, aplicado a renombrar.
+    it('rechaza renombrar a "adidas" cuando ya existe "Adidas" en OTRA fila', async () => {
+      prisma.brand.findMany.mockResolvedValue([{ nombre: 'Adidas' }]);
+
+      await expect(
+        service.update(1, { nombre: 'adidas' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.brand.update).not.toHaveBeenCalled();
     });
   });
 });

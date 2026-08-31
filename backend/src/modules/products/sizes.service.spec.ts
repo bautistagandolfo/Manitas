@@ -13,7 +13,16 @@ type MockPrisma = {
 
 function buildMockPrisma(): MockPrisma {
   return {
-    size: { create: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+    // Ticket nuevo (post Release Candidate) — `create`/`update` ahora
+    // consultan `findMany` primero (chequeo de duplicado case/acento-
+    // insensible, `esNombreDuplicado`). Default `[]` para no romper los
+    // tests preexistentes que no le prestan atención a esta consulta —
+    // los que sí, la pisan con `mockResolvedValueOnce`.
+    size: {
+      create: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+      update: jest.fn(),
+    },
   };
 }
 
@@ -71,6 +80,19 @@ describe('SizesService', () => {
         service.create({ nombre: 'M', orden: 2 }),
       ).rejects.toBeInstanceOf(ConflictException);
     });
+
+    // Ticket nuevo (post Release Candidate) — mismo hallazgo real
+    // verificado en vivo en `colors.service.ts`. Aplica igual a talles
+    // con letra ("m" vs "M") — con talles numéricos ("1", "38") el
+    // riesgo real es más bajo, pero el chequeo cubre ambos por igual.
+    it('rechaza "m" cuando ya existe "M" — mayúsculas distintas, mismo talle', async () => {
+      prisma.size.findMany.mockResolvedValue([{ nombre: 'M' }]);
+
+      await expect(
+        service.create({ nombre: 'm', orden: 2 }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.size.create).not.toHaveBeenCalled();
+    });
   });
 
   describe('update', () => {
@@ -96,6 +118,16 @@ describe('SizesService', () => {
       await expect(service.update(1, { nombre: 'L' })).rejects.toBeInstanceOf(
         ConflictException,
       );
+    });
+
+    // Ticket nuevo — mismo hallazgo que en `create`, aplicado a renombrar.
+    it('rechaza renombrar a "l" cuando ya existe "L" en OTRA fila', async () => {
+      prisma.size.findMany.mockResolvedValue([{ nombre: 'L' }]);
+
+      await expect(service.update(1, { nombre: 'l' })).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(prisma.size.update).not.toHaveBeenCalled();
     });
   });
 });
