@@ -163,19 +163,19 @@ export function ResultadosPage() {
             <Stack gap="xs">
               <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
                 <Resumen
-                  label="Ingresos"
+                  label="Ventas"
                   value={formatCurrency(state.resumen.ingresos)}
                 />
                 <Resumen
-                  label="CMV"
+                  label="Costo de lo vendido"
                   value={formatCurrency(state.resumen.cmv)}
                 />
                 <Resumen
-                  label="Margen bruto"
+                  label="Ganancia bruta"
                   value={formatCurrency(state.resumen.margenBruto)}
                 />
                 <Resumen
-                  label="Margen %"
+                  label="Ganancia bruta %"
                   value={formatPercent(state.resumen.margenBrutoPct)}
                 />
                 <Resumen
@@ -183,7 +183,7 @@ export function ResultadosPage() {
                   value={formatCurrency(state.resumen.gastos)}
                 />
                 <Resumen
-                  label="Resultado neto"
+                  label="Ganancia neta"
                   value={formatCurrency(state.resumen.resultadoNeto)}
                   destacado
                 />
@@ -206,7 +206,7 @@ export function ResultadosPage() {
                     onChange={setOrden}
                     data={[
                       { label: 'Unidades', value: 'unidades' },
-                      { label: 'Margen', value: 'margen' },
+                      { label: 'Ganancia', value: 'margen' },
                     ]}
                   />
                 </Group>
@@ -215,7 +215,7 @@ export function ResultadosPage() {
                     <Table.Tr>
                       <Table.Th>Producto</Table.Th>
                       <Table.Th>Unidades</Table.Th>
-                      <Table.Th>Margen</Table.Th>
+                      <Table.Th>Ganancia</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>

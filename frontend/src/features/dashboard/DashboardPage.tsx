@@ -217,19 +217,19 @@ export function DashboardPage() {
             <Group gap="xl">
               <Stack gap={0}>
                 <Text size="sm" c="dimmed">
-                  Ingresos
+                  Ventas
                 </Text>
                 <Text fw={700}>{formatCurrency(resumen.ingresos)}</Text>
               </Stack>
               <Stack gap={0}>
                 <Text size="sm" c="dimmed">
-                  Margen bruto
+                  Ganancia bruta
                 </Text>
                 <Text fw={700}>{formatCurrency(resumen.margenBruto)}</Text>
               </Stack>
               <Stack gap={0}>
                 <Text size="sm" c="dimmed">
-                  Resultado neto
+                  Ganancia neta
                 </Text>
                 <Text fw={700}>{formatCurrency(resumen.resultadoNeto)}</Text>
               </Stack>
