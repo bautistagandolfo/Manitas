@@ -8,7 +8,10 @@ import { Transform } from 'class-transformer';
 // puntuación encuentre lo mismo — la unicidad real vive en la columna
 // (`@unique` en el schema), esto solo evita que dos formas de escribir
 // el mismo DNI parezcan valores distintos.
-function normalizarDni(value: unknown): unknown {
+// Ticket nuevo (post Release Candidate) — exportada para que
+// `UpdateCustomerDto` la reuse tal cual: mismo criterio en alta y edición,
+// nunca dos formas de normalizar el mismo dato.
+export function normalizarDni(value: unknown): unknown {
   return typeof value === 'string' ? value.replace(/[.\s-]/g, '') : value;
 }
 

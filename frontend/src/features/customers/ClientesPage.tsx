@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
   Alert,
+  Badge,
+  Button,
   Center,
+  Group,
   Loader,
+  Modal,
   Stack,
   Table,
   Text,
@@ -13,7 +17,13 @@ import { useDebouncedValue } from '@mantine/hooks';
 import { ApiError } from '../../lib/http-client';
 import { formatCurrency } from '../../lib/format';
 import { centsToAmountString, toCents } from '../sales/cart';
-import { buscarClientes, creditoDisponibleDeCliente } from './api';
+import {
+  actualizarCliente,
+  buscarClientes,
+  creditoDisponibleDeCliente,
+} from './api';
+import { NuevoClienteModal } from './components/NuevoClienteModal';
+import { EditarClienteModal } from './components/EditarClienteModal';
 import type { Customer } from './types';
 
 interface FilaCliente {
@@ -33,16 +43,30 @@ interface FilaCliente {
 // riesgo de romper algo. Sin @Roles(): mismo criterio que el resto del
 // módulo de clientes (un SELLER ya ve el saldo a favor de un cliente
 // al buscarlo en `CobroPage.tsx`, esto no revela nada nuevo).
+//
+// Ticket nuevo (post Release Candidate) — segunda vuelta, pedido directo:
+// "de igual forma que editar o dar de baja, por si por ejemplo ponemos
+// mal datos". Se agrega alta/edición/baja acá mismo (reusando
+// `NuevoClienteModal` ya construido para el alta desde Devoluciones, más
+// `EditarClienteModal` nuevo). `incluirInactivos: true` en la búsqueda:
+// esta pantalla es la única que necesita ver también los dados de baja,
+// para poder reactivarlos si se dieron de baja por error.
 export function ClientesPage() {
   const [query, setQuery] = useState('');
   const [debouncedQuery] = useDebouncedValue(query, 200);
   const [filas, setFilas] = useState<FilaCliente[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // Mismo patrón que el resto de la app: cuando cambia la búsqueda,
-  // marca una carga nueva durante el render, no dentro del efecto
-  // (react-hooks/set-state-in-effect).
+  const [nuevoOpen, setNuevoOpen] = useState(false);
+  const [editando, setEditando] = useState<Customer | null>(null);
+  const [confirmandoBaja, setConfirmandoBaja] = useState<Customer | null>(null);
+  const [cambiandoEstadoId, setCambiandoEstadoId] = useState<number | null>(
+    null,
+  );
+  const [errorAccion, setErrorAccion] = useState<string | null>(null);
+
   const [trackedQuery, setTrackedQuery] = useState(debouncedQuery);
   if (debouncedQuery !== trackedQuery) {
     setTrackedQuery(debouncedQuery);
@@ -53,12 +77,8 @@ export function ClientesPage() {
   useEffect(() => {
     let cancelled = false;
 
-    buscarClientes(debouncedQuery)
+    buscarClientes(debouncedQuery, true)
       .then(async (clientes) => {
-        // El saldo a favor de cada cliente es una consulta aparte (la
-        // suma de sus devoluciones con crédito todavía sin gastar,
-        // `GET /customers/:id/credito`) — se piden todas en paralelo,
-        // la lista de clientes nunca pasa de unas pocas decenas.
         const saldos = await Promise.all(
           clientes.map((cliente) =>
             creditoDisponibleDeCliente(cliente.id)
@@ -95,11 +115,39 @@ export function ClientesPage() {
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery]);
+  }, [debouncedQuery, refreshKey]);
+
+  function recargar(): void {
+    setRefreshKey((key) => key + 1);
+  }
+
+  async function cambiarEstado(
+    cliente: Customer,
+    activo: boolean,
+  ): Promise<void> {
+    setErrorAccion(null);
+    setCambiandoEstadoId(cliente.id);
+    try {
+      await actualizarCliente(cliente.id, { activo });
+      setConfirmandoBaja(null);
+      recargar();
+    } catch (err) {
+      setErrorAccion(
+        err instanceof ApiError
+          ? err.message
+          : 'No se pudo guardar el cambio. Probá de nuevo.',
+      );
+    } finally {
+      setCambiandoEstadoId(null);
+    }
+  }
 
   return (
     <Stack>
-      <Title order={3}>Clientes</Title>
+      <Group justify="space-between">
+        <Title order={3}>Clientes</Title>
+        <Button onClick={() => setNuevoOpen(true)}>+ Nuevo cliente</Button>
+      </Group>
 
       <TextInput
         placeholder="Buscá por nombre o DNI…"
@@ -111,6 +159,16 @@ export function ClientesPage() {
       {error && (
         <Alert color="red" title="No se pudieron cargar los clientes">
           {error}
+        </Alert>
+      )}
+      {errorAccion && (
+        <Alert
+          color="red"
+          title="No se pudo guardar"
+          onClose={() => setErrorAccion(null)}
+          withCloseButton
+        >
+          {errorAccion}
         </Alert>
       )}
 
@@ -126,11 +184,13 @@ export function ClientesPage() {
               <Table.Th>DNI</Table.Th>
               <Table.Th>Teléfono</Table.Th>
               <Table.Th>Saldo a favor</Table.Th>
+              <Table.Th>Estado</Table.Th>
+              <Table.Th>Acciones</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {filas?.map(({ cliente, saldoAFavorCents }) => (
-              <Table.Tr key={cliente.id}>
+              <Table.Tr key={cliente.id} opacity={cliente.activo ? 1 : 0.6}>
                 <Table.Td>{cliente.nombre}</Table.Td>
                 <Table.Td>{cliente.dni}</Table.Td>
                 <Table.Td>{cliente.telefono ?? '—'}</Table.Td>
@@ -145,6 +205,48 @@ export function ClientesPage() {
                     <Text c="dimmed">Sin saldo</Text>
                   )}
                 </Table.Td>
+                <Table.Td>
+                  {cliente.activo ? (
+                    <Badge color="green" variant="light">
+                      Activo
+                    </Badge>
+                  ) : (
+                    <Badge color="gray" variant="light">
+                      De baja
+                    </Badge>
+                  )}
+                </Table.Td>
+                <Table.Td>
+                  <Group gap="xs">
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      onClick={() => setEditando(cliente)}
+                    >
+                      Editar
+                    </Button>
+                    {cliente.activo ? (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        onClick={() => setConfirmandoBaja(cliente)}
+                      >
+                        Dar de baja
+                      </Button>
+                    ) : (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        color="green"
+                        loading={cambiandoEstadoId === cliente.id}
+                        onClick={() => void cambiarEstado(cliente, true)}
+                      >
+                        Reactivar
+                      </Button>
+                    )}
+                  </Group>
+                </Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>
@@ -155,8 +257,61 @@ export function ClientesPage() {
         <Text c="dimmed" ta="center" py="xl">
           {debouncedQuery.trim()
             ? 'No se encontró ningún cliente con ese nombre o DNI.'
-            : 'Todavía no hay clientes cargados — se agregan desde Devoluciones al procesar un cambio o devolución.'}
+            : 'Todavía no hay clientes cargados.'}
         </Text>
+      )}
+
+      {nuevoOpen && (
+        <NuevoClienteModal
+          onClose={() => setNuevoOpen(false)}
+          onCreated={() => {
+            setNuevoOpen(false);
+            recargar();
+          }}
+        />
+      )}
+
+      {editando && (
+        <EditarClienteModal
+          cliente={editando}
+          onClose={() => setEditando(null)}
+          onUpdated={() => {
+            setEditando(null);
+            recargar();
+          }}
+        />
+      )}
+
+      {confirmandoBaja && (
+        <Modal
+          opened
+          onClose={() => setConfirmandoBaja(null)}
+          title="Dar de baja"
+        >
+          <Stack>
+            <Text size="sm">
+              {confirmandoBaja.nombre} no va a aparecer más en las búsquedas de
+              devoluciones ni de cobro. Se puede reactivar en cualquier momento
+              desde esta misma pantalla.
+            </Text>
+            <Group justify="flex-end">
+              <Button
+                variant="default"
+                onClick={() => setConfirmandoBaja(null)}
+                disabled={cambiandoEstadoId === confirmandoBaja.id}
+              >
+                Cancelar
+              </Button>
+              <Button
+                color="red"
+                loading={cambiandoEstadoId === confirmandoBaja.id}
+                onClick={() => void cambiarEstado(confirmandoBaja, false)}
+              >
+                Dar de baja
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
       )}
     </Stack>
   );

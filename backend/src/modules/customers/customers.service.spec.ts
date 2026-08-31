@@ -8,6 +8,7 @@ type MockPrisma = {
     create: jest.Mock;
     findMany: jest.Mock;
     findUnique: jest.Mock;
+    update: jest.Mock;
   };
   return: { findMany: jest.Mock };
   returnPayment: { groupBy: jest.Mock };
@@ -16,7 +17,12 @@ type MockPrisma = {
 
 function buildMockPrisma(): MockPrisma {
   return {
-    customer: { create: jest.fn(), findMany: jest.fn(), findUnique: jest.fn() },
+    customer: {
+      create: jest.fn(),
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
     return: { findMany: jest.fn() },
     returnPayment: { groupBy: jest.fn() },
     payment: { groupBy: jest.fn() },
@@ -100,6 +106,78 @@ describe('CustomersService', () => {
         orderBy: { createdAt: 'desc' },
         take: 20,
       });
+    });
+
+    // Ticket nuevo — la pantalla de Clientes necesita ver también los
+    // dados de baja (para poder reactivarlos), sin afectar a los demás
+    // llamadores (`DevolucionPage`, `CobroPage`) que no mandan el flag.
+    it('con incluirInactivos, no filtra por activo', async () => {
+      prisma.customer.findMany.mockResolvedValue([]);
+
+      await service.buscar(undefined, true);
+
+      expect(prisma.customer.findMany).toHaveBeenCalledWith({
+        where: {},
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      });
+    });
+  });
+
+  describe('actualizar', () => {
+    it('edita los campos mandados', async () => {
+      prisma.customer.update.mockResolvedValue({
+        id: 1,
+        nombre: 'Carlos Martínez (corregido)',
+        dni: '30123456',
+        telefono: null,
+        activo: true,
+      });
+
+      const result = await service.actualizar(1, {
+        nombre: 'Carlos Martínez (corregido)',
+      });
+
+      expect(result.nombre).toBe('Carlos Martínez (corregido)');
+      expect(prisma.customer.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { nombre: 'Carlos Martínez (corregido)' },
+      });
+    });
+
+    it('da de baja con activo: false', async () => {
+      prisma.customer.update.mockResolvedValue({
+        id: 1,
+        nombre: 'Carlos Martínez',
+        dni: '30123456',
+        telefono: null,
+        activo: false,
+      });
+
+      const result = await service.actualizar(1, { activo: false });
+
+      expect(result.activo).toBe(false);
+    });
+
+    it('traduce un choque de DNI (P2002) a ConflictException', async () => {
+      prisma.customer.update.mockRejectedValue(prismaUniqueViolation());
+
+      await expect(
+        service.actualizar(1, { dni: '30999888' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('traduce un id inexistente (P2025) a NotFoundException', async () => {
+      prisma.customer.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Record not found', {
+          code: 'P2025',
+          clientVersion: '6.19.3',
+        }),
+      );
+
+      await expect(
+        service.actualizar(999, { nombre: 'X' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

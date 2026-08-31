@@ -35,6 +35,7 @@ interface CustomerBody {
   nombre: string;
   dni: string;
   telefono: string | null;
+  activo: boolean;
 }
 
 interface ReturnResponseBody {
@@ -308,6 +309,102 @@ describe('customers-controller (integration, ticket nuevo post Release Candidate
       ).expect(200);
       const body = response.body as CustomerBody[];
       expect(body.some((c) => c.id === cliente.id)).toBe(true);
+    });
+
+    it('sin incluirInactivos, no trae un cliente dado de baja', async () => {
+      const cliente = await crearCliente({ nombre: 'Baja Búsqueda', dni: '30666777' });
+      await owned(request(app.getHttpServer()).patch(`/customers/${cliente.id}`))
+        .send({ activo: false })
+        .expect(200);
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/customers?q=Baja Búsqueda'),
+      ).expect(200);
+      const body = response.body as CustomerBody[];
+      expect(body.some((c) => c.id === cliente.id)).toBe(false);
+    });
+
+    it('con incluirInactivos=true, sí lo trae', async () => {
+      const cliente = await crearCliente({ nombre: 'Baja Reactivable', dni: '30777888' });
+      await owned(request(app.getHttpServer()).patch(`/customers/${cliente.id}`))
+        .send({ activo: false })
+        .expect(200);
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          '/customers?q=Baja Reactivable&incluirInactivos=true',
+        ),
+      ).expect(200);
+      const body = response.body as CustomerBody[];
+      expect(body.some((c) => c.id === cliente.id)).toBe(true);
+    });
+  });
+
+  describe('PATCH /customers/:id — editar o dar de baja (pedido directo: "por si pusimos mal datos")', () => {
+    it('corrige nombre y teléfono', async () => {
+      const cliente = await crearCliente({ nombre: 'Nombre con Error', dni: '30888999' });
+
+      const response = await owned(
+        request(app.getHttpServer()).patch(`/customers/${cliente.id}`),
+      )
+        .send({ nombre: 'Nombre Corregido', telefono: '1122334455' })
+        .expect(200);
+      const body = response.body as CustomerBody;
+      expect(body.nombre).toBe('Nombre Corregido');
+      expect(body.telefono).toBe('1122334455');
+      expect(body.dni).toBe('30888999');
+    });
+
+    it('normaliza el DNI editado (saca puntos) igual que en el alta', async () => {
+      const cliente = await crearCliente({ nombre: 'DNI a corregir', dni: '30991122' });
+
+      const response = await owned(
+        request(app.getHttpServer()).patch(`/customers/${cliente.id}`),
+      )
+        .send({ dni: '30.991.123' })
+        .expect(200);
+      expect((response.body as CustomerBody).dni).toBe('30991123');
+    });
+
+    it('da de baja (activo: false) y reactiva (activo: true)', async () => {
+      const cliente = await crearCliente({ nombre: 'Baja y Alta', dni: '30992233' });
+
+      const baja = await owned(
+        request(app.getHttpServer()).patch(`/customers/${cliente.id}`),
+      )
+        .send({ activo: false })
+        .expect(200);
+      expect((baja.body as CustomerBody).activo).toBe(false);
+
+      const reactivado = await owned(
+        request(app.getHttpServer()).patch(`/customers/${cliente.id}`),
+      )
+        .send({ activo: true })
+        .expect(200);
+      expect((reactivado.body as CustomerBody).activo).toBe(true);
+    });
+
+    it('rechaza un DNI que ya usa otro cliente → 409', async () => {
+      await crearCliente({ nombre: 'Dueño del DNI', dni: '30993344' });
+      const otro = await crearCliente({ nombre: 'Otro cliente', dni: '30994455' });
+
+      await owned(request(app.getHttpServer()).patch(`/customers/${otro.id}`))
+        .send({ dni: '30.993.344' })
+        .expect(409);
+    });
+
+    it('id inexistente → 404', async () => {
+      await owned(request(app.getHttpServer()).patch('/customers/999999999'))
+        .send({ nombre: 'X' })
+        .expect(404);
+    });
+
+    it('rechaza sin autenticar', async () => {
+      const cliente = await crearCliente({ nombre: 'Sin Auth', dni: '30995566' });
+      await request(app.getHttpServer())
+        .patch(`/customers/${cliente.id}`)
+        .send({ nombre: 'X' })
+        .expect(401);
     });
   });
 

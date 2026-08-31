@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException } from '@nestjs/common
 import { Customer, PaymentMetodo, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
+import { UpdateCustomerDto } from './dto/update-customer.dto';
 
 // Ticket nuevo (post Release Candidate, BLUEPRINT §8.4) — módulo mínimo:
 // alta rápida de cliente (mismo patrón que Marca/Talle/Color) y consulta
@@ -41,11 +42,19 @@ export class CustomersService {
 
   // Sin `q`: los últimos cargados primero (mismo criterio de "lo último
   // arriba" que el resto de los listados del sistema, §12.4).
-  buscar(q?: string): Promise<Customer[]> {
+  //
+  // Ticket nuevo (post Release Candidate) — `incluirInactivos` es
+  // `false` por default a propósito: el buscador de `DevolucionPage` y el
+  // autocompletado de crédito de `CobroPage` ya usaban este método antes
+  // de que existiera edición/baja, y no tiene sentido dejar que un
+  // vendedor le aplique crédito o registre una devolución a nombre de un
+  // cliente dado de baja. Solo la pantalla de Clientes (que sí necesita
+  // poder reactivarlo) pide `true`.
+  buscar(q?: string, incluirInactivos = false): Promise<Customer[]> {
     const trimmed = q?.trim();
     return this.prisma.customer.findMany({
       where: {
-        activo: true,
+        ...(incluirInactivos ? {} : { activo: true }),
         ...(trimmed
           ? {
               OR: [
@@ -58,6 +67,31 @@ export class CustomersService {
       orderBy: { createdAt: 'desc' },
       take: 20,
     });
+  }
+
+  // Ticket nuevo (post Release Candidate) — pedido directo del usuario:
+  // "editar o dar de baja, por si pusimos mal datos". Mismo patrón que
+  // `BrandsService.update`: un solo PATCH cubre corregir un campo y
+  // activar/desactivar, el catch de P2002 traduce el mismo choque de DNI
+  // que ya cubre `crear`.
+  async actualizar(id: number, dto: UpdateCustomerDto): Promise<Customer> {
+    try {
+      return await this.prisma.customer.update({ where: { id }, data: dto });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Ya existe un cliente con ese DNI');
+      }
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new NotFoundException('Cliente no encontrado');
+      }
+      throw error;
+    }
   }
 
   // Ticket nuevo — mismo cálculo exacto que `ReturnsService.consultarCredito`
