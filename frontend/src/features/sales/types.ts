@@ -27,3 +27,21 @@ export interface Sale {
   estado: string;
   idempotencyKey: string | null;
 }
+
+// `GET /sales` (ticket nuevo, post Release Candidate) — fila de
+// listado, sin costo/margen (esos campos ni existen a nivel de
+// cabecera de venta, mismo motivo que `Sale` de arriba).
+export interface SaleListItem {
+  id: number;
+  numero: number;
+  fecha: string;
+  total: string;
+  estado: string;
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  itemCount: number;
+  page: number;
+  pageSize: number;
+}

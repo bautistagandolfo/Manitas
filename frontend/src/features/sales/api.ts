@@ -1,5 +1,10 @@
 import { httpClient } from '../../lib/http-client';
-import type { PaymentMetodo, Sale } from './types';
+import type {
+  PaginatedResult,
+  PaymentMetodo,
+  Sale,
+  SaleListItem,
+} from './types';
 
 export interface CreateSaleItemData {
   variantId: number;
@@ -41,4 +46,28 @@ export function createSale(
   return httpClient.post<Sale>('/sales', data, {
     headers: { 'Idempotency-Key': idempotencyKey },
   });
+}
+
+export interface ListarVentasParams {
+  desde?: string;
+  hasta?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+// Ticket nuevo (post Release Candidate) — sin @Roles(): cualquiera
+// autenticado, mismo criterio que `POST /sales`. Sin filtro trae todo,
+// ordenado por más reciente primero (§12.4).
+export function listarVentas(
+  params: ListarVentasParams = {},
+): Promise<PaginatedResult<SaleListItem>> {
+  const query = new URLSearchParams();
+  if (params.desde) query.set('desde', params.desde);
+  if (params.hasta) query.set('hasta', params.hasta);
+  if (params.page) query.set('page', String(params.page));
+  if (params.pageSize) query.set('pageSize', String(params.pageSize));
+  const qs = query.toString();
+  return httpClient.get<PaginatedResult<SaleListItem>>(
+    `/sales${qs ? `?${qs}` : ''}`,
+  );
 }

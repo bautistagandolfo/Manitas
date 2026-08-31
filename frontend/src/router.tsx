@@ -12,6 +12,7 @@ import { NewVariantPage } from './features/catalog/NewVariantPage';
 import { CashRegisterPage } from './features/cash-registers/CashRegisterPage';
 import { SalePage } from './features/sales/SalePage';
 import { CobroPage } from './features/sales/CobroPage';
+import { HistorialVentasPage } from './features/sales/HistorialVentasPage';
 import { DevolucionPage } from './features/returns/DevolucionPage';
 import { GastosPage } from './features/expenses/GastosPage';
 import { ResultadosPage } from './features/expenses/ResultadosPage';
@@ -32,6 +33,10 @@ export const router = createBrowserRouter([
           { path: '/', element: <DashboardPage /> },
           { path: '/venta', element: <SalePage /> },
           { path: '/venta/cobro', element: <CobroPage /> },
+          // Ticket nuevo (post Release Candidate) — sin @Roles() en
+          // GET /sales, cualquiera autenticado puede consultar el
+          // historial (mismo criterio que la venta misma).
+          { path: '/ventas', element: <HistorialVentasPage /> },
           { path: '/devoluciones', element: <DevolucionPage /> },
           { path: '/caja', element: <CashRegisterPage /> },
           { path: '/catalogo', element: <CatalogPage /> },
