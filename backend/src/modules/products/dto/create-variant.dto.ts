@@ -1,7 +1,6 @@
 import {
   IsDecimal,
   IsInt,
-  IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
@@ -26,13 +25,18 @@ export class CreateVariantDto {
   @IsInt()
   colorId?: number;
 
+  // Opcional (ticket nuevo, post Release Candidate): si no viene (o
+  // llega vacío), el backend genera uno — mismo criterio y misma
+  // función (`generateSku`, ver `sku.util.ts`) que ya usan la grilla
+  // (T2.11) y la importación CSV (T2.13). Antes de este ticket, esta
+  // era la única de las tres vías de alta que lo exigía a mano.
+  @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
-  sku!: string;
+  sku?: string;
 
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>

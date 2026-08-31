@@ -183,6 +183,24 @@ export class VariantsService {
     assertPositive(precioVenta, 'precioVenta');
     assertPositive(costoActual, 'costoActual');
 
+    // Ticket nuevo (post Release Candidate) — mismo criterio que
+    // `createGrid`/`catalog-import.service.ts`: si no viene `sku`, se
+    // genera uno (`generateSku`, `P{productId}-{TALLE}-{COLOR}`). Solo
+    // se consultan `size`/`color` cuando hace falta generarlo — si
+    // `dto.sku` ya vino, no hay motivo para la ida extra a la base.
+    let sku = dto.sku;
+    if (!sku) {
+      const [size, color] = await Promise.all([
+        dto.sizeId
+          ? this.prisma.size.findUnique({ where: { id: dto.sizeId } })
+          : Promise.resolve(null),
+        dto.colorId
+          ? this.prisma.color.findUnique({ where: { id: dto.colorId } })
+          : Promise.resolve(null),
+      ]);
+      sku = generateSku(productId, size ?? undefined, color ?? undefined);
+    }
+
     try {
       // AD-16 / RN-10: toda alta de variante deja su precio y costo
       // iniciales en price_history con origen ALTA (valorAnterior null) —
@@ -193,7 +211,7 @@ export class VariantsService {
             productId,
             sizeId: dto.sizeId,
             colorId: dto.colorId,
-            sku: dto.sku,
+            sku,
             barcode: dto.barcode,
             precioVenta,
             costoActual,

@@ -22,9 +22,28 @@ interface PriceHistoryCreateCall {
   };
 }
 
+interface VariantCreateCall {
+  data: {
+    productId: number;
+    sizeId?: number;
+    colorId?: number;
+    sku: string;
+    barcode?: string;
+    precioVenta: Prisma.Decimal;
+    costoActual: Prisma.Decimal;
+  };
+}
+
+interface VariantCreateResult {
+  id: number;
+  sku?: string;
+  precioVenta?: Prisma.Decimal;
+  costoActual?: Prisma.Decimal;
+}
+
 type MockTx = {
   variant: {
-    create: jest.Mock;
+    create: jest.Mock<Promise<VariantCreateResult>, [VariantCreateCall]>;
     update: jest.Mock;
     findUnique: jest.Mock;
     findUniqueOrThrow: jest.Mock;
@@ -49,8 +68,8 @@ type MockPrisma = {
     findMany: jest.Mock<Promise<unknown[]>, [FindManyCall]>;
     count: jest.Mock;
   };
-  size: { findMany: jest.Mock };
-  color: { findMany: jest.Mock };
+  size: { findMany: jest.Mock; findUnique: jest.Mock };
+  color: { findMany: jest.Mock; findUnique: jest.Mock };
   priceHistory: { findMany: jest.Mock; count: jest.Mock };
   $transaction: jest.Mock;
 };
@@ -60,7 +79,7 @@ type MockStockService = { registrarEntrada: jest.Mock };
 function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
   const tx: MockTx = {
     variant: {
-      create: jest.fn(),
+      create: jest.fn<Promise<VariantCreateResult>, [VariantCreateCall]>(),
       update: jest.fn(),
       findUnique: jest.fn(),
       findUniqueOrThrow: jest.fn(),
@@ -79,8 +98,14 @@ function buildMockPrisma(): { prisma: MockPrisma; tx: MockTx } {
       findMany: jest.fn<Promise<unknown[]>, [FindManyCall]>(),
       count: jest.fn(),
     },
-    size: { findMany: jest.fn().mockResolvedValue([]) },
-    color: { findMany: jest.fn().mockResolvedValue([]) },
+    size: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
+    color: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     priceHistory: { findMany: jest.fn(), count: jest.fn() },
     $transaction: jest.fn((callback: (tx: MockTx) => unknown) => callback(tx)),
   };
@@ -419,6 +444,84 @@ describe('VariantsService', () => {
           1,
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    // Ticket nuevo (post Release Candidate) — mismo criterio que
+    // `createGrid`/importación CSV: sin `sku`, el backend genera uno.
+    describe('sku automático (sin sku en el dto)', () => {
+      it('sin sku, sin sizeId/colorId — genera "P{productId}"', async () => {
+        prisma.product.findUnique.mockResolvedValue({ id: 42 });
+        tx.variant.create.mockResolvedValue({ id: 10 });
+
+        await service.create(
+          42,
+          { precioVenta: '10.00', costoActual: '5.00' },
+          1,
+        );
+
+        expect(prisma.size.findUnique).not.toHaveBeenCalled();
+        expect(prisma.color.findUnique).not.toHaveBeenCalled();
+        const call = tx.variant.create.mock.calls[0][0];
+        expect(call.data.sku).toBe('P42');
+      });
+
+      it('sin sku, con sizeId y colorId — busca ambos y genera "P{productId}-{TALLE}-{COLOR}"', async () => {
+        prisma.product.findUnique.mockResolvedValue({ id: 42 });
+        prisma.size.findUnique.mockResolvedValue({ id: 3, nombre: 'M' });
+        prisma.color.findUnique.mockResolvedValue({ id: 7, nombre: 'Negro' });
+        tx.variant.create.mockResolvedValue({ id: 10 });
+
+        await service.create(
+          42,
+          { precioVenta: '10.00', costoActual: '5.00', sizeId: 3, colorId: 7 },
+          1,
+        );
+
+        expect(prisma.size.findUnique).toHaveBeenCalledWith({
+          where: { id: 3 },
+        });
+        expect(prisma.color.findUnique).toHaveBeenCalledWith({
+          where: { id: 7 },
+        });
+        const call = tx.variant.create.mock.calls[0][0];
+        expect(call.data.sku).toBe('P42-M-NEGRO');
+      });
+
+      it('sku vacío ("") se trata igual que ausente — se genera uno, no se guarda el string vacío', async () => {
+        prisma.product.findUnique.mockResolvedValue({ id: 42 });
+        tx.variant.create.mockResolvedValue({ id: 10 });
+
+        await service.create(
+          42,
+          { sku: '', precioVenta: '10.00', costoActual: '5.00' },
+          1,
+        );
+
+        const call = tx.variant.create.mock.calls[0][0];
+        expect(call.data.sku).toBe('P42');
+      });
+
+      it('con sku explícito, NO consulta size/color (sin ida a la base de más)', async () => {
+        prisma.product.findUnique.mockResolvedValue({ id: 42 });
+        tx.variant.create.mockResolvedValue({ id: 10 });
+
+        await service.create(
+          42,
+          {
+            sku: 'MI-SKU',
+            precioVenta: '10.00',
+            costoActual: '5.00',
+            sizeId: 3,
+            colorId: 7,
+          },
+          1,
+        );
+
+        expect(prisma.size.findUnique).not.toHaveBeenCalled();
+        expect(prisma.color.findUnique).not.toHaveBeenCalled();
+        const call = tx.variant.create.mock.calls[0][0];
+        expect(call.data.sku).toBe('MI-SKU');
+      });
     });
   });
 

@@ -298,6 +298,54 @@ describe('Variants (integration)', () => {
         })
         .expect(400);
     });
+
+    // Ticket nuevo (post Release Candidate) — mismo criterio que la
+    // grilla (T2.11)/importación CSV (T2.13): sin `sku`, el backend
+    // genera uno. Antes de este ticket, el alta manual de a una era la
+    // única de las tres vías que lo exigía a mano.
+    it('sin sku en el body — genera uno con el patrón "P{productId}"', async () => {
+      const productId = await createTestProduct();
+      const response = await owned(
+        request(app.getHttpServer()).post(`/products/${productId}/variants`),
+      )
+        .send({ precioVenta: '10.00', costoActual: '5.00' })
+        .expect(201);
+      const body = response.body as VariantResponseBody;
+      createdVariantIds.push(body.id);
+
+      expect(body.sku).toBe(`P${productId}`);
+    });
+
+    it('sin sku, con sizeId y colorId — genera uno con el patrón "P{productId}-{TALLE}-{COLOR}"', async () => {
+      const productId = await createTestProduct();
+      const response = await owned(
+        request(app.getHttpServer()).post(`/products/${productId}/variants`),
+      )
+        .send({
+          precioVenta: '10.00',
+          costoActual: '5.00',
+          sizeId: sizeS,
+          colorId: colorNegro,
+        })
+        .expect(201);
+      const body = response.body as VariantResponseBody;
+      createdVariantIds.push(body.id);
+
+      expect(body.sku.startsWith(`P${productId}-`)).toBe(true);
+    });
+
+    it('sku vacío ("") se trata igual que ausente — genera uno, no guarda el string vacío', async () => {
+      const productId = await createTestProduct();
+      const response = await owned(
+        request(app.getHttpServer()).post(`/products/${productId}/variants`),
+      )
+        .send({ sku: '', precioVenta: '10.00', costoActual: '5.00' })
+        .expect(201);
+      const body = response.body as VariantResponseBody;
+      createdVariantIds.push(body.id);
+
+      expect(body.sku).toBe(`P${productId}`);
+    });
   });
 
   describe('GET /variants/:id (RN-3)', () => {

@@ -59,8 +59,6 @@ export function NewVariantPage() {
       costoActual: '',
     },
     validate: {
-      sku: (value) =>
-        value.trim().length > 0 ? null : 'El SKU es obligatorio',
       precioVenta: (value) =>
         typeof value === 'number' && value > 0
           ? null
@@ -85,7 +83,7 @@ export function NewVariantPage() {
       await createVariant(id, {
         sizeId: values.sizeId,
         colorId: values.colorId,
-        sku: values.sku.trim(),
+        sku: values.sku.trim() || undefined,
         barcode: values.barcode.trim() || undefined,
         precioVenta: values.precioVenta.toFixed(2),
         costoActual: values.costoActual.toFixed(2),
@@ -151,6 +149,7 @@ export function NewVariantPage() {
             />
             <TextInput
               label="SKU"
+              placeholder="Se genera automáticamente si lo dejás vacío"
               disabled={submitting}
               {...form.getInputProps('sku')}
             />

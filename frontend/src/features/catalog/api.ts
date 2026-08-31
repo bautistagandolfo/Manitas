@@ -69,10 +69,12 @@ export function updateProduct(
   return httpClient.patch<Product>(`/products/${id}`, data);
 }
 
+// Ticket nuevo (post Release Candidate): sku opcional — sin él, el
+// backend genera uno (mismo criterio que la grilla, `GridFila.sku`).
 export interface CreateVariantValues {
   sizeId?: number;
   colorId?: number;
-  sku: string;
+  sku?: string;
   barcode?: string;
   precioVenta: string;
   costoActual: string;
