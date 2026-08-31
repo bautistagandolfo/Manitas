@@ -948,4 +948,189 @@ describe('sales-controller (integration, T4.11)', () => {
       expect(sale).toBeNull();
     });
   });
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real de uso: sin
+  // esto, el número de venta que pide `GET /returns/sales/:numero` era
+  // efectivamente imposible de recuperar una vez perdida la notificación
+  // del cobro (sin ticket impreso, AMB-9 diferida). Mismo patrón de test
+  // que `GET /expenses` (T6.2): paginación, filtro de fecha, sin @Roles.
+  describe('GET /sales — listado paginado (ticket nuevo)', () => {
+    async function crearVentaSimple(
+      actor: (req: request.Test) => request.Test,
+      montoTotal = '100.00',
+    ): Promise<{ id: number; numero: number }> {
+      const variant = await createVariant({
+        precioVenta: montoTotal,
+        stockActual: 5,
+      });
+      const response = await actor(request(app.getHttpServer()).post('/sales'))
+        .set('Idempotency-Key', randomUUID())
+        .send({
+          items: [{ variantId: variant.id, cantidad: 1 }],
+          payments: [{ metodo: PaymentMetodo.EFECTIVO, monto: montoTotal }],
+        })
+        .expect(201);
+      const body = response.body as { id: number; numero: number };
+      createdSaleIds.push(body.id);
+      return body;
+    }
+
+    it('caso 23 — OWNER → 200, forma paginada (items/itemCount/page/pageSize)', async () => {
+      await abrirSesion(owned);
+      await crearVentaSimple(owned);
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/sales?page=1&pageSize=5'),
+      ).expect(200);
+
+      const body = response.body as {
+        items: unknown[];
+        itemCount: number;
+        page: number;
+        pageSize: number;
+      };
+      expect(Array.isArray(body.items)).toBe(true);
+      expect(typeof body.itemCount).toBe('number');
+      expect(body.page).toBe(1);
+      expect(body.pageSize).toBe(5);
+    });
+
+    it('caso 24 — SELLER también puede listar (mismo criterio que POST /sales: "cualquiera autenticado, es su trabajo") → 200', async () => {
+      await abrirSesion(sold);
+
+      await sold(request(app.getHttpServer()).get('/sales')).expect(200);
+    });
+
+    it('caso 25 — sin sesión → 401', async () => {
+      await request(app.getHttpServer()).get('/sales').expect(401);
+    });
+
+    it('caso 26 — cada fila trae numero/fecha/total/estado, sin ningún campo de costo', async () => {
+      await abrirSesion(owned);
+      const venta = await crearVentaSimple(owned, '250.00');
+
+      const response = await owned(
+        request(app.getHttpServer()).get('/sales?pageSize=100'),
+      ).expect(200);
+
+      const items = (
+        response.body as {
+          items: Array<{
+            id: number;
+            numero: number;
+            fecha: string;
+            total: string;
+            estado: string;
+          }>;
+        }
+      ).items;
+      const fila = items.find((i) => i.id === venta.id);
+      expect(fila).toBeDefined();
+      expect(fila?.numero).toBe(venta.numero);
+      expect(fila?.total).toBe('250');
+      expect(fila?.estado).toBe('COMPLETADA');
+      expect(Object.keys(fila!).sort()).toEqual(
+        ['estado', 'fecha', 'id', 'numero', 'total'].sort(),
+      );
+    });
+
+    it('caso 27 — ordena por fecha descendente ("lo último siempre arriba", §12.4)', async () => {
+      await abrirSesion(owned);
+      // Mediodía UTC, no medianoche (AD-13/T0.7): con `desde`/`hasta`
+      // resueltos en hora argentina, una `fecha` a medianoche UTC exacta
+      // cae ANTES de la medianoche argentina de ese mismo día (que es
+      // 03:00 UTC) — quedaría fuera del rango pedido más abajo. El
+      // mediodía UTC siempre cae dentro del día argentino correspondiente.
+      const vieja = await crearVentaSimple(owned);
+      await prisma.sale.update({
+        where: { id: vieja.id },
+        data: { fecha: new Date('2026-01-01T12:00:00Z') },
+      });
+      const nueva = await crearVentaSimple(owned);
+      await prisma.sale.update({
+        where: { id: nueva.id },
+        data: { fecha: new Date('2026-06-01T12:00:00Z') },
+      });
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          '/sales?pageSize=100&desde=2026-01-01&hasta=2026-06-30',
+        ),
+      ).expect(200);
+
+      const ids = (response.body as { items: Array<{ id: number }> }).items.map(
+        (i) => i.id,
+      );
+      const posNueva = ids.indexOf(nueva.id);
+      const posVieja = ids.indexOf(vieja.id);
+      expect(posNueva).toBeGreaterThanOrEqual(0);
+      expect(posVieja).toBeGreaterThanOrEqual(0);
+      expect(posNueva).toBeLessThan(posVieja);
+    });
+
+    it('caso 28 — desde/hasta filtran por fecha — una venta fuera del rango no aparece', async () => {
+      await abrirSesion(owned);
+      // Mediodía UTC — mismo motivo que el caso 27 (AD-13/T0.7).
+      const dentro = await crearVentaSimple(owned);
+      await prisma.sale.update({
+        where: { id: dentro.id },
+        data: { fecha: new Date('2026-03-15T12:00:00Z') },
+      });
+      const fuera = await crearVentaSimple(owned);
+      await prisma.sale.update({
+        where: { id: fuera.id },
+        data: { fecha: new Date('2026-04-15T12:00:00Z') },
+      });
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          '/sales?pageSize=100&desde=2026-03-01&hasta=2026-03-31',
+        ),
+      ).expect(200);
+
+      const ids = (response.body as { items: Array<{ id: number }> }).items.map(
+        (i) => i.id,
+      );
+      expect(ids).toContain(dentro.id);
+      expect(ids).not.toContain(fuera.id);
+    });
+
+    // Hallazgo real de este ticket (navegando el sistema con datos
+    // reales): una venta hecha a última hora del día en Argentina cae en
+    // el día UTC SIGUIENTE — filtrar "hasta" ese mismo día argentino con
+    // un `Date.UTC` ingenuo la habría excluido (AD-13/T0.7, ver
+    // `sales.service.ts`/`sales.service.spec.ts`). Regresión end-to-end.
+    it('caso 28b — una venta de las 23:30 hora argentina (fecha UTC del día siguiente) aparece al filtrar "hasta" su propio día argentino', async () => {
+      await abrirSesion(owned);
+      const tardia = await crearVentaSimple(owned);
+      // 23:30 en Argentina (UTC-3) el 10/05 = 02:30 UTC el 11/05.
+      await prisma.sale.update({
+        where: { id: tardia.id },
+        data: { fecha: new Date('2026-05-11T02:30:00Z') },
+      });
+
+      const response = await owned(
+        request(app.getHttpServer()).get(
+          '/sales?pageSize=100&desde=2026-05-10&hasta=2026-05-10',
+        ),
+      ).expect(200);
+
+      const ids = (response.body as { items: Array<{ id: number }> }).items.map(
+        (i) => i.id,
+      );
+      expect(ids).toContain(tardia.id);
+    });
+
+    it('caso 29 — fecha de calendario inválida (30 de febrero) → 400, no un rango corrido en silencio', async () => {
+      await owned(
+        request(app.getHttpServer()).get('/sales?desde=2026-02-30'),
+      ).expect(400);
+    });
+
+    it('caso 30 — pageSize fuera del límite (>100) → 400', async () => {
+      await owned(
+        request(app.getHttpServer()).get('/sales?pageSize=101'),
+      ).expect(400);
+    });
+  });
 });

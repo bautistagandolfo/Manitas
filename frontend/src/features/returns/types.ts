@@ -41,6 +41,23 @@ export interface ReturnResult {
   autorizadoPorUserId: number | null;
 }
 
+// `GET /sales` (ticket nuevo, post Release Candidate) — fila de listado,
+// sin costo/margen (esos campos ni existen a nivel de cabecera de venta).
+export interface SaleListItem {
+  id: number;
+  numero: number;
+  fecha: string;
+  total: string;
+  estado: string;
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  itemCount: number;
+  page: number;
+  pageSize: number;
+}
+
 // `GET /returns/:numero/credito` (T5.8, AMB-16 diferida) — cuánto
 // crédito le queda disponible a una devolución para aplicarse en una
 // venta futura, calculado en vivo por el backend (sin saldo cacheado

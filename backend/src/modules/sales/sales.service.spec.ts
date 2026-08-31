@@ -9,6 +9,7 @@ import {
   prorate,
 } from '../../common/money/money.util';
 import { SalesService } from './sales.service';
+import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 
 // Fase 04a (T4.1) — tests escritos ANTES de la implementación, contra Prisma
 // completamente mockeado (BLUEPRINT §9.8, excepción "plata y stock/caja":
@@ -4241,5 +4242,192 @@ describe('SalesService.crearVenta — T5.5 crédito de devolución diferido (inv
     const joinArg = returnLockCall![1] as Prisma.Sql;
     expect(joinArg.values).toHaveLength(2);
     expect(joinArg.values).toEqual(expect.arrayContaining([901, 902]));
+  });
+});
+
+// Ticket nuevo (post Release Candidate) — listado de ventas. `findAll` es
+// lectura pura, sin `tx`, sin dependencia de `stockService`/
+// `cashRegisterService`/`settingsService` — mismo criterio de test que
+// `ExpensesService.findAll` (T6.2): Prisma mockeado directo, sin
+// reusar el `buildMockTx`/`buildDeps` de `crearVenta` (que mockean una
+// transacción completa, no hace falta acá).
+describe('SalesService.findAll (listado de ventas)', () => {
+  interface FindManyArgs {
+    where: { fecha?: { gte?: Date; lte?: Date } };
+    select: Record<string, boolean>;
+    orderBy: { fecha: 'desc' };
+    skip: number;
+    take: number;
+  }
+
+  interface SaleRow {
+    id: number;
+    numero: number;
+    fecha: Date;
+    total: Prisma.Decimal;
+    estado: string;
+  }
+
+  interface MockPrisma {
+    sale: {
+      findMany: jest.Mock<Promise<SaleRow[]>, [FindManyArgs]>;
+      count: jest.Mock<Promise<number>, [{ where: FindManyArgs['where'] }]>;
+    };
+  }
+
+  function buildMockPrisma(): MockPrisma {
+    return {
+      sale: {
+        findMany: jest
+          .fn<Promise<SaleRow[]>, [FindManyArgs]>()
+          .mockResolvedValue([]),
+        count: jest
+          .fn<Promise<number>, [{ where: FindManyArgs['where'] }]>()
+          .mockResolvedValue(0),
+      },
+    };
+  }
+
+  function buildServiceWithPrisma(prisma: MockPrisma): SalesService {
+    return new SalesService(
+      prisma as unknown as PrismaService,
+      {} as unknown as StockService,
+      {} as unknown as CashRegisterService,
+      {} as unknown as SettingsService,
+    );
+  }
+
+  it('pagina con skip/take derivados de page/pageSize, ordena por fecha descendente', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({ page: 3, pageSize: 10 });
+
+    expect(prisma.sale.findMany).toHaveBeenCalledWith({
+      where: {},
+      select: {
+        id: true,
+        numero: true,
+        fecha: true,
+        total: true,
+        estado: true,
+      },
+      orderBy: { fecha: 'desc' },
+      skip: 20,
+      take: 10,
+    });
+  });
+
+  it('sin desde/hasta, el where no filtra por fecha', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({ page: 1, pageSize: 20 });
+
+    const call = prisma.sale.findMany.mock.calls[0][0];
+    expect(call.where).toEqual({});
+  });
+
+  it('con desde y hasta, filtra fecha con gte/lte en hora argentina (AD-13/T0.7)', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({
+      page: 1,
+      pageSize: 20,
+      desde: '2026-01-01',
+      hasta: '2026-01-31',
+    });
+
+    const call = prisma.sale.findMany.mock.calls[0][0];
+    expect(call.where.fecha).toEqual({
+      gte: argentinaDayRangeToUtc('2026-01-01').desde,
+      lte: argentinaDayRangeToUtc('2026-01-31').hasta,
+    });
+  });
+
+  it('con SOLO desde (sin hasta), filtra igual — el filtro no exige los dos extremos', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({ page: 1, pageSize: 20, desde: '2026-01-01' });
+
+    const call = prisma.sale.findMany.mock.calls[0][0];
+    expect(call.where.fecha).toEqual({
+      gte: argentinaDayRangeToUtc('2026-01-01').desde,
+    });
+  });
+
+  it('con SOLO hasta (sin desde), filtra igual — el filtro no exige los dos extremos', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({ page: 1, pageSize: 20, hasta: '2026-01-31' });
+
+    const call = prisma.sale.findMany.mock.calls[0][0];
+    expect(call.where.fecha).toEqual({
+      lte: argentinaDayRangeToUtc('2026-01-31').hasta,
+    });
+  });
+
+  // Hallazgo real de este ticket (navegando el sistema): una venta hecha
+  // a las 21:38 hora argentina del 30/08 persiste como
+  // `2026-08-31T00:38...Z` en UTC (cae en el día UTC SIGUIENTE) — un
+  // `Date.UTC` ingenuo para "hasta: 2026-08-30" (medianoche UTC de ESE
+  // día = 21:00 hora argentina del día ANTERIOR, 29/08) la habría
+  // excluido por completo. Regresión directa de ese bug.
+  it('una venta de las 21:38 hora argentina (que cae en el día UTC siguiente) queda DENTRO del filtro "hasta" de su propio día argentino', () => {
+    const ventaFechaUtc = new Date('2026-08-31T00:38:07.123Z');
+    const { hasta } = argentinaDayRangeToUtc('2026-08-30');
+
+    expect(ventaFechaUtc.getTime()).toBeLessThanOrEqual(hasta.getTime());
+  });
+
+  it('devuelve items/itemCount/page/pageSize', async () => {
+    const prisma = buildMockPrisma();
+    prisma.sale.count.mockResolvedValue(42);
+    const service = buildServiceWithPrisma(prisma);
+
+    const result = await service.findAll({ page: 2, pageSize: 15 });
+
+    expect(result).toEqual({
+      items: [],
+      itemCount: 42,
+      page: 2,
+      pageSize: 15,
+    });
+  });
+
+  it('cuenta el total (itemCount) con el MISMO where que la página, no un count sin filtro', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({
+      page: 1,
+      pageSize: 20,
+      desde: '2026-01-01',
+      hasta: '2026-01-31',
+    });
+
+    expect(prisma.sale.count).toHaveBeenCalledWith({
+      where: {
+        fecha: {
+          gte: argentinaDayRangeToUtc('2026-01-01').desde,
+          lte: argentinaDayRangeToUtc('2026-01-31').hasta,
+        },
+      },
+    });
+  });
+
+  it('la selección no incluye ningún campo de costo/margen (Sale nunca tiene uno a nivel de cabecera, pero el select explícito es la garantía real)', async () => {
+    const prisma = buildMockPrisma();
+    const service = buildServiceWithPrisma(prisma);
+
+    await service.findAll({ page: 1, pageSize: 20 });
+
+    const call = prisma.sale.findMany.mock.calls[0][0];
+    expect(Object.keys(call.select).sort()).toEqual(
+      ['estado', 'fecha', 'id', 'numero', 'total'].sort(),
+    );
   });
 });

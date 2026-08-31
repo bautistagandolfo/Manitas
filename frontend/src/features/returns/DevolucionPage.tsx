@@ -5,11 +5,14 @@ import {
   Badge,
   Button,
   Card,
+  Center,
   Checkbox,
+  Collapse,
   Divider,
   Group,
   Loader,
   NumberInput,
+  Pagination,
   Radio,
   Stack,
   Table,
@@ -25,9 +28,15 @@ import { useIdempotencyKey } from '../../lib/idempotency';
 import { useAuth } from '../auth/AuthContext';
 import { searchVariants } from '../catalog/api';
 import type { VariantSearchResult } from '../catalog/types';
-import { buscarVentaParaDevolucion, crearDevolucion } from './api';
+import {
+  buscarVentaParaDevolucion,
+  crearDevolucion,
+  listarVentas,
+} from './api';
 import type {
+  PaginatedResult,
   PaymentMetodo,
+  SaleListItem,
   SaleReturnInfo,
   SaleReturnInfoItem,
 } from './types';
@@ -87,6 +96,19 @@ export function DevolucionPage() {
   const [saleInfo, setSaleInfo] = useState<SaleReturnInfo | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+
+  // Ticket nuevo (post Release Candidate) — sin ticket impreso (AMB-9
+  // diferida) el número de venta no queda anotado en ningún lado; esta
+  // sección deja encontrarlo por rango de fecha (`GET /sales`) en vez de
+  // depender de que alguien lo haya recordado o anotado a mano.
+  const [mostrarBuscarPorFecha, setMostrarBuscarPorFecha] = useState(false);
+  const [filtroDesde, setFiltroDesde] = useState('');
+  const [filtroHasta, setFiltroHasta] = useState('');
+  const [filtroPage, setFiltroPage] = useState(1);
+  const [filtroResult, setFiltroResult] =
+    useState<PaginatedResult<SaleListItem> | null>(null);
+  const [filtroLoading, setFiltroLoading] = useState(false);
+  const [filtroError, setFiltroError] = useState<string | null>(null);
 
   const [selections, setSelections] = useState<
     Record<number, DevolucionLineSelection>
@@ -150,12 +172,7 @@ export function DevolucionPage() {
     setSubmitError(null);
   }
 
-  async function handleBuscar(): Promise<void> {
-    const numero = Number(numeroQuery.trim());
-    if (!numeroQuery.trim() || !Number.isInteger(numero) || numero <= 0) {
-      setSearchError('Ingresá un número de venta válido');
-      return;
-    }
+  async function buscarNumero(numero: number): Promise<void> {
     setSearchLoading(true);
     setSearchError(null);
     try {
@@ -179,11 +196,49 @@ export function DevolucionPage() {
     }
   }
 
+  async function handleBuscar(): Promise<void> {
+    const numero = Number(numeroQuery.trim());
+    if (!numeroQuery.trim() || !Number.isInteger(numero) || numero <= 0) {
+      setSearchError('Ingresá un número de venta válido');
+      return;
+    }
+    await buscarNumero(numero);
+  }
+
   function handleBuscarKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
     if (event.key === 'Enter') {
       event.preventDefault();
       void handleBuscar();
     }
+  }
+
+  async function handleBuscarPorFecha(page: number): Promise<void> {
+    setFiltroLoading(true);
+    setFiltroError(null);
+    try {
+      const data = await listarVentas({
+        desde: filtroDesde || undefined,
+        hasta: filtroHasta || undefined,
+        page,
+        pageSize: 10,
+      });
+      setFiltroResult(data);
+      setFiltroPage(page);
+    } catch (err) {
+      setFiltroResult(null);
+      setFiltroError(
+        err instanceof ApiError
+          ? err.message
+          : 'No se pudo buscar. Probá de nuevo.',
+      );
+    } finally {
+      setFiltroLoading(false);
+    }
+  }
+
+  function handleSeleccionarDeLista(item: SaleListItem): void {
+    setNumeroQuery(String(item.numero));
+    void buscarNumero(item.numero);
   }
 
   function setLineCantidad(item: SaleReturnInfoItem, cantidad: number): void {
@@ -374,6 +429,14 @@ export function DevolucionPage() {
         <Button onClick={() => void handleBuscar()} loading={searchLoading}>
           Buscar
         </Button>
+        <Button
+          variant="subtle"
+          onClick={() => setMostrarBuscarPorFecha((v) => !v)}
+        >
+          {mostrarBuscarPorFecha
+            ? 'Ocultar búsqueda por fecha'
+            : '¿No tenés el número? Buscar por fecha'}
+        </Button>
       </Group>
 
       {searchError && (
@@ -381,6 +444,87 @@ export function DevolucionPage() {
           {searchError}
         </Alert>
       )}
+
+      <Collapse expanded={mostrarBuscarPorFecha}>
+        <Card withBorder>
+          <Stack>
+            <Group align="flex-end">
+              <TextInput
+                label="Desde"
+                type="date"
+                value={filtroDesde}
+                onChange={(event) => setFiltroDesde(event.currentTarget.value)}
+              />
+              <TextInput
+                label="Hasta"
+                type="date"
+                value={filtroHasta}
+                onChange={(event) => setFiltroHasta(event.currentTarget.value)}
+              />
+              <Button
+                onClick={() => void handleBuscarPorFecha(1)}
+                loading={filtroLoading}
+              >
+                Buscar
+              </Button>
+            </Group>
+
+            {filtroError && (
+              <Alert color="red" title="No se pudo buscar">
+                {filtroError}
+              </Alert>
+            )}
+
+            {filtroResult && (
+              <>
+                {filtroResult.items.length === 0 ? (
+                  <Text c="dimmed" ta="center" py="md">
+                    No hay ventas en ese período.
+                  </Text>
+                ) : (
+                  <Table striped highlightOnHover>
+                    <Table.Thead>
+                      <Table.Tr>
+                        <Table.Th>Número</Table.Th>
+                        <Table.Th>Fecha</Table.Th>
+                        <Table.Th>Total</Table.Th>
+                        <Table.Th>Estado</Table.Th>
+                      </Table.Tr>
+                    </Table.Thead>
+                    <Table.Tbody>
+                      {filtroResult.items.map((venta) => (
+                        <Table.Tr
+                          key={venta.id}
+                          onClick={() => handleSeleccionarDeLista(venta)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <Table.Td>#{venta.numero}</Table.Td>
+                          <Table.Td>{formatDate(venta.fecha)}</Table.Td>
+                          <Table.Td>{formatCurrency(venta.total)}</Table.Td>
+                          <Table.Td>{venta.estado}</Table.Td>
+                        </Table.Tr>
+                      ))}
+                    </Table.Tbody>
+                  </Table>
+                )}
+
+                {Math.ceil(filtroResult.itemCount / filtroResult.pageSize) >
+                  1 && (
+                  <Center>
+                    <Pagination
+                      total={Math.ceil(
+                        filtroResult.itemCount / filtroResult.pageSize,
+                      )}
+                      value={filtroPage}
+                      onChange={(page) => void handleBuscarPorFecha(page)}
+                    />
+                  </Center>
+                )}
+              </>
+            )}
+          </Stack>
+        </Card>
+      </Collapse>
 
       {saleInfo && (
         <>

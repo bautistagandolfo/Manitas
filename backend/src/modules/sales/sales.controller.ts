@@ -1,8 +1,16 @@
-import { Body, Controller, Post, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  UseInterceptors,
+} from '@nestjs/common';
 import { Sale, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { SalesService } from './sales.service';
+import { SalesService, PaginatedResult, SaleListItem } from './sales.service';
 import { CreateSaleDto } from './dto/create-sale.dto';
+import { FindSalesQueryDto } from './dto/find-sales-query.dto';
 import { CurrentUser } from '../../common/auth/current-user.decorator';
 import type { RequestUser } from '../../common/auth/authenticated-request';
 import { IdempotencyInterceptor } from '../../common/idempotency/idempotency.interceptor';
@@ -45,5 +53,26 @@ export class SalesController {
         ),
       () => this.prisma.sale.findUnique({ where: { idempotencyKey } }),
     );
+  }
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real de uso: sin
+  // esto, el número de venta que pide `GET /returns/sales/:numero` era
+  // efectivamente imposible de recuperar una vez perdida la notificación
+  // del cobro (sin ticket impreso, AMB-9 diferida). Sin @Roles(), mismo
+  // criterio que `crear()`: "cualquiera autenticado, es el trabajo del
+  // vendedor" — es quien procesa devoluciones en el mostrador, sin este
+  // permiso dependería siempre de la dueña para encontrar una venta
+  // vieja. `SaleListItem` no expone costo/margen (esos campos ni
+  // existen a nivel de cabecera de venta).
+  @Get()
+  async findAll(
+    @Query() query: FindSalesQueryDto,
+  ): Promise<PaginatedResult<SaleListItem>> {
+    return this.salesService.findAll({
+      page: query.page,
+      pageSize: query.pageSize,
+      desde: query.desde,
+      hasta: query.hasta,
+    });
   }
 }

@@ -19,6 +19,7 @@ import { CashRegisterService } from '../cash-registers/cash-register.service';
 import { SettingsService } from '../../common/settings/settings.service';
 import { SETTINGS_KEYS } from '../../common/settings/settings-keys';
 import { PrismaService } from '../../prisma/prisma.service';
+import { argentinaDayRangeToUtc } from '../../common/timezone/argentina-timezone.util';
 import {
   applyPercentage,
   assertPositive,
@@ -127,6 +128,46 @@ export interface AnularVentaInput {
   saleId: number;
   userId: number;
   esOwner: boolean;
+}
+
+// Ticket nuevo (post Release Candidate) — listado de ventas, mismo
+// patrón de paginado que `ExpensesService.findAll` (T6.2). A diferencia
+// de esa primera versión (y de `ExpensesService.findAll`, que quedó con
+// el mismo defecto sin corregir — fuera de alcance de este ticket,
+// reportado aparte): `desde`/`hasta` SÍ se resuelven en hora argentina
+// (AD-13/T0.7, `argentinaDayRangeToUtc`, mismo mecanismo que
+// `ResultadosService`) — un `Date.UTC` ingenuo interpreta "hasta:
+// 2026-08-31" como la medianoche UTC de ESE día, que es las 21:00 hora
+// argentina del día ANTERIOR: filtrar "hasta hoy" excluiría casi todo el
+// día de hoy. Hallado navegando el sistema durante este mismo ticket.
+export interface FindAllSalesInput {
+  page: number;
+  pageSize: number;
+  desde?: string;
+  hasta?: string;
+}
+
+// Cabecera únicamente — sin líneas ni pagos, así que sin `costoUnitario`
+// ni ningún otro dato de costo/margen de por medio (ese ya vive fuera
+// del alcance de este listado: `Sale` en sí mismo nunca tiene un campo
+// de costo, solo `SaleItem` lo tiene). Mismo criterio de "sin @Roles
+// porque no revela nada sensible" que ya usa `POST /sales`.
+export interface SaleListItem {
+  id: number;
+  numero: number;
+  fecha: Date;
+  total: Prisma.Decimal;
+  estado: SaleEstado;
+}
+
+// "itemCount", no "total" — mismo motivo que `ExpensesService`
+// (`PaginatedResult`, T6.2): el linter local `no-number-money` trata
+// cualquier `total` tipado number como un importe de plata.
+export interface PaginatedResult<T> {
+  items: T[];
+  itemCount: number;
+  page: number;
+  pageSize: number;
 }
 
 // T4.8 (BLUEPRINT §6, invariante 3): las "tres primeras" invariantes
@@ -693,5 +734,52 @@ export class SalesService {
         sumaPagos: sumaPorVenta.get(sale.id) ?? new Prisma.Decimal(0),
       }))
       .filter((m) => !m.totalGuardado.equals(m.sumaPagos));
+  }
+
+  // Lectura pura, sin `tx` — mismo criterio que `ExpensesService.findAll`
+  // (T6.2) y `reconciliar()` de arriba. Paginado en el servidor
+  // (BLUEPRINT §12.4), ordenado por `fecha` descendente ("lo último
+  // siempre arriba", §12.4).
+  async findAll(
+    input: FindAllSalesInput,
+  ): Promise<PaginatedResult<SaleListItem>> {
+    // AD-13/T0.7 — `desde` es la medianoche argentina de ESE día,
+    // `hasta` el 23:59:59.999 argentino del suyo; dos cálculos
+    // independientes (no el mismo día aplicado a los dos extremos), para
+    // que un rango de varios días tome el inicio del primero y el fin
+    // del último. `argentinaDayRangeToUtc` también revalida que el día
+    // exista en el calendario (red de seguridad extra sobre
+    // `IsValidCalendarDateConstraint` del DTO).
+    const where: Prisma.SaleWhereInput = {
+      ...((input.desde || input.hasta) && {
+        fecha: {
+          ...(input.desde && {
+            gte: argentinaDayRangeToUtc(input.desde).desde,
+          }),
+          ...(input.hasta && {
+            lte: argentinaDayRangeToUtc(input.hasta).hasta,
+          }),
+        },
+      }),
+    };
+
+    const [items, itemCount] = await Promise.all([
+      this.prisma.sale.findMany({
+        where,
+        select: {
+          id: true,
+          numero: true,
+          fecha: true,
+          total: true,
+          estado: true,
+        },
+        orderBy: { fecha: 'desc' },
+        skip: (input.page - 1) * input.pageSize,
+        take: input.pageSize,
+      }),
+      this.prisma.sale.count({ where }),
+    ]);
+
+    return { items, itemCount, page: input.page, pageSize: input.pageSize };
   }
 }
