@@ -42,6 +42,41 @@ describe('parseDecimalField', () => {
   it('acepta espacios alrededor del valor', () => {
     expect(parseDecimalField('  25.00  ', 'precio').toString()).toBe('25');
   });
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real de una ronda
+  // de auto-revisión: un CSV armado en Excel con configuración
+  // regional Argentina escribe los precios con coma decimal. Sin
+  // esto, "1500,50" tiraba "no es un número válido" — un import real
+  // con precios así fallaba en TODAS las filas.
+  describe('formato argentino (coma decimal)', () => {
+    it('acepta coma como separador decimal ("1500,50")', () => {
+      expect(parseDecimalField('1500,50', 'precio').toString()).toBe('1500.5');
+    });
+
+    it('acepta punto de miles + coma decimal ("1.500,50")', () => {
+      expect(parseDecimalField('1.500,50', 'precio').toString()).toBe('1500.5');
+    });
+
+    it('acepta coma decimal sin parte decimal explícita más allá de 2 dígitos ("1.234.567,89")', () => {
+      expect(parseDecimalField('1.234.567,89', 'precio').toString()).toBe(
+        '1234567.89',
+      );
+    });
+
+    // Hallazgo real de esta misma ronda: "10.999" (formato
+    // internacional, sin coma) tiene la MISMA forma que "1.999"
+    // (mil novecientos noventa y nueve en formato ar) — ambiguo entre
+    // "demasiados decimales" (el caso real de arriba, que sigue
+    // rechazado) y "separador de miles sin parte decimal". Sin coma
+    // de por medio, nunca se adivina — se sigue tratando como decimal
+    // internacional de siempre, para no convertir un error de tipeo
+    // real en una carga silenciosa del valor equivocado.
+    it('sin coma, NO interpreta el punto como separador de miles — "10.999" sigue siendo un error de "demasiados decimales", no $10.999', () => {
+      expect(() => parseDecimalField('10.999', 'precio')).toThrow(
+        /no puede tener más de 2 decimales/,
+      );
+    });
+  });
 });
 
 describe('parseStockField', () => {
@@ -68,6 +103,31 @@ describe('parseStockField', () => {
 
   it('rechaza texto no numérico', () => {
     expect(() => parseStockField('diez')).toThrow(/entero mayor o igual a 0/);
+  });
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real de una ronda
+  // de auto-revisión, verificado empíricamente: sin esto,
+  // `Number('1.000') === 1` — SIN NINGÚN ERROR. Un import real con
+  // "1.000" en la columna de stock (formato argentino, mil unidades)
+  // cargaba 1 unidad en silencio, no 1000 — corrupción de stock, no
+  // un error visible.
+  describe('formato argentino (punto de miles, entero)', () => {
+    it('interpreta "1.000" como mil, no como uno', () => {
+      expect(parseStockField('1.000')).toBe(1000);
+    });
+
+    it('interpreta "12.500" como doce mil quinientos', () => {
+      expect(parseStockField('12.500')).toBe(12500);
+    });
+
+    it('interpreta "1.234.567" con miles encadenados', () => {
+      expect(parseStockField('1.234.567')).toBe(1234567);
+    });
+
+    // Fuera del patrón exacto de agrupación de a 3 — no se adivina.
+    it('"1.5" NO se interpreta como mil quinientos — sigue siendo un decimal inválido para stock', () => {
+      expect(() => parseStockField('1.5')).toThrow(/entero mayor o igual a 0/);
+    });
   });
 });
 
@@ -136,6 +196,37 @@ describe('CatalogImportService.import (T2.13, AMB-12)', () => {
     await expect(
       service.import(dto('nombre,precio,costo,stock\n'), 1),
     ).rejects.toThrow(/no tiene filas de datos/);
+  });
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real, verificado
+  // empíricamente contra `csv-parse`: Excel con configuración regional
+  // Argentina exporta CSV separado por punto y coma, no por coma (el
+  // sistema operativo lo fuerza así porque la coma ya es el separador
+  // decimal). Sin detectar esto, un archivo exportado así se leía
+  // como UNA sola columna con todo el encabezado pegado, y el chequeo
+  // de columnas obligatorias rechazaba el archivo entero — sin
+  // explicar la causa real. Antes de este ticket, este mismo CSV
+  // hubiera tirado "Faltan columnas obligatorias en el encabezado:
+  // nombre, precio, costo, stock".
+  it('CSV separado por punto y coma (export típico de Excel en Argentina) se lee igual que uno separado por coma', async () => {
+    tx.product.findFirst.mockResolvedValue({ id: 1 });
+    tx.variant.create.mockResolvedValue({ id: 1 });
+
+    const csv =
+      'nombre;precio;costo;stock\n' + 'Remera basica;1500,50;800;10\n';
+
+    const result = await service.import(dto(csv), 1);
+
+    expect(result.filasCount).toBe(1);
+    expect(result.exitosas).toBe(1);
+    expect(result.filas[0]).toMatchObject({ estado: 'OK' });
+    // Confirma que también se leyó bien el precio con coma decimal
+    // ("1500,50", formato argentino) de esta misma fila — no solo que
+    // se encontraron las columnas.
+    const [{ data }] = tx.variant.create.mock.calls[0] as [
+      { data: { precioVenta: Prisma.Decimal } },
+    ];
+    expect(data.precioVenta.toString()).toBe('1500.5');
   });
 
   it('fila válida: crea producto nuevo, variante, price_history ALTA y llama a stock.service.registrarEntrada', async () => {

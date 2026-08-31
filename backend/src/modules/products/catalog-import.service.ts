@@ -91,6 +91,35 @@ function mergeCaches(target: ImportCaches, source: ImportCaches): void {
     target.categories.set(key, value);
 }
 
+// Ticket nuevo (post Release Candidate) — hallazgo real de una ronda de
+// auto-revisión, verificado empíricamente contra `Prisma.Decimal`: un
+// CSV armado a mano en Excel con configuración regional Argentina
+// escribe los números con coma decimal ("1500,50") y, si además
+// tienen miles, con punto de agrupación ("1.500,50") — es el hábito
+// natural de cualquier dueña de comercio local, no un caso raro. Sin
+// esto, "1500,50" ni siquiera parsea (`Prisma.Decimal` tira, al menos
+// el error es visible). La coma es inequívoca como separador decimal
+// (nadie la usa como separador de miles) — cualquier punto presente
+// junto a una coma es de agrupación y se descarta.
+function normalizarComaDecimalArgentina(raw: string): string {
+  return raw.includes(',') ? raw.replace(/\./g, '').replace(',', '.') : raw;
+}
+
+// Solo para conteos ENTEROS (stock) — un punto que agrupa de a
+// exactamente 3 dígitos ("1.000", "12.500") es inequívocamente
+// separador de miles ahí: un conteo de stock nunca tiene una parte
+// fraccionaria con sentido, así que no hay ambigüedad posible con
+// "demasiados decimales" (que sí existe para precio/costo — "10.999"
+// podría ser "10 mil 999" o un error de tipeo con 3 decimales, no hay
+// forma de saber cuál sin más contexto, así que este heurístico NO se
+// aplica ahí, a propósito). Sin esto, `Number('1.000') === 1` sin
+// ningún error — un import real terminaba cargando 1 unidad donde la
+// dueña escribió "mil": corrupción silenciosa de stock, mucho peor
+// que un error visible.
+function normalizarMilesEnteroArgentino(raw: string): string {
+  return /^\d{1,3}(\.\d{3})+$/.test(raw) ? raw.replace(/\./g, '') : raw;
+}
+
 // Valida y parsea un campo de importe: obligatorio, formato Decimal
 // válido, > 0, hasta 2 decimales — mismas reglas que el resto del
 // módulo (create-variant.dto.ts), pero acá el valor viene de una celda
@@ -105,7 +134,7 @@ export function parseDecimalField(
   }
   let value: Prisma.Decimal;
   try {
-    value = new Prisma.Decimal(trimmed);
+    value = new Prisma.Decimal(normalizarComaDecimalArgentina(trimmed));
   } catch {
     throw new Error(`${campo} "${raw}" no es un número válido`);
   }
@@ -121,7 +150,7 @@ export function parseStockField(raw: string | undefined): number {
   if (!trimmed) {
     throw new Error('stock es obligatorio');
   }
-  const value = Number(trimmed);
+  const value = Number(normalizarMilesEnteroArgentino(trimmed));
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`stock "${raw}" tiene que ser un entero mayor o igual a 0`);
   }
@@ -196,6 +225,25 @@ export class CatalogImportService {
     };
   }
 
+  // Ticket nuevo (post Release Candidate) — hallazgo real, verificado
+  // empíricamente contra `csv-parse`: Excel con configuración regional
+  // Argentina exporta CSV separado por punto y coma, no por coma — es
+  // el delimitador que usa el propio sistema operativo cuando la coma
+  // ya está tomada como separador decimal. Sin esto, un CSV exportado
+  // así ("nombre;precio;costo;stock") se leía como UNA sola columna
+  // (todo el encabezado pegado), y el chequeo de columnas obligatorias
+  // de más abajo rechazaba el archivo entero con un mensaje que no
+  // explica la causa real. Se cuenta cuál separador aparece más veces
+  // en la primera línea (encabezado) — nunca a ciegas: un archivo sin
+  // ninguno de los dos (una sola columna real) sigue usando coma por
+  // default, mismo comportamiento que antes de este ticket.
+  private detectarDelimitador(csv: string): string {
+    const primeraLinea = csv.split(/\r?\n/, 1)[0] ?? '';
+    const comas = (primeraLinea.match(/,/g) ?? []).length;
+    const puntoYComa = (primeraLinea.match(/;/g) ?? []).length;
+    return puntoYComa > comas ? ';' : ',';
+  }
+
   // Problemas de encabezado/archivo (no de una fila puntual) se rechazan
   // como 400 — a diferencia de un error de una fila individual, que se
   // reporta dentro de ImportResult, esto impide procesar cualquier fila.
@@ -207,6 +255,7 @@ export class CatalogImportService {
         skip_empty_lines: true,
         trim: true,
         bom: true,
+        delimiter: this.detectarDelimitador(csv),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'CSV inválido';
