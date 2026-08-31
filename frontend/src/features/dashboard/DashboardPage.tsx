@@ -51,6 +51,11 @@ const ACCIONES_COMUNES: QuickAction[] = [
     destacada: true,
   },
   {
+    to: '/ventas',
+    label: 'Historial',
+    description: 'Ver ventas pasadas',
+  },
+  {
     to: '/devoluciones',
     label: 'Devoluciones',
     description: 'Buscar una venta y procesar una devolución o cambio',
