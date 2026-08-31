@@ -137,6 +137,30 @@ export class CashRegisterService {
     private readonly settings: SettingsService,
   ) {}
 
+  // Ticket nuevo (post Release Candidate) — hallazgo real de una
+  // conversación con el usuario: nada en el sistema conectaba el
+  // `monto_declarado` con el que cerró la última sesión con el
+  // `monto_inicial` de la siguiente — dos sesiones sin ninguna relación
+  // entre sí, ni siquiera una sugerencia. En un arqueo de caja real, el
+  // efectivo con el que cierra un turno ES el efectivo con el que abre
+  // el próximo (salvo un ingreso/retiro que lo explique) — confirmado
+  // con el usuario, que además confirmó que no quiere bloquear la
+  // apertura si no coincide (sigue siendo "cierre a ciegas": no todo
+  // rol ve `diferencia`, y forzar una coincidencia exacta acá
+  // implicaría revelarla). Se limita a SUGERIR: la última sesión
+  // CERRADA (por `fechaCierre`, no por id — no hay ninguna garantía de
+  // que los ids crezcan en el mismo orden que las fechas en un sistema
+  // real) y su `monto_declarado`. `null` la primera vez que se abre
+  // caja en la vida del sistema (nunca hubo una sesión cerrada antes).
+  async obtenerUltimoCierre(): Promise<Prisma.Decimal | null> {
+    const ultima = await this.prisma.cashRegisterSession.findFirst({
+      where: { estado: CashRegisterSessionEstado.CERRADA },
+      orderBy: { fechaCierre: 'desc' },
+      select: { montoDeclarado: true },
+    });
+    return ultima?.montoDeclarado ?? null;
+  }
+
   // RN-1 / invariante 9: no hay lógica de exclusión acá — el índice único
   // parcial `cash_register_sessions_one_open_key` (fase 01) es la barrera
   // real. Este método solo valida `montoInicial` y traduce la violación de

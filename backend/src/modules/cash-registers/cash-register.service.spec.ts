@@ -1450,4 +1450,65 @@ describe('CashRegisterService', () => {
       );
     });
   });
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real de una
+  // conversación con el usuario: nada conectaba el cierre de una sesión
+  // con la apertura de la siguiente. Sugerencia (no bloqueo, decisión
+  // explícita del usuario): la apertura precarga el `montoDeclarado` de
+  // la última sesión CERRADA. Este método no recibe `tx` (a diferencia
+  // del resto de la clase) — es una lectura standalone, mismo criterio
+  // que `reconciliar()`.
+  describe('obtenerUltimoCierre (ticket nuevo)', () => {
+    interface CashRegisterServiceWithUltimoCierre {
+      obtenerUltimoCierre(): Promise<Prisma.Decimal | null>;
+    }
+
+    function buildServiceConFindFirst(montoDeclarado: Prisma.Decimal | null): {
+      service: CashRegisterServiceWithUltimoCierre;
+      findFirstMock: jest.Mock;
+    } {
+      const findFirstMock = jest
+        .fn()
+        .mockResolvedValue(montoDeclarado === null ? null : { montoDeclarado });
+      const prisma = {
+        cashRegisterSession: { findFirst: findFirstMock },
+      } as unknown as PrismaService;
+      const ServiceConstructor = CashRegisterService as unknown as new (
+        p: PrismaService,
+        s: SettingsService,
+      ) => CashRegisterServiceWithUltimoCierre;
+      return {
+        service: new ServiceConstructor(prisma, {} as SettingsService),
+        findFirstMock,
+      };
+    }
+
+    it('nunca hubo una sesión cerrada: devuelve null', async () => {
+      const { service } = buildServiceConFindFirst(null);
+
+      await expect(service.obtenerUltimoCierre()).resolves.toBeNull();
+    });
+
+    it('devuelve el montoDeclarado de la última sesión cerrada', async () => {
+      const { service } = buildServiceConFindFirst(
+        new Prisma.Decimal('10000.00'),
+      );
+
+      const result = await service.obtenerUltimoCierre();
+
+      expect(result?.toString()).toBe('10000');
+    });
+
+    it('busca por CERRADA, ordenando por fechaCierre descendente — nunca por id (no hay garantía de que crezcan en el mismo orden que las fechas)', async () => {
+      const { service, findFirstMock } = buildServiceConFindFirst(null);
+
+      await service.obtenerUltimoCierre();
+
+      expect(findFirstMock).toHaveBeenCalledWith({
+        where: { estado: CashRegisterSessionEstado.CERRADA },
+        orderBy: { fechaCierre: 'desc' },
+        select: { montoDeclarado: true },
+      });
+    });
+  });
 });

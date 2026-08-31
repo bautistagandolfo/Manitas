@@ -15,6 +15,17 @@ export function openSession(
   });
 }
 
+// Ticket nuevo (post Release Candidate) — sugerencia (no bloqueo,
+// decisión explícita del usuario) para precargar "Monto inicial" con lo
+// que declaró la última sesión cerrada. `null` si nunca hubo ninguna.
+export function getLastClosedAmount(): Promise<{
+  montoDeclarado: string | null;
+}> {
+  return httpClient.get<{ montoDeclarado: string | null }>(
+    '/cash-registers/sessions/last-closed',
+  );
+}
+
 export interface CloseSessionData {
   montoDeclarado: string;
   notaCierre?: string;

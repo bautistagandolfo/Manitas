@@ -1,9 +1,18 @@
-import { useState } from 'react';
-import { Alert, Button, NumberInput, Paper, Stack, Title } from '@mantine/core';
+import { useEffect, useState } from 'react';
+import {
+  Alert,
+  Button,
+  NumberInput,
+  Paper,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { ApiError } from '../../../lib/http-client';
+import { formatCurrency } from '../../../lib/format';
 import { parseNumberInputValue } from '../../../lib/number-input';
-import { openSession } from '../api';
+import { getLastClosedAmount, openSession } from '../api';
 
 interface OpenSessionFormProps {
   // Sin argumento a propósito: la fila que devuelve `POST /sessions`
@@ -22,6 +31,14 @@ interface FormValues {
 export function OpenSessionForm({ onOpened }: OpenSessionFormProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Ticket nuevo (post Release Candidate) — hallazgo real de una
+  // conversación con el usuario: nada conectaba el cierre de una
+  // sesión con la apertura de la siguiente, ni siquiera como
+  // sugerencia. `null` mientras carga o si nunca hubo un cierre
+  // previo (primera vez que se abre caja en la vida del sistema) — en
+  // ambos casos el campo arranca vacío, igual que antes de este
+  // ticket.
+  const [ultimoCierre, setUltimoCierre] = useState<string | null>(null);
 
   const form = useForm<FormValues>({
     initialValues: { montoInicial: '' },
@@ -32,6 +49,25 @@ export function OpenSessionForm({ onOpened }: OpenSessionFormProps) {
           : 'Ingresá el monto con el que arranca la caja (puede ser 0)',
     },
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    getLastClosedAmount()
+      .then((data) => {
+        if (cancelled || data.montoDeclarado === null) return;
+        setUltimoCierre(data.montoDeclarado);
+        // Precarga, no bloqueo (decisión explícita del usuario): sigue
+        // siendo un `NumberInput` común, se puede cambiar sin ninguna
+        // fricción — mismo espíritu que el "cierre a ciegas" ya
+        // confiado del resto de este módulo.
+        form.setFieldValue('montoInicial', Number(data.montoDeclarado));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSubmit = form.onSubmit(async (values) => {
     if (typeof values.montoInicial !== 'number') return;
@@ -79,6 +115,13 @@ export function OpenSessionForm({ onOpened }: OpenSessionFormProps) {
               }
               error={form.errors.montoInicial}
             />
+            {ultimoCierre !== null && (
+              <Text size="xs" c="dimmed">
+                Sugerido: la última caja cerró con{' '}
+                {formatCurrency(ultimoCierre)} — cambialo si el efectivo contado
+                hoy es distinto.
+              </Text>
+            )}
             <Button type="submit" loading={submitting} disabled={submitting}>
               Abrir caja
             </Button>

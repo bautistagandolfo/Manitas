@@ -49,6 +49,19 @@ export class CashRegistersController {
     );
   }
 
+  // Ticket nuevo (post Release Candidate) — sugerencia de continuidad
+  // entre sesiones (ver el comentario de `obtenerUltimoCierre` en el
+  // servicio). Sin @Roles: mismo criterio que abrir la sesión en sí —
+  // cualquiera tiene que poder ver esto antes de escribir el monto
+  // inicial. `montoDeclarado`, no `montoSistema`/`diferencia`: es el
+  // efectivo que alguien ya contó y declaró, no un dato que RN-6 le
+  // oculte a un SELLER.
+  @Get('sessions/last-closed')
+  async ultimoCierre(): Promise<{ montoDeclarado: string | null }> {
+    const monto = await this.cashRegisterService.obtenerUltimoCierre();
+    return { montoDeclarado: monto?.toString() ?? null };
+  }
+
   // Sin @Roles: abrir una sesión de caja está abierto a cualquier rol
   // autenticado (BLUEPRINT §5.5 — una vendedora tiene que poder arrancar
   // el día sola). RolesGuard corre global (AppModule); sin @Roles() acá,
