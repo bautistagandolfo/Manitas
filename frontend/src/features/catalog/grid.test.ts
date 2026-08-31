@@ -64,6 +64,94 @@ describe('buildGridRows', () => {
       buildGridRows([1], [], { stock: 0, precioVenta: '1.00', costo: '1.00' }),
     ).toEqual([]);
   });
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real de una ronda
+  // de auto-revisión, reproducido en vivo: agregar un talle/color más
+  // y volver a generar pisaba en silencio el precio/costo/SKU ya
+  // cargado a mano en las filas existentes.
+  describe('existingRows (conserva lo ya editado al agregar un talle/color más)', () => {
+    it('conserva tal cual la fila de una combinación que ya existía', () => {
+      const existentes = [
+        {
+          sizeId: 1,
+          colorId: 10,
+          sku: 'CUSTOM-SKU',
+          stock: 3,
+          precioVenta: '777.00',
+          costo: '500.00',
+        },
+      ];
+
+      const rows = buildGridRows(
+        [1],
+        [10, 20],
+        { stock: 0, precioVenta: '1.00', costo: '1.00' },
+        existentes,
+      );
+
+      expect(rows).toEqual([
+        existentes[0],
+        {
+          sizeId: 1,
+          colorId: 20,
+          sku: '',
+          stock: 0,
+          precioVenta: '1.00',
+          costo: '1.00',
+        },
+      ]);
+    });
+
+    it('sin existingRows (default []), genera todo desde cero — mismo comportamiento que antes de este ticket', () => {
+      const rows = buildGridRows([1], [10], {
+        stock: 5,
+        precioVenta: '10.00',
+        costo: '5.00',
+      });
+
+      expect(rows).toEqual([
+        {
+          sizeId: 1,
+          colorId: 10,
+          sku: '',
+          stock: 5,
+          precioVenta: '10.00',
+          costo: '5.00',
+        },
+      ]);
+    });
+
+    it('si se deselecciona un talle/color, la fila existente de esa combinación desaparece', () => {
+      const existentes = [
+        {
+          sizeId: 1,
+          colorId: 10,
+          sku: 'A',
+          stock: 1,
+          precioVenta: '1.00',
+          costo: '1.00',
+        },
+        {
+          sizeId: 2,
+          colorId: 10,
+          sku: 'B',
+          stock: 2,
+          precioVenta: '2.00',
+          costo: '2.00',
+        },
+      ];
+
+      // Solo el talle 1 sigue seleccionado — el 2 se sacó.
+      const rows = buildGridRows(
+        [1],
+        [10],
+        { stock: 0, precioVenta: '1.00', costo: '1.00' },
+        existentes,
+      );
+
+      expect(rows).toEqual([existentes[0]]);
+    });
+  });
 });
 
 describe('applyDefaultsToAllRows', () => {

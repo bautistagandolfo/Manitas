@@ -96,12 +96,22 @@ export function VariantGridPage() {
   const handleGenerar = (): void => {
     const sizeIds = selectedSizeIds.map(Number);
     const colorIds = selectedColorIds.map(Number);
-    setRows(
-      buildGridRows(sizeIds, colorIds, {
-        stock: defaultStock || 0,
-        precioVenta: defaultPrecio ? defaultPrecio.toFixed(2) : '0.00',
-        costo: defaultCosto ? defaultCosto.toFixed(2) : '0.00',
-      }),
+    // Ticket nuevo (post Release Candidate) — hallazgo real: sin pasar
+    // `rows` (el estado actual) como `existingRows`, volver a generar
+    // después de agregar un talle/color más pisaba en silencio todo lo
+    // ya cargado a mano en las filas existentes. Ver el comentario de
+    // `buildGridRows` en `grid.ts`.
+    setRows((prev) =>
+      buildGridRows(
+        sizeIds,
+        colorIds,
+        {
+          stock: defaultStock || 0,
+          precioVenta: defaultPrecio ? defaultPrecio.toFixed(2) : '0.00',
+          costo: defaultCosto ? defaultCosto.toFixed(2) : '0.00',
+        },
+        prev,
+      ),
     );
   };
 
