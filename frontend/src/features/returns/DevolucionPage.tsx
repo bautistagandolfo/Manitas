@@ -654,7 +654,13 @@ export function DevolucionPage() {
               )}
 
               {tipo === 'CAMBIO' && (
-                <Card withBorder>
+                // Bug real reportado por la usuaria navegando el sistema:
+                // `Card` por defecto pone `overflow: hidden` (para recortar
+                // las esquinas redondeadas) — eso recortaba el listado de
+                // resultados de la búsqueda de abajo (`position: absolute`,
+                // cuelga por debajo del input), que quedaba invisible en
+                // cuanto crecía más que el alto de esta tarjeta.
+                <Card withBorder style={{ overflow: 'visible' }}>
                   <Stack>
                     <Text fw={500} size="sm">
                       Prenda nueva
