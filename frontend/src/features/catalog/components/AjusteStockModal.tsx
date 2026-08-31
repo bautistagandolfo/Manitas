@@ -17,6 +17,8 @@ import type { Variant } from '../types';
 
 interface AjusteStockModalProps {
   variant: Variant;
+  // Ticket nuevo (post Release Candidate) — ver `EditVariantModal.tsx`.
+  label: string;
   onClose: () => void;
   onSaved: (variant: Variant) => void;
 }
@@ -29,6 +31,7 @@ interface FormValues {
 // OWNER-only (RN-5, literal), motivo siempre obligatorio.
 export function AjusteStockModal({
   variant,
+  label,
   onClose,
   onSaved,
 }: AjusteStockModalProps) {
@@ -72,7 +75,7 @@ export function AjusteStockModal({
   });
 
   return (
-    <Modal opened onClose={onClose} title={`Ajuste de stock — ${variant.sku}`}>
+    <Modal opened onClose={onClose} title={`Ajuste de stock — ${label}`}>
       <form onSubmit={handleSubmit}>
         <Stack>
           {error && (

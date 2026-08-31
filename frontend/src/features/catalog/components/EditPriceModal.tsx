@@ -17,6 +17,8 @@ import type { Variant } from '../types';
 
 interface EditPriceModalProps {
   variant: Variant;
+  // Ticket nuevo (post Release Candidate) — ver `EditVariantModal.tsx`.
+  label: string;
   onClose: () => void;
   onSaved: (variant: Variant) => void;
 }
@@ -29,6 +31,7 @@ interface FormValues {
 // esto es solo el formulario.
 export function EditPriceModal({
   variant,
+  label,
   onClose,
   onSaved,
 }: EditPriceModalProps) {
@@ -67,7 +70,7 @@ export function EditPriceModal({
   });
 
   return (
-    <Modal opened onClose={onClose} title={`Editar precio — ${variant.sku}`}>
+    <Modal opened onClose={onClose} title={`Editar precio — ${label}`}>
       <form onSubmit={handleSubmit}>
         <Stack>
           {error && (

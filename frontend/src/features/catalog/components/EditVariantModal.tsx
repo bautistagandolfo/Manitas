@@ -15,6 +15,11 @@ import type { Variant } from '../types';
 
 interface EditVariantModalProps {
   variant: Variant;
+  // Ticket nuevo (post Release Candidate) — talle/color resueltos, o el
+  // SKU si la variante no tiene ninguno de los dos (ver
+  // `ProductDetailPage.varianteLabel`). Antes el título era siempre
+  // "Editar variante" a secas, sin decir CUÁL.
+  label: string;
   onClose: () => void;
   onSaved: (variant: Variant) => void;
 }
@@ -30,6 +35,7 @@ interface FormValues {
 // están.
 export function EditVariantModal({
   variant,
+  label,
   onClose,
   onSaved,
 }: EditVariantModalProps) {
@@ -70,7 +76,7 @@ export function EditVariantModal({
   });
 
   return (
-    <Modal opened onClose={onClose} title="Editar variante">
+    <Modal opened onClose={onClose} title={`Editar variante — ${label}`}>
       <form onSubmit={handleSubmit}>
         <Stack>
           {error && (

@@ -16,14 +16,14 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError } from '../../lib/http-client';
 import { formatCurrency, formatNumber } from '../../lib/format';
-import { getProduct, updateProduct } from './api';
+import { getColors, getProduct, getSizes, updateProduct } from './api';
 import type { ProductFormValues } from './api';
 import { ProductForm } from './components/ProductForm';
 import { EditVariantModal } from './components/EditVariantModal';
 import { EditPriceModal } from './components/EditPriceModal';
 import { IngresoMercaderiaModal } from './components/IngresoMercaderiaModal';
 import { AjusteStockModal } from './components/AjusteStockModal';
-import type { ProductWithVariants, Variant } from './types';
+import type { Color, ProductWithVariants, Size, Variant } from './types';
 
 type ActiveModal =
   | { type: 'editProduct' }
@@ -44,6 +44,8 @@ export function ProductDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeModal, setActiveModal] = useState<ActiveModal>(null);
+  const [sizes, setSizes] = useState<Size[]>([]);
+  const [colors, setColors] = useState<Color[]>([]);
 
   // Si `id` cambia (navegar de un producto a otro sin desmontar la
   // página), se vuelve a mostrar el loader — ajustado durante el render,
@@ -83,6 +85,39 @@ export function ProductDetailPage() {
       cancelled = true;
     };
   }, [id]);
+
+  // Ticket nuevo (post Release Candidate) — hallazgo real navegando el
+  // sistema: esta pantalla nunca mostraba talle/color de una variante,
+  // en ninguna tabla ni modal — la única forma de distinguir filas era
+  // el SKU, que no siempre lo dice. `Variant` (T2.x) solo trae
+  // `sizeId`/`colorId` crudos (sin el `include` correspondiente en el
+  // backend, evitando tocarlo por un dato que solo hace falta para
+  // mostrar) — se resuelven acá con el mismo patrón ya usado en
+  // `NewVariantPage.tsx`/`VariantGridPage.tsx` (`getSizes`/`getColors`,
+  // tablas de referencia globales, no por producto — se piden una sola
+  // vez, no en cada cambio de `id`).
+  useEffect(() => {
+    getSizes()
+      .then(setSizes)
+      .catch(() => undefined);
+    getColors()
+      .then(setColors)
+      .catch(() => undefined);
+  }, []);
+
+  const sizeById = new Map(sizes.map((s) => [s.id, s]));
+  const colorById = new Map(colors.map((c) => [c.id, c]));
+
+  // Usado tanto en las columnas de la tabla como en el título de cada
+  // modal de variante — sin talle/color (producto sin variación, ej.
+  // un cinturón), cae al SKU para no dejar el título vacío.
+  function varianteLabel(variant: Variant): string {
+    const partes = [
+      variant.sizeId !== null ? sizeById.get(variant.sizeId)?.nombre : null,
+      variant.colorId !== null ? colorById.get(variant.colorId)?.nombre : null,
+    ].filter((parte): parte is string => Boolean(parte));
+    return partes.length > 0 ? partes.join(' / ') : variant.sku;
+  }
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -185,6 +220,8 @@ export function ProductDetailPage() {
         <Table striped highlightOnHover>
           <Table.Thead>
             <Table.Tr>
+              <Table.Th>Talle</Table.Th>
+              <Table.Th>Color</Table.Th>
               <Table.Th>SKU</Table.Th>
               <Table.Th>Código de barras</Table.Th>
               <Table.Th>Precio</Table.Th>
@@ -197,6 +234,16 @@ export function ProductDetailPage() {
           <Table.Tbody>
             {product.variants.map((variant) => (
               <Table.Tr key={variant.id}>
+                <Table.Td>
+                  {variant.sizeId !== null
+                    ? (sizeById.get(variant.sizeId)?.nombre ?? '—')
+                    : '—'}
+                </Table.Td>
+                <Table.Td>
+                  {variant.colorId !== null
+                    ? (colorById.get(variant.colorId)?.nombre ?? '—')
+                    : '—'}
+                </Table.Td>
                 <Table.Td>{variant.sku}</Table.Td>
                 <Table.Td>{variant.barcode ?? '—'}</Table.Td>
                 <Table.Td>{formatCurrency(variant.precioVenta)}</Table.Td>
@@ -300,6 +347,7 @@ export function ProductDetailPage() {
       {activeModal?.type === 'editVariant' && (
         <EditVariantModal
           variant={activeModal.variant}
+          label={varianteLabel(activeModal.variant)}
           onClose={() => setActiveModal(null)}
           onSaved={handleVariantSaved}
         />
@@ -307,6 +355,7 @@ export function ProductDetailPage() {
       {activeModal?.type === 'editPrice' && (
         <EditPriceModal
           variant={activeModal.variant}
+          label={varianteLabel(activeModal.variant)}
           onClose={() => setActiveModal(null)}
           onSaved={handleVariantSaved}
         />
@@ -314,6 +363,7 @@ export function ProductDetailPage() {
       {activeModal?.type === 'ingreso' && (
         <IngresoMercaderiaModal
           variant={activeModal.variant}
+          label={varianteLabel(activeModal.variant)}
           onClose={() => setActiveModal(null)}
           onSaved={handleVariantSaved}
         />
@@ -321,6 +371,7 @@ export function ProductDetailPage() {
       {activeModal?.type === 'ajuste' && (
         <AjusteStockModal
           variant={activeModal.variant}
+          label={varianteLabel(activeModal.variant)}
           onClose={() => setActiveModal(null)}
           onSaved={handleVariantSaved}
         />

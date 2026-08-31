@@ -16,6 +16,8 @@ import type { Variant } from '../types';
 
 interface IngresoMercaderiaModalProps {
   variant: Variant;
+  // Ticket nuevo (post Release Candidate) — ver `EditVariantModal.tsx`.
+  label: string;
   onClose: () => void;
   onSaved: (variant: Variant) => void;
 }
@@ -30,6 +32,7 @@ interface FormValues {
 // aprieta (BLUEPRINT §12.6) como única mitigación de doble click acá.
 export function IngresoMercaderiaModal({
   variant,
+  label,
   onClose,
   onSaved,
 }: IngresoMercaderiaModalProps) {
@@ -81,11 +84,7 @@ export function IngresoMercaderiaModal({
   });
 
   return (
-    <Modal
-      opened
-      onClose={onClose}
-      title={`Ingreso de mercadería — ${variant.sku}`}
-    >
+    <Modal opened onClose={onClose} title={`Ingreso de mercadería — ${label}`}>
       <form onSubmit={handleSubmit}>
         <Stack>
           {error && (
