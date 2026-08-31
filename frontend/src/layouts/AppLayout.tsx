@@ -100,6 +100,9 @@ export function AppLayout() {
             >
               Devoluciones
             </Button>
+            <Button component={Link} to="/clientes" variant="subtle" size="sm">
+              Clientes
+            </Button>
             <Button component={Link} to="/caja" variant="subtle" size="sm">
               Caja
             </Button>

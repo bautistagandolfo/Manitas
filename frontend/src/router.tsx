@@ -14,6 +14,7 @@ import { SalePage } from './features/sales/SalePage';
 import { CobroPage } from './features/sales/CobroPage';
 import { HistorialVentasPage } from './features/sales/HistorialVentasPage';
 import { DevolucionPage } from './features/returns/DevolucionPage';
+import { ClientesPage } from './features/customers/ClientesPage';
 import { GastosPage } from './features/expenses/GastosPage';
 import { ResultadosPage } from './features/expenses/ResultadosPage';
 import { SettingsPage } from './features/settings/SettingsPage';
@@ -38,6 +39,11 @@ export const router = createBrowserRouter([
           // historial (mismo criterio que la venta misma).
           { path: '/ventas', element: <HistorialVentasPage /> },
           { path: '/devoluciones', element: <DevolucionPage /> },
+          // Ticket nuevo (post Release Candidate) — sin @Roles(): mismo
+          // criterio que el resto del módulo de clientes, un SELLER ya
+          // ve el saldo a favor de un cliente al buscarlo en
+          // `CobroPage.tsx`, esto no revela nada nuevo.
+          { path: '/clientes', element: <ClientesPage /> },
           { path: '/caja', element: <CashRegisterPage /> },
           { path: '/catalogo', element: <CatalogPage /> },
           { path: '/catalogo/productos/nuevo', element: <NewProductPage /> },
