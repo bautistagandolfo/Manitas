@@ -43,6 +43,16 @@ interface QuickAction {
   destacada?: boolean;
 }
 
+// Ticket nuevo (post Release Candidate) — hallazgo real reportado por
+// el usuario: esta grilla repetía casi uno a uno toda la barra de
+// navegación (8 de sus 9 links) — no funcionaba como "acceso rápido a
+// lo más usado", era simplemente la nav de nuevo, más grande. Se
+// recorta a propósito a lo que se toca todos los días en el flujo real
+// de una vendedora (vender, y la caja que hay que abrir antes de poder
+// vender) más devoluciones/cambios, que son frecuentes en indumentaria
+// — nunca se saca nada de la barra de navegación de arriba
+// (`AppLayout.tsx`), que sigue siendo el camino a TODO, esto es solo
+// el atajo a lo más común.
 const ACCIONES_COMUNES: QuickAction[] = [
   {
     to: '/venta',
@@ -50,38 +60,24 @@ const ACCIONES_COMUNES: QuickAction[] = [
     description: 'Registrar una venta nueva',
     destacada: true,
   },
-  {
-    to: '/ventas',
-    label: 'Historial',
-    description: 'Ver ventas pasadas',
-  },
+  { to: '/caja', label: 'Caja', description: 'Abrir, cerrar o mover efectivo' },
   {
     to: '/devoluciones',
     label: 'Devoluciones',
     description: 'Buscar una venta y procesar una devolución o cambio',
   },
-  { to: '/caja', label: 'Caja', description: 'Abrir, cerrar o mover efectivo' },
-  {
-    to: '/catalogo',
-    label: 'Catálogo',
-    description: 'Ver y editar productos y variantes',
-  },
 ];
 
-// RN-2/RN-11: gastos/resultados/configuración revelan plata y
-// parámetros del negocio — mismo gate que ya usa `router.tsx`
-// (`RequireOwner`) para estas tres rutas.
+// RN-2/RN-11: resultados revela plata del negocio — mismo gate que ya
+// usa `router.tsx` (`RequireOwner`). Es el único agregado para OWNER:
+// un vistazo rápido a "cómo viene el negocio" es lo más natural para
+// abrir en una pantalla de inicio — gastos/configuración se tocan con
+// mucha menos frecuencia, quedan solo en la barra de navegación.
 const ACCIONES_OWNER: QuickAction[] = [
-  { to: '/gastos', label: 'Gastos', description: 'Registrar y ver gastos' },
   {
     to: '/resultados',
     label: 'Resultados',
     description: 'Ingresos, márgenes y ranking de productos',
-  },
-  {
-    to: '/configuracion',
-    label: 'Configuración',
-    description: 'Parámetros del sistema',
   },
 ];
 
