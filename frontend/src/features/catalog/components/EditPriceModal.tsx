@@ -83,6 +83,7 @@ export function EditPriceModal({
           </Text>
           <NumberInput
             label="Precio nuevo"
+            withAsterisk
             decimalScale={2}
             fixedDecimalScale
             decimalSeparator=","

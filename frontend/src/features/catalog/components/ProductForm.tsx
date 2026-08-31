@@ -107,6 +107,7 @@ export function ProductForm({
         )}
         <TextInput
           label="Nombre"
+          withAsterisk
           placeholder="Campera de jean"
           disabled={submitting}
           {...form.getInputProps('nombre')}

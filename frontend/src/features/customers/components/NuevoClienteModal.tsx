@@ -71,6 +71,7 @@ export function NuevoClienteModal({
           )}
           <TextInput
             label="Nombre"
+            withAsterisk
             placeholder="Ej: Carlos Martínez"
             value={nombre}
             onChange={(event) => setNombre(event.currentTarget.value)}
@@ -79,6 +80,7 @@ export function NuevoClienteModal({
           />
           <TextInput
             label="DNI"
+            withAsterisk
             description="Distingue clientes con el mismo nombre"
             placeholder="Ej: 30123456"
             value={dni}

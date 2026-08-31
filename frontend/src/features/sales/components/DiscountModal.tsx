@@ -75,6 +75,7 @@ export function DiscountModal({ onClose, onAdd }: DiscountModalProps) {
         <Stack>
           <TextInput
             label="Descripción"
+            withAsterisk
             placeholder="Motivo del descuento"
             disabled={submitted}
             {...form.getInputProps('descripcion')}
@@ -91,6 +92,7 @@ export function DiscountModal({ onClose, onAdd }: DiscountModalProps) {
           {form.values.modo === 'PORCENTAJE' ? (
             <NumberInput
               label="Porcentaje"
+              withAsterisk
               suffix=" %"
               min={0.01}
               max={100}
@@ -105,6 +107,7 @@ export function DiscountModal({ onClose, onAdd }: DiscountModalProps) {
           ) : (
             <NumberInput
               label="Monto"
+              withAsterisk
               decimalScale={2}
               fixedDecimalScale
               decimalSeparator=","

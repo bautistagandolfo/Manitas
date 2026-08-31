@@ -143,6 +143,7 @@ export function PaymentLinesBuilder({
           />
           <NumberInput
             label="Importe"
+            withAsterisk
             decimalScale={2}
             fixedDecimalScale
             decimalSeparator=","

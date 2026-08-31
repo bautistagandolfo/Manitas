@@ -102,6 +102,7 @@ export function CloseSessionModal({
           )}
           <NumberInput
             label="Efectivo contado"
+            withAsterisk
             decimalScale={2}
             fixedDecimalScale
             decimalSeparator=","

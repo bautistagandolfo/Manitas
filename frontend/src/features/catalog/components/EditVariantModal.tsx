@@ -86,6 +86,7 @@ export function EditVariantModal({
           )}
           <TextInput
             label="SKU"
+            withAsterisk
             disabled={submitting}
             {...form.getInputProps('sku')}
           />

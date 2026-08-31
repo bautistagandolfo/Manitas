@@ -100,6 +100,7 @@ export function OpenSessionForm({ onOpened }: OpenSessionFormProps) {
             )}
             <NumberInput
               label="Monto inicial"
+              withAsterisk
               description="El efectivo con el que arranca el turno"
               decimalScale={2}
               fixedDecimalScale

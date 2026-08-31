@@ -97,6 +97,7 @@ export function IngresoMercaderiaModal({
           </Text>
           <NumberInput
             label="Cantidad que ingresa"
+            withAsterisk
             min={1}
             step={1}
             disabled={submitting}
@@ -108,6 +109,7 @@ export function IngresoMercaderiaModal({
           />
           <NumberInput
             label="Costo unitario de esta entrada"
+            withAsterisk
             decimalScale={2}
             fixedDecimalScale
             decimalSeparator=","

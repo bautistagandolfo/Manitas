@@ -74,6 +74,7 @@ export function NuevoTalleModal({
           )}
           <TextInput
             label="Nombre"
+            withAsterisk
             placeholder="Ej: XXL"
             value={nombre}
             onChange={(event) => setNombre(event.currentTarget.value)}
@@ -82,6 +83,7 @@ export function NuevoTalleModal({
           />
           <NumberInput
             label="Orden"
+            withAsterisk
             description="Dónde aparece en la lista (S, M, L, XL…), no alfabético"
             min={0}
             step={1}

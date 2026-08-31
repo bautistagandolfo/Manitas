@@ -182,6 +182,7 @@ export function VariantGridPage() {
             <Group align="flex-end" gap="xs" flex={1}>
               <MultiSelect
                 label="Talles"
+                withAsterisk
                 placeholder="Elegí uno o más"
                 data={sizes.map((s) => ({
                   value: String(s.id),
@@ -198,6 +199,7 @@ export function VariantGridPage() {
             <Group align="flex-end" gap="xs" flex={1}>
               <MultiSelect
                 label="Colores"
+                withAsterisk
                 placeholder="Elegí uno o más"
                 data={colors.map((c) => ({
                   value: String(c.id),

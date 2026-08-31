@@ -135,6 +135,7 @@ export function RegistrarGastoModal({
           <Group align="flex-end" gap="xs">
             <Select
               label="Categoría"
+              withAsterisk
               placeholder="Elegí una categoría"
               data={categoriaOptions}
               value={categoryId}
@@ -154,6 +155,7 @@ export function RegistrarGastoModal({
 
           <Textarea
             label="Descripción"
+            withAsterisk
             placeholder="Para qué es este gasto"
             value={descripcion}
             onChange={(event) => setDescripcion(event.currentTarget.value)}
@@ -164,6 +166,7 @@ export function RegistrarGastoModal({
 
           <NumberInput
             label="Monto"
+            withAsterisk
             decimalScale={2}
             fixedDecimalScale
             decimalSeparator=","

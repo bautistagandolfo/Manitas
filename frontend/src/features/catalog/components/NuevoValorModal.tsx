@@ -71,6 +71,7 @@ export function NuevoValorModal({
           )}
           <TextInput
             label={label}
+            withAsterisk
             placeholder={placeholder}
             value={nombre}
             onChange={(event) => setNombre(event.currentTarget.value)}

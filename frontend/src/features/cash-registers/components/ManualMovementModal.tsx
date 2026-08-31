@@ -105,6 +105,7 @@ export function ManualMovementModal({
           )}
           <NumberInput
             label="Monto"
+            withAsterisk
             decimalScale={2}
             fixedDecimalScale
             decimalSeparator=","
@@ -121,6 +122,7 @@ export function ManualMovementModal({
           />
           <Textarea
             label="Descripción"
+            withAsterisk
             placeholder="Para qué es este movimiento"
             disabled={submitting}
             autosize

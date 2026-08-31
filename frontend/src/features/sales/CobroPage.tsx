@@ -573,6 +573,7 @@ export function CobroPage() {
                   <Group align="flex-end">
                     <NumberInput
                       label="Número de devolución"
+                      withAsterisk
                       description="El comprobante que presenta la clienta"
                       min={1}
                       value={creditoNumeroValue}
@@ -730,6 +731,7 @@ export function CobroPage() {
                   <NumberInput
                     ref={importeRef}
                     label="Importe"
+                    withAsterisk
                     description="Enter confirma este pago"
                     decimalScale={2}
                     fixedDecimalScale

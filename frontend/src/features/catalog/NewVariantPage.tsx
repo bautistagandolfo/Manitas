@@ -210,6 +210,7 @@ export function NewVariantPage() {
             />
             <NumberInput
               label="Precio de venta"
+              withAsterisk
               decimalScale={2}
               fixedDecimalScale
               decimalSeparator=","
@@ -226,6 +227,7 @@ export function NewVariantPage() {
             />
             <NumberInput
               label="Costo"
+              withAsterisk
               decimalScale={2}
               fixedDecimalScale
               decimalSeparator=","

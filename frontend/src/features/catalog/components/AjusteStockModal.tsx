@@ -88,6 +88,7 @@ export function AjusteStockModal({
           </Text>
           <NumberInput
             label="Ajuste (positivo suma, negativo resta)"
+            withAsterisk
             step={1}
             disabled={submitting}
             value={form.values.delta}
@@ -98,6 +99,7 @@ export function AjusteStockModal({
           />
           <Textarea
             label="Motivo"
+            withAsterisk
             placeholder="Conteo físico, rotura, etc."
             disabled={submitting}
             {...form.getInputProps('motivo')}

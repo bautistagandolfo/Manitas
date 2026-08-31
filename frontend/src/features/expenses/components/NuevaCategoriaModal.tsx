@@ -56,6 +56,7 @@ export function NuevaCategoriaModal({
           )}
           <TextInput
             label="Nombre"
+            withAsterisk
             placeholder="Ej: Insumos de limpieza"
             value={nombre}
             onChange={(event) => setNombre(event.currentTarget.value)}
