@@ -1,8 +1,9 @@
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter } from 'react-router-dom';
 import { LoginPage } from './features/auth/LoginPage';
 import { RequireAuth } from './features/auth/RequireAuth';
 import { RequireOwner } from './features/auth/RequireOwner';
 import { AppLayout } from './layouts/AppLayout';
+import { DashboardPage } from './features/dashboard/DashboardPage';
 import { CatalogPage } from './features/catalog/CatalogPage';
 import { NewProductPage } from './features/catalog/NewProductPage';
 import { ProductDetailPage } from './features/catalog/ProductDetailPage';
@@ -24,7 +25,11 @@ export const router = createBrowserRouter([
       {
         element: <AppLayout />,
         children: [
-          { path: '/', element: <Navigate to="/catalogo" replace /> },
+          // Ticket nuevo (post Release Candidate) — reemplaza el
+          // redirect directo a /catalogo: ahora "/" es el dashboard
+          // (accesos rápidos + estado de caja + resumen de hoy para
+          // OWNER).
+          { path: '/', element: <DashboardPage /> },
           { path: '/venta', element: <SalePage /> },
           { path: '/venta/cobro', element: <CobroPage /> },
           { path: '/devoluciones', element: <DevolucionPage /> },

@@ -27,7 +27,17 @@ export function AppLayout() {
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group gap="lg">
-            <Title order={4}>Manitas</Title>
+            <Title
+              order={4}
+              component={Link}
+              to="/"
+              style={{ textDecoration: 'none', color: 'inherit' }}
+            >
+              Manitas
+            </Title>
+            <Button component={Link} to="/" variant="subtle">
+              Inicio
+            </Button>
             <Button component={Link} to="/venta" variant="subtle">
               Venta
             </Button>
