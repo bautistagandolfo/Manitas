@@ -46,14 +46,9 @@ export function AppLayout() {
     <AppShell header={{ height: 96 }} padding="md">
       <AppShell.Header>
         <Group h={52} px="md" justify="space-between">
-          <Title
-            order={4}
-            component={Link}
-            to="/"
-            style={{ textDecoration: 'none', color: 'inherit' }}
-          >
-            Manitas
-          </Title>
+          <Link to="/" style={{ textDecoration: 'none', color: 'inherit' }}>
+            <Title order={4}>Manitas</Title>
+          </Link>
           <Group gap="sm">
             <Text size="sm">{user?.nombre}</Text>
             {user && (
