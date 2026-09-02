@@ -22,4 +22,14 @@ export class HealthController {
 
     return { status: 'ok', database: 'up' };
   }
+
+  // TEMPORAL — verificación manual de Sentry contra producción real, se
+  // borra en el commit siguiente apenas se confirma.
+  @Public()
+  @Get('debug-sentry')
+  getError(): void {
+    throw new Error(
+      'Prueba manual de Sentry en producción — verificación de deploy',
+    );
+  }
 }
