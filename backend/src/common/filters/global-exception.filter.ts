@@ -1,11 +1,12 @@
 import {
-  ArgumentsHost,
   Catch,
   ExceptionFilter,
   HttpException,
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import type { ArgumentsHost } from '@nestjs/common';
+import { SentryExceptionCaptured } from '@sentry/nestjs';
 import type { Request, Response } from 'express';
 
 interface ErrorBody {
@@ -19,6 +20,13 @@ interface ErrorBody {
 export class GlobalExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(GlobalExceptionFilter.name);
 
+  // Ticket nuevo (post Release Candidate, BLUEPRINT §9.10/A9) — reporta a
+  // Sentry solo los errores realmente inesperados: por default, la SDK NO
+  // captura instancias de `HttpException` (los 400/401/403/404/409 que ya
+  // usamos para errores de negocio esperados) — mismo criterio que ya usa
+  // este filtro para decidir qué loguear con `status >= 500`, sin
+  // configuración extra.
+  @SentryExceptionCaptured()
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();

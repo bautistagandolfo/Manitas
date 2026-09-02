@@ -8,6 +8,7 @@ import {
 import { APP_FILTER, APP_GUARD, APP_PIPE, HttpAdapterHost } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
+import { SentryModule } from '@sentry/nestjs/setup';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import type { Express } from 'express';
@@ -31,6 +32,7 @@ import { OriginCheckMiddleware } from './common/security/origin-check.middleware
 
 @Module({
   imports: [
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,
