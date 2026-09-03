@@ -69,3 +69,59 @@ prueba, listo para cargarse con datos reales.
 
 **Conclusión: PASS. El sistema funciona de punta a punta en producción,
 sin hallazgos que bloqueen el uso real.**
+
+## Adenda — segunda ronda, mismo día (Gastos, movimientos manuales, Devolución)
+
+La ronda original (arriba) cubrió el flujo principal de venta, pero no
+gastos, movimientos manuales de caja, reposición de stock ni
+devoluciones. Se corrió una segunda ronda, contra la misma producción
+real, para cerrar esa brecha.
+
+```
+RESULTADO: PASS
+CRITICAL: ninguno
+HIGH: ninguno
+WARNINGS: ninguno
+```
+
+1. **Apertura de caja** — $5.000 inicial.
+2. **Ingreso manual** (+$1.000) — monto en sistema pasó a $6.000.
+   Correcto.
+3. **Retiro** (−$500) — monto en sistema pasó a $5.500. Correcto.
+4. **Gasto real** — categoría "Servicios", "Prueba real - factura de
+   luz", $800, Efectivo. Apareció en el listado de Gastos y el monto en
+   sistema bajó a $4.700 (5.500 − 800). Correcto.
+5. **Reposición de stock** — producto nuevo "PRUEBA DEVOLUCION
+   (borrar)", variante suelta, Ingreso de mercadería 0 → 3 unidades.
+6. **Venta real** — 1 unidad, $2.000, efectivo. Venta #1, COMPLETADA en
+   Historial.
+7. **Devolución real** — desde Devoluciones, venta #1 encontrada
+   ("DENTRO DE PLAZO"), 1 unidad a devolver con reingreso a stock,
+   reintegro $2.000 en efectivo, "Cubierto por completo". Confirmada:
+   toast "Devolución #1 por $ 2.000,00".
+8. **Verificación de stock reingresado** — Catálogo mostró la variante
+   con stock 3 (3 inicial → 2 tras la venta → 3 tras la devolución).
+   Correcto.
+9. **Verificación de caja, cálculo exacto de punta a punta**:
+   $5.000 + $1.000 (ingreso) − $500 (retiro) − $800 (gasto)
+   + $2.000 (venta) − $2.000 (reintegro) = **$4.700,00**, que coincidió
+   exacto con "Monto en sistema (en vivo)" mostrado por la app.
+10. **Sin errores** — sin errores de consola ni eventos en Sentry
+    durante todo el flujo.
+
+### Limpieza
+
+Se corrió un script de limpieza (`cleanup-round2.ts`, temporal, no
+commiteado) contra la base de producción vía Prisma: borró la venta, la
+devolución (con su ítem y su pago), el pago de la venta, el gasto, los 5
+movimientos de caja, la sesión de caja, los 3 movimientos de stock, el
+historial de precio de la variante, la variante y el producto de
+prueba. Verificado después, en la app real: sin caja abierta, catálogo
+vacío, historial vacío, clientes vacío — 0km otra vez.
+
+**Conclusión: PASS. Gastos, ingreso manual, retiro, reposición de stock
+y devoluciones (con reintegro en efectivo) funcionan correctamente de
+punta a punta en producción, con el efecto exacto esperado en stock y
+en caja. Con esto, junto con la ronda original, el flujo completo del
+sistema (venta, cobro, gastos, movimientos de caja, stock, devolución)
+quedó verificado en vivo, no solo por los tests automatizados.**
