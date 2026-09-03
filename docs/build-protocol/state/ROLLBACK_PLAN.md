@@ -93,6 +93,9 @@ intermedio.
 
 ## Quién está autorizado a decidir un rollback
 
-*(Pendiente de confirmar con el usuario — borrador, no asumir sin su
-confirmación explícita.)* Por ahora, Bautista Gandolfo, como
-desarrollador/operador técnico del sistema.
+**Confirmado con el usuario (2026-09-02): Bautista Gandolfo** —
+desarrollador/operador técnico del sistema, único con acceso a las
+cuentas de Render, Cloudflare, Neon y GitHub. La clienta no tiene
+credenciales técnicas ni las necesita: si algo falla, Bautista es quien
+decide y ejecuta la reversión. Comunicación con la clienta: contacto
+directo y constante, sin necesidad de un canal formal aparte.

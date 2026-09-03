@@ -35,15 +35,21 @@ reales.
       manejado en cualquiera de esos módulos automáticamente (backend y
       frontend, verificado en vivo contra producción). UptimeRobot
       cubre disponibilidad del backend cada 5 minutos.
-- [ ] **Ventana de deploy y responsable de guardia definidos.**
-      *Pendiente de definir con el usuario — ver pregunta abajo.*
+- [x] **Ventana de deploy y responsable de guardia definidos.**
+      Confirmado con el usuario (2026-09-02): **Bautista Gandolfo**, único
+      con acceso técnico a Render/Cloudflare/Neon/GitHub. Sin ventana de
+      deploy formal — el sistema ya está en producción, deploys futuros
+      son auto-deploy desde `main` en cualquier momento, revisados por
+      Bautista antes de cada push.
 - [x] **Escaneo de dependencias/secretos corrido y sin hallazgos
       CRITICAL.** `npm audit` en ambos proyectos: backend 0 critical (5
       low/4 moderate/5 high — deuda técnica ya documentada, TD-9, sin
       cambios), frontend 0 vulnerabilidades. Sin secretos en el repo
       (confirmado a lo largo de toda la sesión, cada commit).
-- [ ] **Plan de comunicación si algo sale mal.**
-      *Pendiente de definir con el usuario — ver pregunta abajo.*
+- [x] **Plan de comunicación si algo sale mal.**
+      Confirmado con el usuario (2026-09-02): contacto directo y
+      constante entre Bautista y la clienta — sin necesidad de un canal
+      formal aparte.
 
 ## Autorización
 
@@ -51,5 +57,9 @@ reales.
 responsable, citando este checklist en verde — ningún agente
 autodeploya a producción.**
 
-*(Pendiente: falta tu autorización explícita acá, con fecha, una vez
-completados los dos ítems que quedaron sin marcar arriba.)*
+Los 8 ítems de arriba están en verde.
+
+**Autorizado por Bautista Gandolfo, 2026-09-02** ("autorizo", confirmado
+explícitamente en el chat). El sistema (Neon + Render + Cloudflare
+Pages) queda formalmente autorizado para operar con datos reales — cierra
+la Fase 18, y con ella, la Etapa 7 completa del protocolo de build.

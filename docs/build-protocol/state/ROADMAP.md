@@ -468,9 +468,9 @@ negocio.
 | 14 | E2E realista (flujos completos de `MVP_SCOPE.md` §7) | VERDE |
 | 15 | Concurrencia y carga | VERDE |
 | 16 | Release Candidate | READY |
-| 17 | Backup restore drill + `ROLLBACK_PLAN.md` | PENDIENTE |
-| 18 | Deploy checklist (autorización humana) | PENDIENTE |
-| 19 | Production smoke test | PENDIENTE |
+| 17 | Backup restore drill + `ROLLBACK_PLAN.md` | VERDE |
+| 18 | Deploy checklist (autorización humana) | VERDE — autorizado 2026-09-02 |
+| 19 | Production smoke test | PASS |
 
 ---
 
